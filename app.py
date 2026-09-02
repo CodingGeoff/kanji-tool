@@ -2,7 +2,6 @@
 """日语汉字学习工具 —— Flask 后端"""
 import json
 import time
-import socket
 import threading
 from flask import Flask, request, jsonify, send_from_directory
 
@@ -13,19 +12,6 @@ import furigana
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
-
-
-def find_free_port(start=5000, retries=50):
-    """从 start 端口开始递增，找到第一个可用端口"""
-    for offset in range(retries):
-        port = start + offset
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('0.0.0.0', port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f'无法找到可用端口（从 {start} 开始尝试了 {retries} 次）')
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}
@@ -53,6 +39,9 @@ def _auto_loop():
             pass
         total, _ = db.query_sentences(per=1)
         time.sleep(60 if total < 500 else 600)
+
+
+threading.Thread(target=_auto_loop, daemon=True).start()
 
 
 @app.route('/')
@@ -199,6 +188,21 @@ def api_annotate():
     return jsonify({'lines': lines})
 
 
+# ---------- 全库重新注音（引擎升级后刷新旧数据） ----------
+@app.route('/api/reannotate', methods=['POST'])
+def api_reannotate():
+    n = 0
+    with db.get_conn() as c:
+        rows = c.execute('SELECT id, text FROM sentences').fetchall()
+    for r in rows:
+        tokens = furigana.annotate(r['text'])
+        kw = furigana.extract_kanji_words(tokens)
+        db.update_sentence(r['id'], text=r['text'], tokens=tokens, kanji_words=kw)
+        n += 1
+    db.log('edit', f'引擎升级：全库 {n} 句重新注音')
+    return jsonify({'ok': True, 'count': n})
+
+
 # ---------- 历史记录 ----------
 @app.route('/api/history')
 def api_history():
@@ -216,7 +220,4 @@ def api_clear_history():
 
 
 if __name__ == '__main__':
-    threading.Thread(target=_auto_loop, daemon=True).start()
-    port = find_free_port(5000)
-    print(f'启动汉字学习工具 — http://127.0.0.1:{port}')
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)

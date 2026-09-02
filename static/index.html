@@ -161,6 +161,7 @@ rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
       <button class="btn primary" onclick="annotate()">注音</button>
       <label class="muted"><input type="checkbox" id="hideRuby" onchange="document.getElementById('subOut').classList.toggle('noruby',this.checked)"> 隐藏注音（自测模式，悬停显示）</label>
     </div>
+    <div class="muted" style="margin-top:8px">红色假名=正常注音（双引擎校验）；<span style="color:#c77f38">橙色⚠</span>=检测到多种可能读法，悬停查看候选；橙色虚线=词典未收录（拒绝猜测）。</div>
     <div id="subOut" class="jp" style="margin-top:16px"></div>
   </div>
 </section>
@@ -194,8 +195,13 @@ function rubyHTML(tokens,hi){
   return tokens.map(t=>{
     const s=esc(t.s);
     const cls=(hi&&t.s.includes(hi))?' style="color:var(--accent);font-weight:600"':'';
-    if(t.unk) return `<span class="unk" title="词典未收录，读音未知">${s}</span>`;
-    if(t.r) return `<ruby${cls}>${s}<rt>${esc(t.r)}</rt></ruby>`;
+    if(t.unk) return `<span class="unk" title="词典未收录，读音未知（不猜测）">${s}</span>`;
+    if(t.r){
+      const low=t.c==='low', alt=(t.alt&&t.alt.length)?`候选读法: ${t.alt.join(' / ')}`:'';
+      const title=alt?` title="${esc(alt)}"`:'';
+      const rtStyle=low?' style="color:#c77f38;font-weight:600"':'';
+      return `<ruby${cls}${title}>${s}<rt${rtStyle}>${esc(t.r)}${low?'⚠':''}</rt></ruby>`;
+    }
     return `<span${cls}>${s}</span>`;
   }).join('');
 }
