@@ -177,11 +177,13 @@ def kanji_words(kanji, limit=10):
         return [dict(r) for r in rows]
 
 
-def sentences_for_kanji(kanji, limit=30):
+def sentences_for_kanji(kanji, limit=200):
+    """该汉字的全部例句：短句在前（更易读），同长度新句在前"""
     with get_conn() as c:
         rows = c.execute('''
             SELECT s.* FROM sentences s
             JOIN kanji_index ki ON ki.sentence_id = s.id
-            WHERE ki.kanji=? GROUP BY s.id ORDER BY RANDOM() LIMIT ?
+            WHERE ki.kanji=? GROUP BY s.id
+            ORDER BY LENGTH(s.text) ASC, s.id DESC LIMIT ?
         ''', (kanji, limit)).fetchall()
         return [dict(r) for r in rows]

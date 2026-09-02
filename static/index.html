@@ -68,6 +68,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .chip.on.c-N2{background:#c77f38;color:#fff;border-color:#c77f38}
 .chip.on.c-N1{background:#b5495b;color:#fff;border-color:#b5495b}
 .jp{font-size:26px;line-height:2.3}
+.jp rt{user-select:none;-webkit-user-select:none}
 .jp .unk{border-bottom:2px dotted #c77f38}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;text-align:center}
@@ -278,7 +279,7 @@ function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<'
 function rubyHTML(tokens,hi){
   return tokens.map(t=>{
     const s=esc(t.s);
-    const cls=(hi&&t.s.includes(hi))?' style="color:var(--accent);font-weight:600"':'';
+    const cls=(hi&&(t.s.includes(hi)||(t.w&&t.w.includes(hi))))?' style="color:var(--accent);font-weight:600"':'';
     if(t.unk) return `<span class="unk" title="词典未收录，读音未知（不猜测）">${s}</span>`;
     if(t.r){
       const low=t.c==='low', alt=(t.alt&&t.alt.length)?`其他读法候选: ${t.alt.join(' / ')}`:'';
@@ -542,7 +543,7 @@ async function loadCorpus(page){
 }
 async function editSentence(id){
   const el=$(`#sent-${id}`);
-  const text=prompt('修改句子（将重新注音）：',el.querySelector('.jp').textContent.replace(/\s+/g,''));
+  const text=prompt('修改句子（将重新注音）：',el.querySelector('.jp').dataset.raw||el.querySelector('.jp').textContent.replace(/\s+/g,''));
   if(text===null)return;
   const tr=prompt('修改翻译：',el.querySelector('.tr')?.textContent||'');
   await api(`/api/sentences/${id}`,{method:'PUT',body:JSON.stringify({text,translation:tr})});
@@ -582,11 +583,18 @@ async function kanjiDetail(k){
         <button class="btn danger" onclick="api('/api/learn/${k}',{method:'DELETE'}).then(()=>{toast('已移除学习记录');loadKanji(1)})">移除学习</button>
       </div>
     </div>
-    <div style="margin-top:10px">${d.sentences.map(s=>`
-      <div class="sent-item"><div class="jp" data-raw="${esc(s.text)}" style="font-size:21px">${rubyHTML(s.tokens,k)} ${spkBtn(s.text)}</div>
+    <div style="margin-top:10px">
+      <div class="muted" style="font-size:13px;margin-bottom:4px">例句 ${d.sentences.length} 句（短句在前）</div>
+      ${d.sentences.map((s,i)=>`
+      <div class="sent-item${i>=10?' hidden ksent-more':''}"><div class="jp" data-raw="${esc(s.text)}" style="font-size:21px">${rubyHTML(s.tokens,k)} ${spkBtn(s.text)}</div>
       ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}</div>`).join('')||'<div class="muted">暂无例句</div>'}
+      ${d.sentences.length>10?`<button class="btn" id="ksentMoreBtn" onclick="showMoreKsent()">展开全部 ${d.sentences.length} 句 ▼</button>`:''}
     </div>`;
   box.scrollIntoView({behavior:'smooth'});
+}
+function showMoreKsent(){
+  document.querySelectorAll('.ksent-more').forEach(el=>el.classList.remove('hidden'));
+  const b=$('#ksentMoreBtn'); if(b)b.remove();
 }
 
 /* ---------- 字幕注音 ---------- */

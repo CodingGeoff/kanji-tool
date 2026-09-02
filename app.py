@@ -142,10 +142,11 @@ def api_kanji():
 @app.route('/api/kanji/<kanji>')
 def api_kanji_detail(kanji):
     words = db.kanji_words(kanji, 12)
-    sents = db.sentences_for_kanji(kanji, 8)
+    sents = db.sentences_for_kanji(kanji, 200)
     for s in sents:
         s['tokens'] = json.loads(s['tokens'])
-    return jsonify({'kanji': kanji, 'words': words, 'sentences': sents})
+    return jsonify({'kanji': kanji, 'words': words,
+                    'sentences': sents, 'total': len(sents)})
 
 
 # ---------- 学习 / 复习 (艾宾浩斯) ----------
