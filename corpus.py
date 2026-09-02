@@ -74,12 +74,59 @@ def repair_inline_furigana(text: str):
     return text, 0
 
 
+_OLD_KANA_RE = re.compile(r'[ゐゑヰヱ]')          # 旧假名遣（战前正字法）
+_DATA_ROW_RE = re.compile(r'[A-Za-z]')
+
+
+_OLD_PHRASES = [  # 旧仮名遣 → 现代写法（固定短语先长后短）
+    ('であらう', 'であろう'), ('なからう', 'なかろう'), ('でせう', 'でしょう'),
+    ('ませう', 'ましょう'), ('だらう', 'だろう'),
+    ('さうです', 'そうです'), ('さうだ', 'そうだ'), ('さう', 'そう'),
+    ('のやうに', 'のように'), ('のやうな', 'のような'),
+    ('やうに', 'ように'), ('やうな', 'ような'), ('やうだ', 'ようだ'),
+    ('けふ', 'きょう'), ('てふてふ', 'ちょうちょう'),
+    # 旧促音副词（大つ）
+    ('そつと', 'そっと'), ('きつと', 'きっと'), ('じつと', 'じっと'),
+    ('ずつと', 'ずっと'), ('ほつと', 'ほっと'), ('やつと', 'やっと'),
+    ('もつと', 'もっと'), ('ちよつと', 'ちょっと'),
+    # 旧ハ行転呼（高频動詞）
+    ('思ふ', '思う'), ('思は', '思わ'), ('思ひ', '思い'), ('思へ', '思え'),
+    ('言ふ', '言う'), ('言は', '言わ'), ('言ひ', '言い'), ('言へ', '言え'),
+    ('いふ', 'いう'), ('いは', 'いわ'), ('笑ふ', '笑う'), ('買ふ', '買う'),
+    ('会ふ', '会う'), ('使ふ', '使う'), ('違ふ', '違う'), ('向ふ', '向こう'),
+    ('行はれ', '行われ'), ('云ふ', '云う'), ('雖も', 'いえども'),
+]
+_OLD_KANA_TRANS = str.maketrans('ゐゑヰヱ', 'いえイエ')
+
+
+def modernize_old_kana(text):
+    """旧假名遣（1946年前正字法）→ 现代假名。
+    仅当句中出现废止假名 ゐゑヰヱ（确证旧文体）时才激活积极转换，
+    避免误伤现代文。返回 (转换后文本, 原文或None)。"""
+    if not _OLD_KANA_RE.search(text):
+        return text, None
+    orig = text
+    s = text
+    for a, b in _OLD_PHRASES:
+        s = s.replace(a, b)
+    s = s.translate(_OLD_KANA_TRANS)                       # ゐ→い ゑ→え
+    s = re.sub(r'(?<=[぀-ヿ一-鿿])つ(?=[てた])', 'っ', s)   # 旧促音：泊つて→泊って
+    if '食らう' not in s and '食らわ' not in s:
+        s = re.sub(r'(?<=[一-鿿])らう', 'ろう', s)          # 旧意志形：寄らう→寄ろう
+    return s, orig
+
+
 def _good_sentence(s):
     if not (4 <= len(s) <= 90):
         return False
     if not furigana.has_kanji(s):
         return False
     if re.search(r'[<>{}\[\]=|]', s):
+        return False
+    # 资料碎片（身長157cm / 血液型A型）：ASCII字母≥2 且假名≤2 → 非自然语句
+    kana_n = sum(1 for ch in s if 'ぁ' <= ch <= 'ん' or 'ァ' <= ch <= 'ヶ')
+    ascii_alpha = sum(1 for ch in s if ch.isascii() and ch.isalpha())
+    if ascii_alpha >= 2 and kana_n <= 2:
         return False
     return True
 
@@ -89,13 +136,14 @@ def _store(text, translation, source, url, results):
     if is_junk(text):
         return
     text, _n = repair_inline_furigana(text)
+    text, orig = modernize_old_kana(text)   # 旧假名句转现代写法、保留原文
     if not _good_sentence(text) or db.sentence_exists(text):
         return
     tokens = furigana.annotate(text)
     kw = furigana.extract_kanji_words(tokens)
     if not kw:
         return
-    sid = db.add_sentence(text, translation, source, url, tokens, kw)
+    sid = db.add_sentence(text, translation, source, url, tokens, kw, orig_text=orig)
     if sid:
         results.append(text)
 

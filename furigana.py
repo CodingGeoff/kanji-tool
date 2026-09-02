@@ -262,6 +262,30 @@ def is_rendaku_variant(a: str, b: str) -> bool:
     return a != b and _devoice(a) == _devoice(b)
 
 
+# 语体/发音等价变体（两读皆正确，不构成歧义）
+_EQUIV_PAIRS = {
+    frozenset(p) for p in [
+        ('わたくし', 'わたし'), ('ほんとう', 'ほんと'), ('おなじ', 'おんなじ'),
+        ('いう', 'ゆう'), ('いく', 'ゆく'), ('いき', 'ゆき'), ('いっ', 'ゆっ'),
+        ('にほん', 'にっぽん'), ('だれ', 'たれ'), ('あす', 'あした'),
+        ('よい', 'いい'), ('やはり', 'やっぱり'), ('ふたたび', 'また'),
+    ]
+}
+
+
+def is_equiv_reading(a: str, b: str) -> bool:
+    """清浊变体或语体变体 → 视为同一读音，不警示"""
+    if is_rendaku_variant(a, b):
+        return True
+    return frozenset((a, b)) in _EQUIV_PAIRS
+
+
+def is_fragment_alt(alt: str, reading: str) -> bool:
+    """nbest 切分残段噪音：候选是主读音的短前缀（彼=かれ vs か、誰=だれ vs た）"""
+    da, dr = _devoice(alt), _devoice(reading)
+    return len(da) < len(dr) and dr.startswith(da)
+
+
 # ================================================================
 # 送り仮名对齐（第1层的输出细化）
 # ================================================================
@@ -510,7 +534,16 @@ def annotate(text: str):
 
         reading = kata_to_hira(kana)
 
-        # ---- 第2.5层：範囲の「中」→ じゅう（一日中・今日中・世界中）----
+        # ---- 第2.5层a：単独「私」→ わたし（现代字幕语体；わたくし为等价变体）----
+        if surface == '私' and w.feature.pos1 == '代名詞' and reading == 'わたくし':
+            reading = 'わたし'
+
+        # ---- 第2.5层b：「何」+ 格助词 → なに（何を/何が/何か/何も）----
+        if (surface == '何' and reading == 'なん' and i + 1 < len(words)
+                and words[i + 1].surface in ('を', 'が', 'か', 'も', 'から', 'まで', 'より')):
+            reading = 'なに'
+
+        # ---- 第2.5层c：範囲の「中」→ じゅう（一日中・今日中・世界中）----
         if (surface == '中' and reading == 'ちゅう' and i > 0
                 and words[i - 1].surface in _JUU_BEFORE):
             reading = 'じゅう'
@@ -533,15 +566,18 @@ def annotate(text: str):
         dk = w.feature.kanaBase if (w.feature.kanaBase and w.feature.kanaBase != '*') else kana
         dr = kata_to_hira(dk)
 
-        # ---- 第3层 + 第4层：置信度评定（清浊变体不算真歧义）----
+        # ---- 第3层 + 第4层：置信度评定（噪音归一，只留真歧义）----
         conf, alts = ('high' if i in boosts else 'mid'), set()
         nb = nbest.get(span)
         if nb and len(nb) > 1:
-            alts |= {a for a in nb if a != reading and not is_rendaku_variant(a, reading)}
+            alts |= {a for a in nb
+                     if a != reading and not is_equiv_reading(a, reading)
+                     and not is_fragment_alt(a, reading)}
         sd = sud.get(span)
         if sd is not None:
-            if sd == reading or is_rendaku_variant(sd, reading):
+            if sd == reading or is_equiv_reading(sd, reading):
                 conf = 'high'
+                alts.clear()   # 双引擎共识 > nbest 次优路径
             else:
                 alts.add(sd)
         if alts:

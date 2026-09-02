@@ -245,6 +245,58 @@ PATTERNS = [
       [{'l': ('如し', '如く', 'ごとし')}]),
     P('〜ずにはいられない（禁不住）', 'N1', '未然形 + ずにはいられない', '忍不住要〜、不〜就受不了',
       [{'l': 'ず'}, {'s': 'に'}, {'s': 'は'}, {'l': '居る'}, {'ct': '助動詞-レル'}, {'l': 'ない'}]),
+
+    # ============ 补充：字幕/口语高频（N3-N1 覆盖强化） ============
+    P('縮約形〜ちゃう／じゃう', 'N3', 'て形 + ちゃう（=てしまう）', '口语缩约：彻底做完/不小心做了。食べちゃった＝食べてしまった，字幕最高频缩约之一',
+      [{'l': 'ちゃう', 'p1': '助動詞'}]),
+    P('縮約形〜とく', 'N3', '連用形 + とく（=ておく）', '口语缩约：事先做好。やっとく＝やっておく',
+      [{'l': 'とく', 'p1': '助動詞'}]),
+    P('縮約形〜なきゃ', 'N3', 'ない仮定形融合（=なければ）', '口语缩约：不〜（不行）。行かなきゃ＝行かなければ（ならない），后半常省略',
+      [{'l': 'ない', 'cf': '仮定形-融合'}]),
+    P('縮約形〜なくちゃ', 'N3', 'なく + ちゃ（=なくては）', '口语缩约：必须〜。食べなくちゃ＝食べなくては（いけない）',
+      [{'l': 'ない', 'cf': '連用形'}, {'s': 'ちゃ'}]),
+    P('口語「って」（引用・主題）', 'N3', '〜 + って', '口语万能助词：引用「〜と」（降るって言った）；提起话题「〜は」（トムって誰？）',
+      [{'l': 'って', 'p1': '助詞'}]),
+    P('〜ようとする（意志・寸前）', 'N3', '意向形 + とする', '试图做〜/正要做〜的关头',
+      [{'p1': '動詞', 'cf': '意志推量形'}, {'s': 'と'}, {'l': '為る'}]),
+    P('〜たばかり（直後）', 'N3', 'た形 + ばかり', '刚刚做完〜（时间上离得很近）',
+      [{'l': 'た', 'cf': '連体形'}, {'l': 'ばかり'}]),
+    P('〜ば〜ほど（比例）', 'N3', '仮定形ば + 連体形 + ほど', '越〜越〜',
+      [{'p1': ('動詞', '形容詞'), 'cf': '仮定形'}, {'s': 'ば', 'p2': '接続助詞'},
+       {'p1': ('動詞', '形容詞'), 'cf': '連体形'}, {'l': 'ほど'}]),
+    P('縮約形〜てる／てた（ている）', 'N4', 'て形 + る/た（い脱落）',
+      '口语中ている的い经常脱落：言ってる＝言っている、言ってた＝言っていた，字幕极高频',
+      [{'l': 'てる', 'p1': '助動詞'}]),
+    P('〜がる／たがる（第三者感情）', 'N3', '形容詞語幹 + がる', '第三人称的感情/愿望外显：欲しがる=（他）想要',
+      [{'l': 'がる', 'p1': '接尾辞'}]),
+    P('〜ほうがいい（忠告）', 'N3', 'た形/ない形 + ほうがいい', '建议「最好〜」',
+      [{'l': '方', 'p2': '普通名詞'}, {'s': 'が'}, {'l': ('良い', 'いい'), 'p1': '形容詞'}]),
+    P('〜かどうか（不確定）', 'N3', '終止形 + かどうか', '是否〜（嵌入疑问）',
+      [{'s': 'か'}, {'s': 'どう'}, {'s': 'か'}]),
+    P('〜っぽい（傾向）', 'N2', '名詞/連用形 + っぽい', '有〜的感觉、动不动就〜：子供っぽい=孩子气',
+      [{'l': 'ぽい', 'p1': '接尾辞'}]),
+    P('〜がち（頻度傾向）', 'N2', '名詞/連用形 + がち', '容易〜、常常〜（多用于不好的倾向）：忘れがち',
+      [{'l': '勝ち', 'p1': '接尾辞'}]),
+    P('〜だらけ（充満）', 'N2', '名詞 + だらけ', '满是〜（负面）：泥だらけ、間違いだらけ',
+      [{'l': 'だらけ', 'p1': '接尾辞'}]),
+    P('〜気味（気配）', 'N2', '名詞/連用形 + 気味', '略有〜的样子：風邪気味=有点感冒',
+      [{'l': '気味', 'p2': '普通名詞'}]),
+    P('〜っぱなし（放置）', 'N2', '連用形 + っぱなし', '一直保持〜的状态（該做后续却没做）：開けっぱなし',
+      [{'l': '放し', 'p1': '接尾辞'}]),
+    P('〜ものだ（本性・感慨）', 'N2', '連体形 + ものだ', '事物本来如此/感慨「真是〜啊」/回忆「过去常〜」',
+      [{'l': '物', 'p2': '普通名詞'}, {'l': ('だ', 'です'), 'p1': '助動詞'}], prev_cf=('連体形',)),
+    P('〜ものか（反語）', 'N2', '連体形 + ものか', '强烈否定「才不会〜呢！」',
+      [{'l': '物', 'p2': '普通名詞'}, {'s': 'か', 'p2': '終助詞'}], prev_cf=('連体形',)),
+    P('〜わけにはいかない（不可）', 'N2', '連体形 + わけにはいかない', '（道义/情理上）不能〜',
+      [{'l': '訳'}, {'s': 'に'}, {'s': 'は'}, {'l': '行く'}, {'l': 'ない'}]),
+    P('〜のあまり（極度）', 'N2', '名詞の + あまり', '因过度〜而…：嬉しさのあまり泣いた',
+      [{'s': 'の'}, {'l': '余り', 'p1': '副詞'}]),
+    P('〜まみれ（付着）', 'N1', '名詞 + まみれ', '沾满〜：血まみれ、汗まみれ',
+      [{'l': ('塗れ', '血塗れ', '泥塗れ', '汗塗れ')}]),
+    P('〜んばかり（寸前の様子）', 'N1', '未然形 + んばかり', '简直要〜似的：言わんばかり=简直像要说出来一样',
+      [{'ct': '文語助動詞-ム'}, {'l': 'ばかり'}]),
+    P('〜かのように（比況強調）', 'N1', '終止形 + かのように', '仿佛〜似的（实际并非如此）',
+      [{'s': 'か'}, {'s': 'の'}, {'l': '様', 'p1': ('形状詞', '名詞')}, {'s': 'に', 'opt': True}, {'l': ('だ', 'です'), 'opt': True}]),
 ]
 
 # ---------------------------------------------------------------
@@ -338,9 +390,30 @@ def _pick(templates, seed):
     return templates[int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(templates)]
 
 
+_STOP_PUNCT = {'。', '！', '？', '!', '?', '．'}
+
+
+def _context3(words, s, e, lr=4, rr=3):
+    """三段式上下文：核心语法点前后各取若干形态素、不跨句 → (before, core, after)"""
+    lo = max(0, s - lr)
+    for j in range(s - 1, lo - 1, -1):
+        if words[j].surface in _STOP_PUNCT:
+            lo = j + 1
+            break
+    hi = min(len(words), e + rr)
+    for j in range(e, hi):
+        if words[j].surface in _STOP_PUNCT:
+            hi = j
+            break
+    before = ''.join(w.surface for w in words[lo:s])
+    core = ''.join(w.surface for w in words[s:e])
+    after = ''.join(w.surface for w in words[e:hi])
+    return before, core, after
+
+
 def _context(words, s, e, radius=2):
-    lo, hi = max(0, s - radius), min(len(words), e + radius)
-    return ''.join(w.surface for w in words[lo:hi])
+    b, c_, a = _context3(words, s, e, radius, radius)
+    return b + c_ + a
 
 
 def analyze(text: str):
@@ -387,8 +460,10 @@ def analyze(text: str):
                 structure=pat['structure'], meaning=pat['meaning'], ctx=ctx)
             if pat.get('note'):
                 explain += ' ' + pat['note']
+            b3, c3, a3 = _context3(words, s_idx, e_idx)
             found.append({'name': pat['name'], 'level': pat['level'],
                           'structure': pat['structure'], 'surface': surface,
+                          'before': b3, 'core': c3, 'after': a3,
                           'span': [s_idx, e_idx], 'explain': explain, 'kind': 'pattern'})
             covered.update(range(s_idx, e_idx))
 
@@ -437,9 +512,27 @@ def analyze(text: str):
             seed = f'{text}|{name}|{i}'
             explain = _pick(_TPLS_SINGLE, seed).format(
                 surface=w.surface, name=name, meaning=meaning)
+            b3, c3, a3 = _context3(words, i, i + 1)
             found.append({'name': name, 'level': level, 'structure': '—',
-                          'surface': w.surface, 'span': [i, i + 1],
-                          'explain': explain, 'kind': 'word'})
+                          'surface': w.surface, 'before': b3, 'core': c3, 'after': a3,
+                          'span': [i, i + 1], 'explain': explain, 'kind': 'word'})
+
+    # ---- 同名语法点合并：句中多次出现 → 一条条目 + 全部上下文 ----
+    merged, order = {}, []
+    for f in found:
+        key = (f['name'], f['level'])
+        occ = {'surface': f['surface'], 'before': f['before'],
+               'core': f['core'], 'after': f['after']}
+        if key in merged:
+            merged[key]['occurrences'].append(occ)
+            merged[key]['count'] += 1
+        else:
+            f = dict(f)
+            f['occurrences'] = [occ]
+            f['count'] = 1
+            merged[key] = f
+            order.append(key)
+    found = [merged[k] for k in order]
 
     # ---- 排序：由浅入深（N5→N1），同级按句中位置 ----
     found.sort(key=lambda x: (LEVEL_ORDER.get(x['level'], 9), x['span'][0]))

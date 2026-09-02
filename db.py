@@ -67,6 +67,18 @@ def init_db():
         ''')
 
 
+def _migrate():
+    """兼容性迁移：为既有库补列（不破坏任何数据）"""
+    with get_conn() as c:
+        try:
+            c.execute('ALTER TABLE sentences ADD COLUMN orig_text TEXT')
+        except sqlite3.OperationalError:
+            pass
+
+
+_migrate()
+
+
 def log(type_, detail):
     with _lock, get_conn() as c:
         c.execute('INSERT INTO history(ts,type,detail) VALUES(?,?,?)',
@@ -75,13 +87,13 @@ def log(type_, detail):
 
 # ---------- 语料 CRUD ----------
 
-def add_sentence(text, translation, source, url, tokens, kanji_words):
+def add_sentence(text, translation, source, url, tokens, kanji_words, orig_text=None):
     """插入句子并建立汉字索引；重复返回 None"""
     with _lock, get_conn() as c:
         try:
             cur = c.execute(
-                'INSERT INTO sentences(text,translation,source,url,tokens,created_at) VALUES(?,?,?,?,?,?)',
-                (text, translation, source, url, json.dumps(tokens, ensure_ascii=False), time.time()))
+                'INSERT INTO sentences(text,translation,source,url,tokens,created_at,orig_text) VALUES(?,?,?,?,?,?,?)',
+                (text, translation, source, url, json.dumps(tokens, ensure_ascii=False), time.time(), orig_text))
         except sqlite3.IntegrityError:
             return None
         sid = cur.lastrowid
@@ -91,8 +103,10 @@ def add_sentence(text, translation, source, url, tokens, kanji_words):
         return sid
 
 
-def update_sentence(sid, text=None, translation=None, tokens=None, kanji_words=None):
+def update_sentence(sid, text=None, translation=None, tokens=None, kanji_words=None, orig_text=None):
     with _lock, get_conn() as c:
+        if orig_text is not None:
+            c.execute('UPDATE sentences SET orig_text=? WHERE id=?', (orig_text, sid))
         if text is not None:
             c.execute('UPDATE sentences SET text=?, tokens=? WHERE id=?',
                       (text, json.dumps(tokens, ensure_ascii=False), sid))

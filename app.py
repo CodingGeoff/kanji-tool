@@ -98,9 +98,10 @@ def api_add_sentence():
     if corpus.is_junk(text):
         return jsonify({'error': '文本包含垃圾字符（下划线/时间戳/测试标记），已拒绝入库'}), 400
     text, n_fix = corpus.repair_inline_furigana(text)
+    text, orig = corpus.modernize_old_kana(text)
     tokens = furigana.annotate(text)
     kw = furigana.extract_kanji_words(tokens)
-    sid = db.add_sentence(text, d.get('translation') or None, 'manual', None, tokens, kw)
+    sid = db.add_sentence(text, d.get('translation') or None, 'manual', None, tokens, kw, orig_text=orig)
     if sid is None:
         return jsonify({'error': '该句子已存在'}), 409
     db.log('add', f'手动添加语料：{text[:30]}')
@@ -204,9 +205,14 @@ def api_reannotate():
     with db.get_conn() as c:
         rows = c.execute('SELECT id, text FROM sentences').fetchall()
     for r in rows:
-        tokens = furigana.annotate(r['text'])
+        if corpus.is_junk(r['text']) or not corpus._good_sentence(r['text']):
+            db.delete_sentence(r['id'])
+            continue
+        text, n_fix = corpus.repair_inline_furigana(r['text'])
+        text, orig = corpus.modernize_old_kana(text)
+        tokens = furigana.annotate(text)
         kw = furigana.extract_kanji_words(tokens)
-        db.update_sentence(r['id'], text=r['text'], tokens=tokens, kanji_words=kw)
+        db.update_sentence(r['id'], text=text, tokens=tokens, kanji_words=kw, orig_text=orig)
         n += 1
     db.log('edit', f'引擎升级：全库 {n} 句重新注音')
     return jsonify({'ok': True, 'count': n})
@@ -232,9 +238,16 @@ def api_cleanup():
     with db.get_conn() as c:
         rows = c.execute('SELECT id, text FROM sentences').fetchall()
     for r in rows:
-        if corpus.is_junk(r['text']):
+        if corpus.is_junk(r['text']) or not corpus._good_sentence(r['text']):
             db.delete_sentence(r['id'])
             removed += 1
+            continue
+        moderned, orig = corpus.modernize_old_kana(r['text'])
+        if orig is not None:
+            tokens = furigana.annotate(moderned)
+            kw = furigana.extract_kanji_words(tokens)
+            db.update_sentence(r['id'], text=moderned, tokens=tokens, kanji_words=kw, orig_text=orig)
+            repaired += 1
             continue
         fixed, n = corpus.repair_inline_furigana(r['text'])
         if n >= 2 and fixed != r['text']:

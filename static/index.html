@@ -53,6 +53,11 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .gp-item .surf{font-weight:600;font-size:16px}
 .gp-item .expl{font-size:13.5px;color:#555;margin-top:5px;line-height:1.7}
 .gp-item .stru{font-size:12px;color:var(--sub);margin-top:3px}
+.gp-item .cnt{font-size:11px;background:var(--gold);color:#fff;border-radius:10px;padding:1px 8px}
+.gp-item .gctx{margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}
+.gp-item .frag{font-size:15px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:3px 10px;color:#777}
+.gp-item .frag b{color:#1a1a1a;font-weight:700;background:linear-gradient(transparent 62%,#f3d98b 62%);padding:0 1px}
+.orig-tag{font-size:11px;color:#8a6d3b;background:#f7efd8;border-radius:6px;padding:2px 8px;cursor:help}
 .lv{font-size:11px;font-weight:700;border-radius:6px;padding:2px 8px;color:#fff}
 .lv-N5{background:#7cb069}.lv-N4{background:#4d9dbb}.lv-N3{background:#c8a24b}.lv-N2{background:#c77f38}.lv-N1{background:#b5495b}
 .gp-item.b-N5{border-color:#7cb069}.gp-item.b-N4{border-color:#4d9dbb}.gp-item.b-N3{border-color:#c8a24b}.gp-item.b-N2{border-color:#c77f38}.gp-item.b-N1{border-color:#b5495b}
@@ -390,8 +395,10 @@ function renderGrammar(){
         <div class="head">
           <span class="lv lv-${p.level}">${p.level}</span>
           <span class="surf">${esc(p.name)}</span>
-          <span class="tag">句中形态:「${esc(p.surface)}」</span>
+          ${p.count>1?`<span class="cnt">×${p.count} 处</span>`:''}
         </div>
+        <div class="gctx">${(p.occurrences||[{before:'',core:p.surface,after:''}]).map(o=>
+          `<span class="frag">${esc(o.before)}<b>${esc(o.core)}</b>${esc(o.after)}</span>`).join('')}</div>
         <div class="expl">${esc(p.explain)}</div>
         ${p.structure!=='—'?`<div class="stru">接续: ${esc(p.structure)}</div>`:''}
       </div>`).join('')||'<div class="muted" style="padding:16px">当前过滤条件下没有语法点，试试打开更多等级</div>'}
@@ -521,6 +528,7 @@ async function loadCorpus(page){
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
       <div class="meta">
         <span class="tag">${esc(r.source)}</span><span>#${r.id}</span><span>${fmtTime(r.created_at)}</span>
+        ${r.orig_text?`<span class="orig-tag" title="已自动转为现代假名。原文：${esc(r.orig_text)}">旧仮名原文 ⓘ</span>`:''}
         <button onclick="favToggle(${r.id},this)" style="font-size:14px">${r.fav?'★已收藏':'☆收藏'}</button>
         <button onclick="editSentence(${r.id},this)">编辑</button>
         <button onclick="delSentence(${r.id})">删除</button>
