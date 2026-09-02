@@ -111,6 +111,7 @@ _COUNTERS = {
     '票': {'base': 'ひょう', 1: 'いっぴょう', 3: 'さんびょう', 6: 'ろっぴょう',
            8: 'はっぴょう', 10: 'じゅっぴょう'},
     '秒': {'base': 'びょう'},
+    '晩': {'base': 'ばん', 1: 'ひとばん', 2: 'ふたばん'},
     '円': {'base': 'えん', 4: 'よえん'},
     '年': {'base': 'ねん', 4: 'よねん'},
     '枚': {'base': 'まい'},
@@ -131,6 +132,11 @@ _COUNTERS = {
     '年間': {'base': 'ねんかん', 4: 'よねんかん', 9: 'くねんかん'},
     '週間': {'base': 'しゅうかん', 1: 'いっしゅうかん', 8: 'はっしゅうかん', 10: 'じゅっしゅうかん'},
     '歳月': {'base': 'さいげつ'},
+    'ヶ所': {'base': 'かしょ', 1: 'いっかしょ', 6: 'ろっかしょ', 8: 'はっかしょ', 10: 'じゅっかしょ'},
+    'か所': {'base': 'かしょ', 1: 'いっかしょ', 6: 'ろっかしょ', 8: 'はっかしょ', 10: 'じゅっかしょ'},
+    'カ所': {'base': 'かしょ', 1: 'いっかしょ', 6: 'ろっかしょ', 8: 'はっかしょ', 10: 'じゅっかしょ'},
+    'ヶ国': {'base': 'かこく', 1: 'いっかこく', 6: 'ろっかこく', 8: 'はっかこく', 10: 'じゅっかこく'},
+    'か国': {'base': 'かこく', 1: 'いっかこく', 6: 'ろっかこく', 8: 'はっかこく', 10: 'じゅっかこく'},
     'つ': {'base': 'つ', 1: 'ひとつ', 2: 'ふたつ', 3: 'みっつ', 4: 'よっつ', 5: 'いつつ',
            6: 'むっつ', 7: 'ななつ', 8: 'やっつ', 9: 'ここのつ'},
 }
@@ -141,6 +147,7 @@ _COUNTERS['日間'] = {'base': 'にちかん'}
 # 融合读法（数字与助数词无法拆分的熟字训式读音）
 _FUSED = {
     '人': {1, 2},
+    '晩': {1, 2},
     '日': {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 20, 24},
     '歳': {20},
     'つ': {1, 2, 3, 4, 5, 6, 7, 8, 9},
@@ -188,10 +195,71 @@ def number_with_counter(n: int, counter: str):
 
 _NUM_RE = re.compile(r'^[0-9]+$')
 
+# 「〜中」读じゅう的前接时间/范围词（一日中・今日中・世界中・体中…）
+_JUU_BEFORE = {'今日', '明日', '昨日', '一日', '日', '年', '一年', '半年',
+               '晩', '一晩', '夜', '一夜', '世界', '国', '家', '町', '村',
+               '街', '体', '身体', '部屋', '学校', '会社'}
+
+# 汉字数词解析（一〜九千亿）
+_KDIGIT = {'〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
+           '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+_KUNIT = {'十': 10, '百': 100, '千': 1000}
+_KBIG = {'万': 10 ** 4, '億': 10 ** 8}
+
+
+def kanji_num_to_int(s: str):
+    if not s or any(ch not in _KDIGIT and ch not in _KUNIT and ch not in _KBIG for ch in s):
+        return None
+    total, section, digit = 0, 0, 0
+    for ch in s:
+        if ch in _KDIGIT:
+            digit = _KDIGIT[ch]
+        elif ch in _KUNIT:
+            section += (digit if digit else 1) * _KUNIT[ch]
+            digit = 0
+        else:  # 万/億
+            total += (section + digit if (section + digit) else 1) * _KBIG[ch]
+            section = digit = 0
+    return total + section + digit
+
+
+_MIXED_RE = re.compile(r'^([0-9]+)(万|億|千)$')
+
 
 def _parse_number(surface: str):
     s = surface.translate(_DIGIT_MAP).replace(',', '')
-    return int(s) if _NUM_RE.match(s) else None
+    if _NUM_RE.match(s):
+        return int(s)
+    m = _MIXED_RE.match(s)
+    if m:
+        return int(m.group(1)) * {'千': 1000, '万': 10 ** 4, '億': 10 ** 8}[m.group(2)]
+    return kanji_num_to_int(surface)
+
+
+def _is_digit_token(surface: str) -> bool:
+    return bool(_NUM_RE.match(surface.translate(_DIGIT_MAP).replace(',', '')))
+
+
+# ================================================================
+# 伪歧义降噪：清浊音(连浊)变体判定
+# 第二引擎/N-best 常在连浊上与主读音有细微出入(かようび/かようひ)，
+# 这类不是真歧义，静默归一，避免警示噪音淹没真正的多音字歧义。
+# ================================================================
+_DEVOICE = {}
+for _v, _b in [('がぎぐげご', 'かきくけこ'), ('ざじずぜぞ', 'さしすせそ'),
+               ('だぢづでど', 'たちつてと'), ('ばびぶべぼ', 'はひふへほ'),
+               ('ぱぴぷぺぽ', 'はひふへほ')]:
+    for _x, _y in zip(_v, _b):
+        _DEVOICE[_x] = _y
+
+
+def _devoice(s: str) -> str:
+    return ''.join(_DEVOICE.get(ch, ch) for ch in s)
+
+
+def is_rendaku_variant(a: str, b: str) -> bool:
+    """两个读音仅有清浊差异（伪歧义）"""
+    return a != b and _devoice(a) == _devoice(b)
 
 
 # ================================================================
@@ -353,8 +421,11 @@ def annotate(text: str):
             end, sr, mecab_concat = merges[i]
             whole = ''.join(words[j].surface for j in range(i, end))
             aligned = _align(whole, sr)
-            # 词典级整词读音获胜，MeCab 拼读保留为候选供核对
-            extra = {'c': 'mid', 'alt': [mecab_concat]}
+            # 词典级整词读音获胜；若与MeCab拼读仅清浊之差则视为一致（无需警示）
+            if is_rendaku_variant(mecab_concat, sr):
+                extra = {'c': 'high'}
+            else:
+                extra = {'c': 'mid', 'alt': [mecab_concat]}
             if aligned is None:
                 tokens.append({'s': whole, 'r': sr, 'w': whole, 'wr': sr, **extra})
             else:
@@ -364,28 +435,57 @@ def annotate(text: str):
             continue
 
         # ---- 第2层：数词 + 助数词 ----
-        num = _parse_number(surface) if w.feature.pos2 == '数詞' else None
-        if num is not None and i + 1 < len(words):
-            nxt = words[i + 1]
-            res = number_with_counter(num, nxt.surface)
-            if res:
-                num_r, ctr_r = res
-                whole = surface + nxt.surface
-                if num_r == 'FUSED':
-                    # 融合读法（1日=ついたち、2人=ふたり）→ 合并为单 token 整体注音
-                    tokens.append({'s': whole, 'r': ctr_r, 'w': whole, 'wr': ctr_r, 'c': 'mid'})
-                else:
-                    whole_r = num_r + ctr_r
-                    tokens.append({'s': surface, 'r': num_r, 'w': whole, 'wr': whole_r, 'c': 'mid'})
-                    tokens.append({'s': nxt.surface,
-                                   'r': ctr_r if has_kanji(nxt.surface) else None,
-                                   'w': whole, 'wr': whole_r, 'c': 'mid'})
-                i += 2
+        if w.feature.pos2 == '数詞':
+            is_digit = _is_digit_token(surface)
+            # 千分位合并：1 , 000 → 1,000
+            merged_surface, j = surface, i
+            if is_digit:
+                while (j + 2 < len(words) and words[j + 1].surface in (',', '，')
+                       and words[j + 2].feature.pos2 == '数詞'
+                       and _is_digit_token(words[j + 2].surface)
+                       and len(words[j + 2].surface) == 3):
+                    merged_surface += words[j + 1].surface + words[j + 2].surface
+                    j += 2
+            num = _parse_number(merged_surface)
+            # 连续数詞合并：一+万→一万(10000)、10+万→10万
+            while num is not None and j + 1 < len(words) and words[j + 1].feature.pos2 == '数詞':
+                cand = merged_surface + words[j + 1].surface
+                val = _parse_number(cand)
+                if val is None:
+                    break
+                merged_surface, num, j = cand, val, j + 1
+            nxt = words[j + 1] if j + 1 < len(words) else None
+            if num is not None and nxt is not None:
+                # 汉字数词的「日」类日期交给词典（一日中≠ついたち中）
+                date_guard = (not is_digit) and nxt.surface in ('日', '日間')
+                res = None if date_guard else number_with_counter(num, nxt.surface)
+                if res:
+                    num_r, ctr_r = res
+                    whole = merged_surface + nxt.surface
+                    if num_r == 'FUSED':
+                        tokens.append({'s': whole, 'r': ctr_r, 'w': whole, 'wr': ctr_r, 'c': 'mid'})
+                    else:
+                        whole_r = num_r + ctr_r
+                        tokens.append({'s': merged_surface, 'r': num_r, 'w': whole,
+                                       'wr': whole_r, 'c': 'mid'})
+                        tokens.append({'s': nxt.surface,
+                                       'r': ctr_r if has_kanji(nxt.surface) else None,
+                                       'w': whole, 'wr': whole_r, 'c': 'mid'})
+                    i = j + 2
+                    continue
+            if is_digit:
+                # 纯阿拉伯数字（无匹配助数词）：不含汉字，无需注音
+                tokens.append({'s': merged_surface, 'r': None, 'w': None, 'wr': None})
+                i = j + 1
                 continue
-            # 无助数词规则：数字本身不含汉字，不注音
-            tokens.append({'s': surface, 'r': None, 'w': None, 'wr': None})
-            i += 1
-            continue
+            if j > i and num is not None:
+                # 已合并的汉字数词（一万）：整体给普通读法
+                r = num_to_kana(num)
+                tokens.append({'s': merged_surface, 'r': r, 'w': merged_surface,
+                               'wr': r, 'c': 'mid'})
+                i = j + 1
+                continue
+            # 单个汉字数词无助数词规则 → 落回词典正常注音流程（一日=ついたち/いちにち 由词格决定）
 
         kana = w.feature.kana
         if (not kana or kana == '*') and w.feature.pron and w.feature.pron != '*':
@@ -410,14 +510,37 @@ def annotate(text: str):
 
         reading = kata_to_hira(kana)
 
-        # ---- 第3层 + 第4层：置信度评定 ----
+        # ---- 第2.5层：範囲の「中」→ じゅう（一日中・今日中・世界中）----
+        if (surface == '中' and reading == 'ちゅう' and i > 0
+                and words[i - 1].surface in _JUU_BEFORE):
+            reading = 'じゅう'
+            # 连带纠正前接词读音（今日中=きょうじゅう、体中=からだじゅう）
+            _fix = {'今日': 'きょう', '体': 'からだ', '身体': 'からだ'}.get(words[i - 1].surface)
+            if _fix:
+                for t in reversed(tokens):
+                    if t.get('w') == words[i - 1].surface:
+                        t['r'] = t['wr'] = _fix
+                        t.pop('alt', None)
+                        t['c'] = 'mid'
+                    else:
+                        break
+            tokens.append({'s': surface, 'r': reading, 'w': surface, 'wr': reading, 'c': 'mid'})
+            i += 1
+            continue
+
+        # 词典原形（贫しかっ→貧しい），供词组展示/索引使用，避免活用残段
+        dw = w.feature.orthBase if (w.feature.orthBase and w.feature.orthBase != '*') else surface
+        dk = w.feature.kanaBase if (w.feature.kanaBase and w.feature.kanaBase != '*') else kana
+        dr = kata_to_hira(dk)
+
+        # ---- 第3层 + 第4层：置信度评定（清浊变体不算真歧义）----
         conf, alts = ('high' if i in boosts else 'mid'), set()
         nb = nbest.get(span)
         if nb and len(nb) > 1:
-            alts |= (nb - {reading})
+            alts |= {a for a in nb if a != reading and not is_rendaku_variant(a, reading)}
         sd = sud.get(span)
         if sd is not None:
-            if sd == reading:
+            if sd == reading or is_rendaku_variant(sd, reading):
                 conf = 'high'
             else:
                 alts.add(sd)
@@ -430,10 +553,12 @@ def annotate(text: str):
 
         aligned = _align(surface, reading)
         if aligned is None:
-            tokens.append({'s': surface, 'r': reading, 'w': surface, 'wr': reading, **extra})
+            tokens.append({'s': surface, 'r': reading, 'w': surface, 'wr': reading,
+                           'dw': dw, 'dr': dr, **extra})
         else:
             for seg, ruby in aligned:
-                tokens.append({'s': seg, 'r': ruby, 'w': surface, 'wr': reading, **extra})
+                tokens.append({'s': seg, 'r': ruby, 'w': surface, 'wr': reading,
+                               'dw': dw, 'dr': dr, **extra})
         i += 1
     return tokens
 
@@ -443,9 +568,14 @@ def extract_kanji_words(tokens):
     for t in tokens:
         if t.get('r') is None and not t.get('unk'):
             continue
-        word = t.get('w') or t['s']
-        wr = t.get('wr')
+        # 优先词典原形（貧しかっ→貧しい），避免活用残段进入词组索引
+        word = t.get('dw') or t.get('w') or t['s']
+        wr = t.get('dr') or t.get('wr')
+        # 原形若不含该汉字（表记差异），回退表面形
         for ch in t['s']:
             if is_kanji(ch) and ch not in '々〆ヶ':
-                out.append((ch, word, wr))
+                if ch in word:
+                    out.append((ch, word, wr))
+                else:
+                    out.append((ch, t.get('w') or t['s'], t.get('wr')))
     return out
