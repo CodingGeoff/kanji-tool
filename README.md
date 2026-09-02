@@ -5,7 +5,7 @@
 ## 启动
 
 ```bash
-pip install flask fugashi unidic-lite requests
+pip install flask fugashi unidic-lite requests sudachipy sudachidict_core edge-tts
 python3 app.py        # 打开 http://localhost:5000
 ```
 
@@ -38,6 +38,14 @@ python3 app.py        # 打开 http://localhost:5000
 - 认识→进入下一记忆阶段；模糊→维持；忘记→曲线重置从头巩固
 - 打开工具即自动推送到期汉字；例句从本地语料库**智能随机抽取**（优先带翻译、其他汉字大多已学过的句子，每次都不同）
 - 「学新字」按语料真实频次推荐高频汉字，学习性价比最高
+
+
+### 5. 例句朗读（TTS）
+- 每个例句旁有 🔊 按钮（复习卡、语料库、汉字详情、字幕注音均支持）
+- **6 种神经网络音色**（右上角切换）：七海/圭太（日语原生）+ Ava/Emma/Andrew/Brian（多语言），四档语速，选择自动记忆
+- 发音由微软神经 TTS 按整句上下文决定，与注音引擎相互独立、互为校验
+- 合成结果缓存本地 `audio_cache/`，同句同音色只合成一次，之后瞬时播放（符合本地缓存优先原则）
+- 服务端不可用时自动退回浏览器本地日语语音
 
 ## 文件结构
 - `app.py` — Flask 后端 + 后台抓取线程

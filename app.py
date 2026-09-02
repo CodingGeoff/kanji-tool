@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """日语汉字学习工具 —— Flask 后端"""
 import json
+import os
 import time
-import socket
 import threading
 from flask import Flask, request, jsonify, send_from_directory
 
@@ -13,18 +13,6 @@ import furigana
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
-
-
-def find_free_port(start=5000, end=5049):
-    """从 start 端口起依次探测，返回第一个可用端口"""
-    for port in range(start, end + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('0.0.0.0', port))
-                return port
-            except OSError:
-                continue
-    return start  # fallback
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}
@@ -232,7 +220,54 @@ def api_clear_history():
     return jsonify({'ok': True})
 
 
+# ---------- 语音朗读 (TTS) ----------
+import hashlib
+import asyncio
+
+AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'audio_cache')
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
+# 精选音色：2个日语原生神经音色 + 4个多语言神经音色（都能自然朗读日语）
+VOICES = [
+    {'id': 'ja-JP-NanamiNeural',            'name': '七海 Nanami（女·日语原生）'},
+    {'id': 'ja-JP-KeitaNeural',             'name': '圭太 Keita（男·日语原生）'},
+    {'id': 'en-US-AvaMultilingualNeural',   'name': 'Ava（女·柔和多语）'},
+    {'id': 'en-US-EmmaMultilingualNeural',  'name': 'Emma（女·明快多语）'},
+    {'id': 'en-US-AndrewMultilingualNeural','name': 'Andrew（男·沉稳多语）'},
+    {'id': 'en-US-BrianMultilingualNeural', 'name': 'Brian（男·清晰多语）'},
+]
+RATES = {'slow': '-25%', 'slower': '-10%', 'normal': '+0%', 'fast': '+15%'}
+
+
+@app.route('/api/voices')
+def api_voices():
+    return jsonify({'voices': VOICES, 'rates': list(RATES.keys())})
+
+
+@app.route('/api/tts', methods=['POST'])
+def api_tts():
+    import edge_tts
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    voice = d.get('voice') or VOICES[0]['id']
+    rate = RATES.get(d.get('rate') or 'normal', '+0%')
+    if not text:
+        return jsonify({'error': 'empty'}), 400
+    if voice not in {v['id'] for v in VOICES}:
+        return jsonify({'error': 'bad voice'}), 400
+    key = hashlib.md5(f'{voice}|{rate}|{text}'.encode()).hexdigest()
+    path = os.path.join(AUDIO_DIR, key + '.mp3')
+    if not os.path.exists(path):     # 本地缓存优先，同句同音色只合成一次
+        try:
+            comm = edge_tts.Communicate(text, voice, rate=rate)
+            asyncio.run(comm.save(path))
+            db.log('tts', f'合成朗读[{voice.split("-")[-1].replace("Neural","")}]：{text[:24]}')
+        except Exception as e:
+            if os.path.exists(path):
+                os.remove(path)
+            return jsonify({'error': f'TTS失败: {e}'}), 502
+    return send_from_directory(AUDIO_DIR, key + '.mp3', mimetype='audio/mpeg')
+
+
 if __name__ == '__main__':
-    port = find_free_port(5000)
-    print(f'  日语汉字学习工具  http://127.0.0.1:{port}')
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)

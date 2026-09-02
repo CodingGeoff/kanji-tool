@@ -32,6 +32,14 @@ input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px
 textarea{width:100%;min-height:90px;resize:vertical}
 ruby{ruby-position:over}
 rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
+/* 存疑读音：琥珀色注音 + 底部点线，低调但可辨识 */
+ruby.doubt rt{color:#c77f38}
+ruby.doubt{border-bottom:2px dotted #e3c08a;cursor:help}
+.spkbtn{border:none;background:none;cursor:pointer;font-size:15px;opacity:.55;padding:2px 4px;border-radius:6px;vertical-align:middle}
+.spkbtn:hover{opacity:1;background:#f2efe7}
+.spkbtn.playing{opacity:1}
+.spkbtn.big{font-size:20px}
+select.mini{padding:4px 8px;font-size:12px;border-radius:7px;color:var(--sub)}
 .jp{font-size:26px;line-height:2.3}
 .jp .unk{border-bottom:2px dotted #c77f38}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
@@ -79,6 +87,15 @@ rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
     <button data-tab="subtitle">字幕注音</button>
     <button data-tab="history">统计·历史</button>
   </nav>
+  <div class="row" style="margin-left:auto;gap:6px">
+    <select id="voiceSel" class="mini" title="朗读音色"></select>
+    <select id="rateSel" class="mini" title="朗读语速">
+      <option value="slow">慢速</option>
+      <option value="slower">稍慢</option>
+      <option value="normal" selected>正常</option>
+      <option value="fast">稍快</option>
+    </select>
+  </div>
 </header>
 <main>
 
@@ -161,7 +178,7 @@ rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
       <button class="btn primary" onclick="annotate()">注音</button>
       <label class="muted"><input type="checkbox" id="hideRuby" onchange="document.getElementById('subOut').classList.toggle('noruby',this.checked)"> 隐藏注音（自测模式，悬停显示）</label>
     </div>
-    <div class="muted" style="margin-top:8px">红色假名=正常注音（双引擎校验）；<span style="color:#c77f38">橙色⚠</span>=检测到多种可能读法，悬停查看候选；橙色虚线=词典未收录（拒绝猜测）。</div>
+    <div class="muted" style="margin-top:8px">红色假名=双引擎校验注音；<span style="color:#c77f38;border-bottom:2px dotted #e3c08a">琥珀色+点线</span>=存在其他读法候选，悬停查看；橙色虚线=词典未收录（拒绝猜测）。点 🔊 朗读整句，右上角可换音色和语速。</div>
     <div id="subOut" class="jp" style="margin-top:16px"></div>
   </div>
 </section>
@@ -197,13 +214,56 @@ function rubyHTML(tokens,hi){
     const cls=(hi&&t.s.includes(hi))?' style="color:var(--accent);font-weight:600"':'';
     if(t.unk) return `<span class="unk" title="词典未收录，读音未知（不猜测）">${s}</span>`;
     if(t.r){
-      const low=t.c==='low', alt=(t.alt&&t.alt.length)?`候选读法: ${t.alt.join(' / ')}`:'';
+      const low=t.c==='low', alt=(t.alt&&t.alt.length)?`其他读法候选: ${t.alt.join(' / ')}`:'';
       const title=alt?` title="${esc(alt)}"`:'';
-      const rtStyle=low?' style="color:#c77f38;font-weight:600"':'';
-      return `<ruby${cls}${title}>${s}<rt${rtStyle}>${esc(t.r)}${low?'⚠':''}</rt></ruby>`;
+      // 存疑读音：仅用低调的琥珀色注音+底部点线提示，悬停看候选
+      return `<ruby class="${low?'doubt':''}"${cls}${title}>${s}<rt>${esc(t.r)}</rt></ruby>`;
     }
     return `<span${cls}>${s}</span>`;
   }).join('');
+}
+
+/* ---------- 朗读 (TTS) ---------- */
+let _audio=null;
+function spkBtn(text,size){
+  return `<button class="spkbtn${size?' '+size:''}" data-text="${esc(text)}" title="朗读">🔊</button>`;
+}
+document.addEventListener('click', async e=>{
+  const btn=e.target.closest('.spkbtn'); if(!btn) return;
+  const text=btn.dataset.text; if(!text) return;
+  if(_audio){_audio.pause();_audio=null;}
+  document.querySelectorAll('.spkbtn.playing').forEach(b=>b.classList.remove('playing'));
+  btn.classList.add('playing'); btn.textContent='…';
+  try{
+    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,voice:localStorage.voice||'',rate:localStorage.rate||'normal'})});
+    if(!r.ok) throw new Error('tts');
+    const url=URL.createObjectURL(await r.blob());
+    _audio=new Audio(url);
+    btn.textContent='◼';
+    _audio.onended=()=>{btn.textContent='🔊';btn.classList.remove('playing');URL.revokeObjectURL(url);_audio=null;};
+    await _audio.play();
+  }catch(err){
+    // 服务端不可用时退回浏览器本地语音
+    try{
+      const u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';
+      const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ja'));
+      if(v)u.voice=v; speechSynthesis.speak(u);
+      u.onend=()=>{btn.textContent='🔊';btn.classList.remove('playing');};
+    }catch(e2){toast('朗读不可用');btn.textContent='🔊';btn.classList.remove('playing');}
+  }
+});
+async function initVoices(){
+  const d=await api('/api/voices');
+  const sel=$('#voiceSel');
+  sel.innerHTML=d.voices.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join('');
+  if(localStorage.voice) sel.value=localStorage.voice;
+  localStorage.voice=sel.value;
+  sel.onchange=()=>localStorage.voice=sel.value;
+  const rs=$('#rateSel');
+  if(localStorage.rate) rs.value=localStorage.rate;
+  localStorage.rate=rs.value;
+  rs.onchange=()=>localStorage.rate=rs.value;
 }
 function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
 
@@ -258,7 +318,7 @@ function showCard(){
       <div class="big">${esc(it.kanji)}</div>
       <div class="stage">阶段 ${stageNames[it.stage]||it.stage} ｜ 对${it.ok}次 错${it.ng}次</div>
       <div class="reveal-area" id="reveal" style="margin-top:18px">
-        ${it.sentence?`<div class="jp noruby" id="revSent">${rubyHTML(it.sentence.tokens,it.kanji)}</div>
+        ${it.sentence?`<div class="jp noruby" id="revSent">${rubyHTML(it.sentence.tokens,it.kanji)} ${spkBtn(it.sentence.text,'big')}</div>
           <div class="muted" id="revTr" style="visibility:hidden">${esc(it.sentence.translation||'')}</div>`:'<div class="muted">语料库暂无此字例句，先抓取更多语料</div>'}
       </div>
       <div class="row" style="justify-content:center;margin-top:22px" id="ansBtns">
@@ -324,7 +384,7 @@ async function loadCorpus(page){
   const d=await api(`/api/sentences?page=${page}&q=${q}`);
   $('#corpusList').innerHTML=d.rows.map(r=>`
     <div class="sent-item" id="sent-${r.id}">
-      <div class="jp" style="font-size:22px">${rubyHTML(r.tokens)}</div>
+      <div class="jp" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
       <div class="meta">
         <span class="tag">${esc(r.source)}</span><span>#${r.id}</span><span>${fmtTime(r.created_at)}</span>
@@ -381,7 +441,7 @@ async function kanjiDetail(k){
       </div>
     </div>
     <div style="margin-top:10px">${d.sentences.map(s=>`
-      <div class="sent-item"><div class="jp" style="font-size:21px">${rubyHTML(s.tokens,k)}</div>
+      <div class="sent-item"><div class="jp" style="font-size:21px">${rubyHTML(s.tokens,k)} ${spkBtn(s.text)}</div>
       ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}</div>`).join('')||'<div class="muted">暂无例句</div>'}
     </div>`;
   box.scrollIntoView({behavior:'smooth'});
@@ -391,7 +451,8 @@ async function kanjiDetail(k){
 async function annotate(){
   const text=$('#subText').value;if(!text.trim())return;
   const d=await api('/api/annotate',{method:'POST',body:JSON.stringify({text})});
-  $('#subOut').innerHTML=d.lines.map(l=>l.length?`<div>${rubyHTML(l)}</div>`:'<br>').join('');
+  const raws=text.split('\n');
+  $('#subOut').innerHTML=d.lines.map((l,i)=>l.length?`<div>${rubyHTML(l)} ${spkBtn(raws[i]||'')}</div>`:'<br>').join('');
 }
 
 /* ---------- 历史 ---------- */
@@ -409,6 +470,7 @@ async function clearHistory(){
 }
 
 /* ---------- 启动 ---------- */
+initVoices();
 loadReview();
 setInterval(refreshStats,60000);
 </script>
