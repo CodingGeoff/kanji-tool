@@ -2,6 +2,7 @@
 """日语汉字学习工具 —— Flask 后端"""
 import json
 import os
+import socket
 import time
 import threading
 from flask import Flask, request, jsonify, send_from_directory
@@ -15,6 +16,18 @@ import rag
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
+
+
+def find_free_port(base=5000, tries=50):
+    """从 base 开始向上探测可用端口（被占用则自动 +1），供启动器使用"""
+    for port in range(base, base + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f'{base}~{base + tries} 范围内没有可用端口')
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}

@@ -2,6 +2,8 @@
 """日语汉字学习工具 — 启动器：端口自动检测 + 浏览器自动打开 + 全 API 列表"""
 import os
 import sys
+import socket
+import time
 import webbrowser
 import threading
 
@@ -59,12 +61,26 @@ def _print_banner(port):
     return url
 
 
+def _open_browser_when_ready(url, port, timeout=30):
+    """轮询端口，服务真正开始监听后才打开浏览器，避免「拒绝连接」"""
+    def _wait():
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=0.5):
+                    webbrowser.open(url)
+                    return
+            except OSError:
+                time.sleep(0.2)
+    threading.Thread(target=_wait, daemon=True).start()
+
+
 def main():
     port = find_free_port(5000)
     url = _print_banner(port)
 
-    # 服务就绪后自动打开浏览器
-    threading.Timer(1.8, lambda: webbrowser.open(url)).start()
+    # 服务就绪后自动打开浏览器（使用实际端口）
+    _open_browser_when_ready(url, port)
 
     app.run(host='0.0.0.0', port=port, debug=False)
 
