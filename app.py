@@ -2,6 +2,7 @@
 """日语汉字学习工具 —— Flask 后端"""
 import json
 import time
+import socket
 import threading
 from flask import Flask, request, jsonify, send_from_directory
 
@@ -12,6 +13,18 @@ import furigana
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
+
+
+def find_free_port(start=5000, end=5049):
+    """从 start 端口起依次探测，返回第一个可用端口"""
+    for port in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                continue
+    return start  # fallback
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}
@@ -220,4 +233,6 @@ def api_clear_history():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = find_free_port(5000)
+    print(f'  日语汉字学习工具  http://127.0.0.1:{port}')
+    app.run(host='0.0.0.0', port=port, debug=False)
