@@ -407,9 +407,50 @@ def _build_merge_plan(text, words, positions, sud):
             continue
         if concat == sr:
             boosts.update(idxs)
+            # 词组归属合并：全为无活用词的复合词（立候補/市長選）→ 整词收录，
+            # 消灭「立(りっ)」这类孤字促音残段进入词组索引
+            if all(not (words[j].feature.cType or '').strip('*') for j in idxs):
+                merges[idxs[0]] = (idxs[-1] + 1, sr, concat)
         else:
             merges[idxs[0]] = (idxs[-1] + 1, sr, concat)
     return merges, boosts
+
+
+# ================================================================
+# 四字熟语读音表：UniDic 与 Sudachi 双双误读的成语（一石二鳥→いち・こく✗）
+# 表优先级最高，整词注音
+# ================================================================
+IDIOMS = {
+    '一石二鳥': 'いっせきにちょう', '一期一会': 'いちごいちえ',
+    '一朝一夕': 'いっちょういっせき', '十人十色': 'じゅうにんといろ',
+    '一日千秋': 'いちじつせんしゅう', '一喜一憂': 'いっきいちゆう',
+    '一挙両得': 'いっきょりょうとく', '三日坊主': 'みっかぼうず',
+    '八方美人': 'はっぽうびじん', '七転八倒': 'しちてんばっとう',
+    '四苦八苦': 'しくはっく', '自業自得': 'じごうじとく',
+    '以心伝心': 'いしんでんしん', '温故知新': 'おんこちしん',
+    '疑心暗鬼': 'ぎしんあんき', '切磋琢磨': 'せっさたくま',
+    '単刀直入': 'たんとうちょくにゅう', '優柔不断': 'ゆうじゅうふだん',
+    '臨機応変': 'りんきおうへん', '天真爛漫': 'てんしんらんまん',
+    '正々堂々': 'せいせいどうどう', '興味津々': 'きょうみしんしん',
+    '半信半疑': 'はんしんはんぎ', '無我夢中': 'むがむちゅう',
+    '猪突猛進': 'ちょとつもうしん', '傍若無人': 'ぼうじゃくぶじん',
+    '弱肉強食': 'じゃくにくきょうしょく', '適材適所': 'てきざいてきしょ',
+    '一生懸命': 'いっしょうけんめい', '他力本願': 'たりきほんがん',
+}
+
+
+def _idiom_merges(text, positions, merges):
+    """四字熟语命中 → 强制整词读音（覆盖引擎裁决）"""
+    for idiom, reading in IDIOMS.items():
+        start = text.find(idiom)
+        while start != -1:
+            end = start + len(idiom)
+            idxs = [j for j, (s2, e2) in enumerate(positions) if s2 >= start and e2 <= end]
+            if idxs and positions[idxs[0]][0] == start and positions[idxs[-1]][1] == end:
+                merges[idxs[0]] = (idxs[-1] + 1, reading, reading)
+                for j in idxs[1:]:
+                    merges.pop(j, None)
+            start = text.find(idiom, end)
 
 
 # ================================================================
@@ -430,6 +471,7 @@ def annotate(text: str):
         pos = start + len(w.surface)
 
     merges, boosts = _build_merge_plan(text, words, positions, sud)
+    _idiom_merges(text, positions, merges)
 
     tokens = []
     i = 0
@@ -446,7 +488,7 @@ def annotate(text: str):
             whole = ''.join(words[j].surface for j in range(i, end))
             aligned = _align(whole, sr)
             # 词典级整词读音获胜；若与MeCab拼读仅清浊之差则视为一致（无需警示）
-            if is_rendaku_variant(mecab_concat, sr):
+            if mecab_concat == sr or is_rendaku_variant(mecab_concat, sr):
                 extra = {'c': 'high'}
             else:
                 extra = {'c': 'mid', 'alt': [mecab_concat]}

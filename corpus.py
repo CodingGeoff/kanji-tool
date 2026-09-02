@@ -123,6 +123,9 @@ def _good_sentence(s):
         return False
     if re.search(r'[<>{}\[\]=|]', s):
         return False
+    # 传记资料句（中西立太（なかにしりった、1934年3月18日-2009年…））：生卒日期括注
+    if re.search(r'\d+年\d+月\d+日\s*[-−–—]', s):
+        return False
     # 资料碎片（身長157cm / 血液型A型）：ASCII字母≥2 且假名≤2 → 非自然语句
     kana_n = sum(1 for ch in s if 'ぁ' <= ch <= 'ん' or 'ァ' <= ch <= 'ヶ')
     ascii_alpha = sum(1 for ch in s if ch.isascii() and ch.isalpha())
