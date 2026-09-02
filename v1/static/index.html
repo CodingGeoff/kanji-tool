@@ -32,36 +32,6 @@ input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px
 textarea{width:100%;min-height:90px;resize:vertical}
 ruby{ruby-position:over}
 rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
-/* 存疑读音：琥珀色注音 + 底部点线，低调但可辨识 */
-ruby.doubt rt{color:#c77f38}
-ruby.doubt{border-bottom:2px dotted #e3c08a;cursor:help}
-.spkbtn{border:none;background:none;cursor:pointer;font-size:15px;opacity:.55;padding:2px 4px;border-radius:6px;vertical-align:middle}
-.spkbtn:hover{opacity:1;background:#f2efe7}
-.spkbtn.playing{opacity:1}
-.spkbtn.big{font-size:20px}
-select.mini{padding:4px 8px;font-size:12px;border-radius:7px;color:var(--sub)}
-.advtog{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--sub);cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:5px 10px;user-select:none}
-.advtog.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-.advtog input{display:none}
-body.adv .jp[data-raw]{cursor:pointer;transition:.15s}
-body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:inset 0 0 0 1px var(--gold)}
-/* 语法弹窗 */
-#gmodal{position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto}
-#gmodal .panel{background:var(--card);border-radius:16px;max-width:760px;width:100%;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
-.gp-item{border-left:3px solid var(--line);padding:10px 14px;margin:10px 0;background:#fbf9f4;border-radius:0 10px 10px 0}
-.gp-item .head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.gp-item .surf{font-weight:600;font-size:16px}
-.gp-item .expl{font-size:13.5px;color:#555;margin-top:5px;line-height:1.7}
-.gp-item .stru{font-size:12px;color:var(--sub);margin-top:3px}
-.lv{font-size:11px;font-weight:700;border-radius:6px;padding:2px 8px;color:#fff}
-.lv-N5{background:#7cb069}.lv-N4{background:#4d9dbb}.lv-N3{background:#c8a24b}.lv-N2{background:#c77f38}.lv-N1{background:#b5495b}
-.gp-item.b-N5{border-color:#7cb069}.gp-item.b-N4{border-color:#4d9dbb}.gp-item.b-N3{border-color:#c8a24b}.gp-item.b-N2{border-color:#c77f38}.gp-item.b-N1{border-color:#b5495b}
-.chip{border:1px solid var(--line);border-radius:16px;padding:4px 13px;font-size:13px;cursor:pointer;background:#fff;user-select:none}
-.chip.on.c-N5{background:#7cb069;color:#fff;border-color:#7cb069}
-.chip.on.c-N4{background:#4d9dbb;color:#fff;border-color:#4d9dbb}
-.chip.on.c-N3{background:#c8a24b;color:#fff;border-color:#c8a24b}
-.chip.on.c-N2{background:#c77f38;color:#fff;border-color:#c77f38}
-.chip.on.c-N1{background:#b5495b;color:#fff;border-color:#b5495b}
 .jp{font-size:26px;line-height:2.3}
 .jp .unk{border-bottom:2px dotted #c77f38}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
@@ -106,29 +76,9 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
     <button data-tab="learn">学新字</button>
     <button data-tab="corpus">语料库</button>
     <button data-tab="kanji">汉字库</button>
-    <button data-tab="favs">收藏夹</button>
     <button data-tab="subtitle">字幕注音</button>
     <button data-tab="history">统计·历史</button>
   </nav>
-  <div class="row" style="margin-left:auto;gap:6px">
-    <label class="advtog" id="advTog" title="开启后点击任意句子即可解析全部语法点">
-      <input type="checkbox" id="advMode" onchange="toggleAdv()"><span>高级模式</span>
-    </label>
-    <select id="voiceSel" class="mini" title="朗读音色">
-      <option value="ja-JP-NanamiNeural">七海 Nanami（女·日语原生）</option>
-      <option value="ja-JP-KeitaNeural">圭太 Keita（男·日语原生）</option>
-      <option value="en-US-AvaMultilingualNeural">Ava（女·柔和多语）</option>
-      <option value="en-US-EmmaMultilingualNeural">Emma（女·明快多语）</option>
-      <option value="en-US-AndrewMultilingualNeural">Andrew（男·沉稳多语）</option>
-      <option value="en-US-BrianMultilingualNeural">Brian（男·清晰多语）</option>
-    </select>
-    <select id="rateSel" class="mini" title="朗读语速">
-      <option value="slow">慢速</option>
-      <option value="slower">稍慢</option>
-      <option value="normal" selected>正常</option>
-      <option value="fast">稍快</option>
-    </select>
-  </div>
 </header>
 <main>
 
@@ -164,11 +114,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
       <button class="btn green" onclick="doFetch('wikinews')">维基新闻</button>
       <span class="muted" id="fetchStatus"></span>
     </div>
-    <div class="row" style="margin-top:8px">
-      <span class="muted">后台每 10 分钟自动抓取扩充；所有语料缓存到本地 SQLite，优先离线读取。</span>
-      <button class="btn" onclick="doCleanup()" title="修复内嵌注音文本、删除含时间戳/下划线的垃圾句子">🧹 清理脏数据</button>
-      <a class="btn" href="/api/backup" style="text-decoration:none">💾 备份数据库</a>
-    </div>
+    <div class="muted" style="margin-top:8px">后台每 10 分钟自动抓取扩充；所有语料缓存到本地 SQLite，优先离线读取。</div>
   </div>
   <div class="card">
     <div class="row">
@@ -205,31 +151,6 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
   <div class="card hidden" id="kanjiDetail"></div>
 </section>
 
-<!-- ============ 收藏夹 ============ -->
-<section id="tab-favs" class="hidden">
-  <div class="card">
-    <b>🔍 RAG 语义检索</b>
-    <div class="muted" style="margin:6px 0 10px">基于 TF-IDF 字符向量索引的相似度检索——输入任意日文或关键词，从本地语料库召回语义最相关的例句（不只是字面匹配）。</div>
-    <div class="row">
-      <input id="ragQ" placeholder="例：勉強を始める / 天气 / 食べ物…" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
-      <button class="btn primary" onclick="ragSearch()">检索</button>
-    </div>
-    <div id="ragOut" style="margin-top:8px"></div>
-  </div>
-  <div class="card">
-    <div class="row" style="justify-content:space-between"><b>⭐ 收藏的句子</b><span class="muted" id="favSentCount"></span></div>
-    <div id="favSents" style="margin-top:6px"></div>
-  </div>
-  <div class="card">
-    <div class="row" style="justify-content:space-between"><b>📚 收藏的词汇</b><span class="muted" id="favWordCount"></span></div>
-    <div class="row" style="margin-top:10px">
-      <input id="favWordIn" placeholder="输入词汇（自动注音），如：行方不明" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')favWordAdd()">
-      <button class="btn primary" onclick="favWordAdd()">添加</button>
-    </div>
-    <div id="favWords" style="margin-top:12px"></div>
-  </div>
-</section>
-
 <!-- ============ 字幕注音 ============ -->
 <section id="tab-subtitle" class="hidden">
   <div class="card">
@@ -240,7 +161,6 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
       <button class="btn primary" onclick="annotate()">注音</button>
       <label class="muted"><input type="checkbox" id="hideRuby" onchange="document.getElementById('subOut').classList.toggle('noruby',this.checked)"> 隐藏注音（自测模式，悬停显示）</label>
     </div>
-    <div class="muted" style="margin-top:8px">红色假名=双引擎校验注音；<span style="color:#c77f38;border-bottom:2px dotted #e3c08a">琥珀色+点线</span>=存在其他读法候选，悬停查看；橙色虚线=词典未收录（拒绝猜测）。点 🔊 朗读整句，右上角可换音色和语速。</div>
     <div id="subOut" class="jp" style="margin-top:16px"></div>
   </div>
 </section>
@@ -274,128 +194,10 @@ function rubyHTML(tokens,hi){
   return tokens.map(t=>{
     const s=esc(t.s);
     const cls=(hi&&t.s.includes(hi))?' style="color:var(--accent);font-weight:600"':'';
-    if(t.unk) return `<span class="unk" title="词典未收录，读音未知（不猜测）">${s}</span>`;
-    if(t.r){
-      const low=t.c==='low', alt=(t.alt&&t.alt.length)?`其他读法候选: ${t.alt.join(' / ')}`:'';
-      const title=alt?` title="${esc(alt)}"`:'';
-      // 存疑读音：仅用低调的琥珀色注音+底部点线提示，悬停看候选
-      return `<ruby class="${low?'doubt':''}"${cls}${title}>${s}<rt>${esc(t.r)}</rt></ruby>`;
-    }
+    if(t.unk) return `<span class="unk" title="词典未收录，读音未知">${s}</span>`;
+    if(t.r) return `<ruby${cls}>${s}<rt>${esc(t.r)}</rt></ruby>`;
     return `<span${cls}>${s}</span>`;
   }).join('');
-}
-
-/* ---------- 朗读 (TTS) ---------- */
-let _audio=null;
-function spkBtn(text,size){
-  return `<button class="spkbtn${size?' '+size:''}" data-text="${esc(text)}" title="朗读">🔊</button>`;
-}
-document.addEventListener('click', async e=>{
-  const btn=e.target.closest('.spkbtn'); if(!btn) return;
-  const text=btn.dataset.text; if(!text) return;
-  if(_audio){_audio.pause();_audio=null;}
-  document.querySelectorAll('.spkbtn.playing').forEach(b=>b.classList.remove('playing'));
-  btn.classList.add('playing'); btn.textContent='…';
-  try{
-    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text,voice:localStorage.voice||'',rate:localStorage.rate||'normal'})});
-    if(!r.ok) throw new Error('tts');
-    const url=URL.createObjectURL(await r.blob());
-    _audio=new Audio(url);
-    btn.textContent='◼';
-    _audio.onended=()=>{btn.textContent='🔊';btn.classList.remove('playing');URL.revokeObjectURL(url);_audio=null;};
-    await _audio.play();
-  }catch(err){
-    // 服务端不可用时退回浏览器本地语音
-    try{
-      const u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';
-      const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ja'));
-      if(v)u.voice=v; speechSynthesis.speak(u);
-      u.onend=()=>{btn.textContent='🔊';btn.classList.remove('playing');};
-    }catch(e2){toast('朗读不可用');btn.textContent='🔊';btn.classList.remove('playing');}
-  }
-});
-async function initVoices(){
-  const sel=$('#voiceSel'), rs=$('#rateSel');
-  try{
-    const d=await api('/api/voices');
-    if(d&&d.voices&&d.voices.length)
-      sel.innerHTML=d.voices.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join('');
-  }catch(e){/* 静态兜底选项已内置于HTML，接口失败也不影响 */}
-  if(localStorage.voice&&[...sel.options].some(o=>o.value===localStorage.voice)) sel.value=localStorage.voice;
-  localStorage.voice=sel.value;
-  sel.onchange=()=>localStorage.voice=sel.value;
-  if(localStorage.rate) rs.value=localStorage.rate;
-  localStorage.rate=rs.value;
-  rs.onchange=()=>localStorage.rate=rs.value;
-}
-
-/* ---------- 高级模式：语法解析 ---------- */
-function toggleAdv(){
-  const on=$('#advMode').checked;
-  localStorage.advMode=on?'1':'0';
-  document.body.classList.toggle('adv',on);
-  $('#advTog').classList.toggle('on',on);
-  if(on)toast('高级模式已开启：点击任意日语句子解析语法点');
-}
-function initAdv(){
-  const on=localStorage.advMode==='1';
-  $('#advMode').checked=on;
-  document.body.classList.toggle('adv',on);
-  $('#advTog').classList.toggle('on',on);
-}
-const LEVELS=['N5','N4','N3','N2','N1'];
-function gLv(){try{const v=JSON.parse(localStorage.gLv);return LEVELS.filter(l=>v[l]!==false).length?v:{}}catch(e){return {}}}
-let _gdata=null;
-document.addEventListener('click', e=>{
-  if(e.target.closest('.spkbtn'))return;
-  if(e.target.closest('#gmodal .panel'))return;
-  if(e.target.closest('#gmodal')){closeGrammar();return;}
-  const el=e.target.closest('.jp[data-raw]');
-  if(!el||document.body.className.indexOf('adv')<0)return;
-  const raw=el.dataset.raw; if(raw)openGrammar(raw);
-});
-async function openGrammar(text){
-  let m=$('#gmodal');
-  if(!m){m=document.createElement('div');m.id='gmodal';document.body.appendChild(m);}
-  m.style.display='flex';
-  m.innerHTML='<div class="panel"><div class="muted">解析语法中…</div></div>';
-  try{
-    _gdata=await api('/api/grammar',{method:'POST',body:JSON.stringify({text})});
-    renderGrammar();
-  }catch(e){m.innerHTML='<div class="panel"><div class="muted">解析失败</div></div>';}
-}
-function closeGrammar(){const m=$('#gmodal');if(m)m.style.display='none';}
-function toggleLv(l){
-  const v=gLv(); v[l]=(v[l]===false); localStorage.gLv=JSON.stringify(v); renderGrammar();
-}
-function renderGrammar(){
-  const d=_gdata; if(!d)return;
-  const v=gLv();
-  const active=LEVELS.filter(l=>v[l]!==false);
-  const pts=d.points.filter(p=>active.includes(p.level));
-  const counts={}; d.points.forEach(p=>counts[p.level]=(counts[p.level]||0)+1);
-  $('#gmodal').innerHTML=`<div class="panel">
-    <div class="row" style="justify-content:space-between">
-      <b>语法解析 <span class="muted" style="font-weight:400">共 ${d.points.length} 个语法点 · 由浅入深</span></b>
-      <button class="btn" onclick="closeGrammar()">关闭 ✕</button>
-    </div>
-    <div class="jp" style="margin:14px 0;font-size:23px">${rubyHTML(d.tokens)} ${spkBtn(d.text)}</div>
-    <div class="row" style="gap:6px;margin-bottom:6px">
-      ${LEVELS.map(l=>`<span class="chip c-${l} ${v[l]!==false?'on':''}" onclick="toggleLv('${l}')">${l}${counts[l]?` (${counts[l]})`:''}</span>`).join('')}
-      <span class="muted" style="font-size:12px">点击等级可过滤</span>
-    </div>
-    ${pts.map(p=>`
-      <div class="gp-item b-${p.level}">
-        <div class="head">
-          <span class="lv lv-${p.level}">${p.level}</span>
-          <span class="surf">${esc(p.name)}</span>
-          <span class="tag">句中形态:「${esc(p.surface)}」</span>
-        </div>
-        <div class="expl">${esc(p.explain)}</div>
-        ${p.structure!=='—'?`<div class="stru">接续: ${esc(p.structure)}</div>`:''}
-      </div>`).join('')||'<div class="muted" style="padding:16px">当前过滤条件下没有语法点，试试打开更多等级</div>'}
-  </div>`;
 }
 function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
 
@@ -405,7 +207,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active');
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,history:loadHistory}[b.dataset.tab]||(()=>{}))();
+  ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),history:loadHistory}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ---------- 统计 ---------- */
@@ -450,7 +252,7 @@ function showCard(){
       <div class="big">${esc(it.kanji)}</div>
       <div class="stage">阶段 ${stageNames[it.stage]||it.stage} ｜ 对${it.ok}次 错${it.ng}次</div>
       <div class="reveal-area" id="reveal" style="margin-top:18px">
-        ${it.sentence?`<div class="jp noruby" id="revSent" data-raw="${esc(it.sentence.text)}">${rubyHTML(it.sentence.tokens,it.kanji)} ${spkBtn(it.sentence.text,'big')}<button class="spkbtn big" onclick="favToggle(${it.sentence.id})" title="收藏本句">⭐</button></div>
+        ${it.sentence?`<div class="jp noruby" id="revSent">${rubyHTML(it.sentence.tokens,it.kanji)}</div>
           <div class="muted" id="revTr" style="visibility:hidden">${esc(it.sentence.translation||'')}</div>`:'<div class="muted">语料库暂无此字例句，先抓取更多语料</div>'}
       </div>
       <div class="row" style="justify-content:center;margin-top:22px" id="ansBtns">
@@ -509,19 +311,17 @@ function toggleAddForm(){$('#addForm').classList.toggle('hidden')}
 async function addSentence(){
   const d=await api('/api/sentences',{method:'POST',body:JSON.stringify({text:$('#addText').value,translation:$('#addTrans').value})});
   if(d.error)return toast(d.error);
-  $('#addText').value='';$('#addTrans').value='';
-  toast(d.repaired?'检测到内嵌注音，已自动修复后入库':'已添加并自动注音');loadCorpus(1);
+  $('#addText').value='';$('#addTrans').value='';toast('已添加并自动注音');loadCorpus(1);
 }
 async function loadCorpus(page){
   const q=encodeURIComponent($('#corpusQ').value||'');
   const d=await api(`/api/sentences?page=${page}&q=${q}`);
   $('#corpusList').innerHTML=d.rows.map(r=>`
     <div class="sent-item" id="sent-${r.id}">
-      <div class="jp" data-raw="${esc(r.text)}" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+      <div class="jp" style="font-size:22px">${rubyHTML(r.tokens)}</div>
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
       <div class="meta">
         <span class="tag">${esc(r.source)}</span><span>#${r.id}</span><span>${fmtTime(r.created_at)}</span>
-        <button onclick="favToggle(${r.id},this)" style="font-size:14px">${r.fav?'★已收藏':'☆收藏'}</button>
         <button onclick="editSentence(${r.id},this)">编辑</button>
         <button onclick="delSentence(${r.id})">删除</button>
       </div>
@@ -575,7 +375,7 @@ async function kanjiDetail(k){
       </div>
     </div>
     <div style="margin-top:10px">${d.sentences.map(s=>`
-      <div class="sent-item"><div class="jp" data-raw="${esc(s.text)}" style="font-size:21px">${rubyHTML(s.tokens,k)} ${spkBtn(s.text)}</div>
+      <div class="sent-item"><div class="jp" style="font-size:21px">${rubyHTML(s.tokens,k)}</div>
       ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}</div>`).join('')||'<div class="muted">暂无例句</div>'}
     </div>`;
   box.scrollIntoView({behavior:'smooth'});
@@ -585,94 +385,11 @@ async function kanjiDetail(k){
 async function annotate(){
   const text=$('#subText').value;if(!text.trim())return;
   const d=await api('/api/annotate',{method:'POST',body:JSON.stringify({text})});
-  const raws=text.split('\n');
-  $('#subOut').innerHTML=d.lines.map((l,i)=>l.length?`<div class="jp" data-raw="${esc(raws[i]||'')}">${rubyHTML(l)} ${spkBtn(raws[i]||'')}</div>`:'<br>').join('');
-}
-
-
-/* ---------- 收藏夹 ---------- */
-async function favToggle(sid,btn){
-  const d=await api('/api/favs/sentence/toggle',{method:'POST',body:JSON.stringify({sentence_id:sid})});
-  if(btn)btn.textContent=d.fav?'★已收藏':'☆收藏';
-  toast(d.fav?'已收藏':'已取消收藏');
-}
-async function loadFavs(){
-  const d=await api('/api/favs');
-  $('#favSentCount').textContent=`共 ${d.sentences.length} 句`;
-  $('#favWordCount').textContent=`共 ${d.words.length} 词`;
-  $('#favSents').innerHTML=d.sentences.map(s=>`
-    <div class="sent-item">
-      <div class="jp" data-raw="${esc(s.text)}" style="font-size:21px">${rubyHTML(s.tokens)} ${spkBtn(s.text)}</div>
-      ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}
-      ${s.fav_note?`<div style="font-size:13px;color:var(--accent2);margin-top:3px">📝 ${esc(s.fav_note)}</div>`:''}
-      <div class="meta">
-        <span class="tag">${esc(s.source)}</span>
-        <button onclick="favNote(${s.id},'${esc(s.fav_note||'')}')">笔记</button>
-        <button onclick="showSimilar(${s.id},this)">🔍 找相似</button>
-        <button onclick="favToggle(${s.id}).then(loadFavs)">移除</button>
-      </div>
-      <div class="simbox" id="sim-${s.id}"></div>
-    </div>`).join('')||'<div class="muted" style="padding:12px 0">还没有收藏的句子——在语料库或复习时点「☆收藏」</div>';
-  $('#favWords').innerHTML=d.words.map(w=>`
-    <div class="sent-item row" style="justify-content:space-between">
-      <div><span style="font-size:20px">${esc(w.word)}</span>
-        <small style="color:var(--accent);margin-left:6px">${esc(w.reading||'')}</small>
-        ${w.note?`<span class="muted" style="margin-left:10px">📝 ${esc(w.note)}</span>`:''}
-        ${spkBtn(w.word)}
-      </div>
-      <div class="row" style="gap:4px">
-        <button class="btn" onclick="location.hash='';document.querySelector('[data-tab=corpus]').click();$('#corpusQ').value='${esc(w.word)}';loadCorpus(1)">查例句</button>
-        <button class="btn" onclick="favWordNote('${esc(w.word)}','${esc(w.note||'')}')">笔记</button>
-        <button class="btn danger" onclick="api('/api/favs/word/'+encodeURIComponent('${esc(w.word)}'),{method:'DELETE'}).then(loadFavs)">删除</button>
-      </div>
-    </div>`).join('')||'<div class="muted">还没有收藏的词汇</div>';
-}
-async function favNote(sid,cur){
-  const note=prompt('句子笔记：',cur); if(note===null)return;
-  await api('/api/favs/sentence/'+sid,{method:'PUT',body:JSON.stringify({note})});loadFavs();
-}
-async function favWordAdd(){
-  const w=$('#favWordIn').value.trim(); if(!w)return;
-  const d=await api('/api/favs/word',{method:'POST',body:JSON.stringify({word:w})});
-  if(d.error)return toast(d.error);
-  $('#favWordIn').value='';toast(`已收藏「${d.word}」(${d.reading})`);loadFavs();
-}
-async function favWordNote(w,cur){
-  const note=prompt('词汇笔记：',cur); if(note===null)return;
-  await api('/api/favs/word/'+encodeURIComponent(w),{method:'PUT',body:JSON.stringify({note})});loadFavs();
-}
-async function showSimilar(sid,btn){
-  const box=$('#sim-'+sid);
-  if(box.innerHTML){box.innerHTML='';return;}
-  btn.textContent='…';
-  const d=await api('/api/rag/similar/'+sid);
-  btn.textContent='🔍 找相似';
-  box.innerHTML=d.rows.length?'<div class="muted" style="margin-top:8px">相似例句：</div>'+d.rows.map(r=>`
-    <div style="padding:6px 0 6px 14px;border-left:2px solid var(--line)">
-      <span class="jp" data-raw="${esc(r.text)}" style="font-size:18px">${rubyHTML(r.tokens)}</span>
-      <span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span> ${spkBtn(r.text)}
-    </div>`).join(''):'<div class="muted" style="margin-top:8px">暂无相似句</div>';
-}
-async function ragSearch(){
-  const q=$('#ragQ').value.trim(); if(!q)return;
-  $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
-  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,limit:10})});
-  $('#ragOut').innerHTML=(d.rows||[]).map(r=>`
-    <div class="sent-item">
-      <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
-      ${r.translation?`<div class="tr muted">${esc(r.translation)}</div>`:''}
-      <div class="meta"><span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span>
-        <button onclick="favToggle(${r.id},this)">☆收藏</button></div>
-    </div>`).join('')||'<div class="muted" style="padding:10px 0">没有找到相关例句</div>';
-}
-async function doCleanup(){
-  toast('清理中…');
-  const d=await api('/api/cleanup',{method:'POST'});
-  toast(`清理完成：修复 ${d.repaired} 句、删除 ${d.removed} 句`);loadCorpus(1);
+  $('#subOut').innerHTML=d.lines.map(l=>l.length?`<div>${rubyHTML(l)}</div>`:'<br>').join('');
 }
 
 /* ---------- 历史 ---------- */
-const typeLabel={fetch:'📥抓取',review:'📖复习',learn:'✏️学习',add:'➕添加',edit:'✍️编辑',delete:'🗑️删除',remove:'🗑️移除',annotate:'🔤注音',tts:'🔊朗读',grammar:'📐语法',fav:'⭐收藏',rag:'🔍检索',cleanup:'🧹清理'};
+const typeLabel={fetch:'📥抓取',review:'📖复习',learn:'✏️学习',add:'➕添加',edit:'✍️编辑',delete:'🗑️删除',remove:'🗑️移除',annotate:'🔤注音'};
 async function loadHistory(){
   await refreshStats();
   const d=await api('/api/history?limit=150');
@@ -686,8 +403,6 @@ async function clearHistory(){
 }
 
 /* ---------- 启动 ---------- */
-initVoices();
-initAdv();
 loadReview();
 setInterval(refreshStats,60000);
 </script>

@@ -47,17 +47,6 @@ def init_db():
             ok INTEGER DEFAULT 0,
             ng INTEGER DEFAULT 0
         );
-        CREATE TABLE IF NOT EXISTS fav_sentences(
-            sentence_id INTEGER PRIMARY KEY,
-            note TEXT DEFAULT '',
-            created_at REAL
-        );
-        CREATE TABLE IF NOT EXISTS fav_words(
-            word TEXT PRIMARY KEY,
-            reading TEXT,
-            note TEXT DEFAULT '',
-            created_at REAL
-        );
         CREATE TABLE IF NOT EXISTS history(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL,

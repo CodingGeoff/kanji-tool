@@ -10,6 +10,8 @@ import db
 import srs
 import corpus
 import furigana
+import grammar
+import rag
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
@@ -79,8 +81,11 @@ def api_sentences():
         kanji=request.args.get('kanji') or None,
         page=int(request.args.get('page', 1)),
         per=int(request.args.get('per', 20)))
+    with db.get_conn() as c:
+        fav_ids = {x['sentence_id'] for x in c.execute('SELECT sentence_id FROM fav_sentences')}
     for r in rows:
         r['tokens'] = json.loads(r['tokens'])
+        r['fav'] = r['id'] in fav_ids
     return jsonify({'total': total, 'rows': rows})
 
 
@@ -90,13 +95,16 @@ def api_add_sentence():
     text = (d.get('text') or '').strip()
     if not text:
         return jsonify({'error': '句子不能为空'}), 400
+    if corpus.is_junk(text):
+        return jsonify({'error': '文本包含垃圾字符（下划线/时间戳/测试标记），已拒绝入库'}), 400
+    text, n_fix = corpus.repair_inline_furigana(text)
     tokens = furigana.annotate(text)
     kw = furigana.extract_kanji_words(tokens)
     sid = db.add_sentence(text, d.get('translation') or None, 'manual', None, tokens, kw)
     if sid is None:
         return jsonify({'error': '该句子已存在'}), 409
     db.log('add', f'手动添加语料：{text[:30]}')
-    return jsonify({'id': sid})
+    return jsonify({'id': sid, 'repaired': n_fix >= 2, 'text': text})
 
 
 @app.route('/api/sentences/<int:sid>', methods=['PUT'])
@@ -204,6 +212,166 @@ def api_reannotate():
     return jsonify({'ok': True, 'count': n})
 
 
+# ---------- 语法解析（高级模式） ----------
+@app.route('/api/grammar', methods=['POST'])
+def api_grammar():
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if not text:
+        return jsonify({'error': 'empty'}), 400
+    points = grammar.analyze(text)
+    tokens = furigana.annotate(text)
+    db.log('grammar', f'语法解析：{text[:24]}（{len(points)}个语法点）')
+    return jsonify({'text': text, 'tokens': tokens, 'points': points})
+
+
+# ---------- 语料清理（脏数据修复/剔除） ----------
+@app.route('/api/cleanup', methods=['POST'])
+def api_cleanup():
+    removed, repaired = 0, 0
+    with db.get_conn() as c:
+        rows = c.execute('SELECT id, text FROM sentences').fetchall()
+    for r in rows:
+        if corpus.is_junk(r['text']):
+            db.delete_sentence(r['id'])
+            removed += 1
+            continue
+        fixed, n = corpus.repair_inline_furigana(r['text'])
+        if n >= 2 and fixed != r['text']:
+            if db.sentence_exists(fixed):
+                db.delete_sentence(r['id'])
+                removed += 1
+            else:
+                tokens = furigana.annotate(fixed)
+                kw = furigana.extract_kanji_words(tokens)
+                db.update_sentence(r['id'], text=fixed, tokens=tokens, kanji_words=kw)
+                repaired += 1
+    db.log('cleanup', f'语料清理：修复{repaired}句、删除{removed}句垃圾数据')
+    return jsonify({'repaired': repaired, 'removed': removed})
+
+
+# ---------- 收藏夹：句子 ----------
+@app.route('/api/favs')
+def api_favs():
+    with db.get_conn() as c:
+        sents = c.execute('''
+            SELECT s.*, f.note fav_note, f.created_at fav_at FROM fav_sentences f
+            JOIN sentences s ON s.id=f.sentence_id ORDER BY f.created_at DESC''').fetchall()
+        words = c.execute('SELECT * FROM fav_words ORDER BY created_at DESC').fetchall()
+    out_s = []
+    for r in sents:
+        d = dict(r)
+        d['tokens'] = json.loads(d['tokens'])
+        out_s.append(d)
+    return jsonify({'sentences': out_s, 'words': [dict(w) for w in words]})
+
+
+@app.route('/api/favs/sentence/toggle', methods=['POST'])
+def api_fav_toggle():
+    sid = (request.json or {}).get('sentence_id')
+    with db._lock, db.get_conn() as c:
+        if c.execute('SELECT 1 FROM fav_sentences WHERE sentence_id=?', (sid,)).fetchone():
+            c.execute('DELETE FROM fav_sentences WHERE sentence_id=?', (sid,))
+            fav = False
+        else:
+            c.execute('INSERT INTO fav_sentences(sentence_id,note,created_at) VALUES(?,?,?)',
+                      (sid, '', time.time()))
+            fav = True
+    db.log('fav', f'{"收藏" if fav else "取消收藏"}句子 #{sid}')
+    return jsonify({'fav': fav})
+
+
+@app.route('/api/favs/sentence/<int:sid>', methods=['PUT'])
+def api_fav_note(sid):
+    note = (request.json or {}).get('note', '')
+    with db._lock, db.get_conn() as c:
+        c.execute('UPDATE fav_sentences SET note=? WHERE sentence_id=?', (note, sid))
+    db.log('fav', f'更新句子收藏笔记 #{sid}')
+    return jsonify({'ok': True})
+
+
+# ---------- 收藏夹：词汇 ----------
+@app.route('/api/favs/word', methods=['POST'])
+def api_fav_word_add():
+    d = request.json or {}
+    word = (d.get('word') or '').strip()
+    if not word:
+        return jsonify({'error': '词汇不能为空'}), 400
+    tokens = furigana.annotate(word)
+    reading = ''.join((t.get('r') if t.get('r') is not None else t['s']) for t in tokens)
+    with db._lock, db.get_conn() as c:
+        try:
+            c.execute('INSERT INTO fav_words(word,reading,note,created_at) VALUES(?,?,?,?)',
+                      (word, reading, d.get('note') or '', time.time()))
+        except Exception:
+            return jsonify({'error': '该词已在收藏夹'}), 409
+    db.log('fav', f'收藏词汇「{word}」({reading})')
+    return jsonify({'word': word, 'reading': reading})
+
+
+@app.route('/api/favs/word/<word>', methods=['PUT'])
+def api_fav_word_edit(word):
+    note = (request.json or {}).get('note', '')
+    with db._lock, db.get_conn() as c:
+        c.execute('UPDATE fav_words SET note=? WHERE word=?', (note, word))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/favs/word/<word>', methods=['DELETE'])
+def api_fav_word_del(word):
+    with db._lock, db.get_conn() as c:
+        c.execute('DELETE FROM fav_words WHERE word=?', (word,))
+    db.log('fav', f'移除收藏词汇「{word}」')
+    return jsonify({'ok': True})
+
+
+# ---------- RAG 语义检索 ----------
+@app.route('/api/rag/search', methods=['POST'])
+def api_rag_search():
+    d = request.json or {}
+    q = (d.get('q') or '').strip()
+    if not q:
+        return jsonify({'error': 'empty'}), 400
+    hits = rag.INDEX.query(q, limit=int(d.get('limit', 10)))
+    out = []
+    with db.get_conn() as c:
+        for sid, score in hits:
+            r = c.execute('SELECT * FROM sentences WHERE id=?', (sid,)).fetchone()
+            if r:
+                item = dict(r)
+                item['tokens'] = json.loads(item['tokens'])
+                item['score'] = score
+                out.append(item)
+    db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果）')
+    return jsonify({'rows': out})
+
+
+@app.route('/api/rag/similar/<int:sid>')
+def api_rag_similar(sid):
+    with db.get_conn() as c:
+        r = c.execute('SELECT text FROM sentences WHERE id=?', (sid,)).fetchone()
+    if not r:
+        return jsonify({'rows': []})
+    hits = rag.INDEX.query(r['text'], limit=6, exclude_sid=sid)
+    out = []
+    with db.get_conn() as c:
+        for hid, score in hits:
+            row = c.execute('SELECT * FROM sentences WHERE id=?', (hid,)).fetchone()
+            if row:
+                item = dict(row)
+                item['tokens'] = json.loads(item['tokens'])
+                item['score'] = score
+                out.append(item)
+    return jsonify({'rows': out})
+
+
+# ---------- 数据备份 ----------
+@app.route('/api/backup')
+def api_backup():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'kanji.db',
+                               as_attachment=True, download_name='kanji_backup.db')
+
+
 # ---------- 历史记录 ----------
 @app.route('/api/history')
 def api_history():
@@ -270,4 +438,4 @@ def api_tts():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

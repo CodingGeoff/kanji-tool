@@ -23,57 +23,6 @@ def _clean(s):
     return s.strip()
 
 
-# ---------------- 脏数据防御 ----------------
-_JUNK_RE = re.compile(r'[_＿]|\d{7,}|テスト文|[A-Za-z]{25,}')
-_KANJI_KANA_RE = re.compile(r'([一-龥々〆ヶ]+)([ぁ-んー]+)')
-
-
-def is_junk(text: str) -> bool:
-    """明显的垃圾文本：下划线/超长数字串(时间戳)/测试标记"""
-    return bool(_JUNK_RE.search(text))
-
-
-def repair_inline_furigana(text: str):
-    """
-    修复「内嵌注音」文本（从注音网页复制出来的 日本にっぽん語ご 形式）。
-    原理：对每个 [汉字段+假名段]，尝试把假名段前缀作为该汉字段的注音剥离——
-    仅当「汉字段+剩余假名」整体的词典读音 == 被剥离注音+剩余假名 时才剥离，
-    且整句至少发生 2 处剥离才认定为内嵌注音文本（防止误伤正常句子）。
-    返回 (修复后文本, 剥离次数)
-    """
-    strips = 0
-
-    def _sub(m):
-        nonlocal strips
-        kanji, kana = m.group(1), m.group(2)
-        for L in range(1, len(kana) + 1):   # 最小剥离原则，防止过度剥离
-            ruby, rest = kana[:L], kana[L:]
-            candidate = kanji + rest
-            try:
-                readings = set()
-                for path in furigana._tagger.nbestToNodeList(candidate, 3):
-                    r, ok = '', True
-                    for w in path:
-                        k = w.feature.kana
-                        if not k or k == '*':
-                            ok = False
-                            break
-                        r += furigana.kata_to_hira(k)
-                    if ok:
-                        readings.add(r)
-            except Exception:
-                readings = set()
-            if (ruby + rest) in readings:
-                strips += 1
-                return candidate
-        return m.group(0)
-
-    fixed = _KANJI_KANA_RE.sub(_sub, text)
-    if strips >= 2:
-        return fixed, strips
-    return text, 0
-
-
 def _good_sentence(s):
     if not (4 <= len(s) <= 90):
         return False
@@ -86,9 +35,6 @@ def _good_sentence(s):
 
 def _store(text, translation, source, url, results):
     text = _clean(text)
-    if is_junk(text):
-        return
-    text, _n = repair_inline_furigana(text)
     if not _good_sentence(text) or db.sentence_exists(text):
         return
     tokens = furigana.annotate(text)
