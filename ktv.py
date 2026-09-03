@@ -298,6 +298,27 @@ def parse_import(text: str):
 _KANJI_RE = re.compile(r'[一-鿿]')
 
 
+def _respace(tokens, line: str):
+    """MeCab 会吞掉原文空格：按原文位置把空格补回 token 流，保持英文单词间距。"""
+    out, pos = [], 0
+    for t in tokens:
+        s = t.get('s') or ''
+        if not s:
+            continue
+        idx = line.find(s, pos)
+        if idx < 0 or idx == pos:
+            out.append(t)
+            if idx >= 0:
+                pos = idx + len(s)
+            continue
+        out.append({'s': line[pos:idx], 'r': None})   # 被吞掉的空格/符号
+        out.append(t)
+        pos = idx + len(s)
+    if pos < len(line):
+        out.append({'s': line[pos:], 'r': None})
+    return out
+
+
 def annotate_lyrics(lyrics: str):
     """返回 (tokens, kanji_count)。tokens 与 lyrics.split('\\n') 逐行对齐：空行=None；
     普通行=furigana token 列表；纯罗马音行=[{s:原行, k:片假名}]。"""
