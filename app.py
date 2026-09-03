@@ -2,7 +2,6 @@
 """日语汉字学习工具 —— Flask 后端"""
 import json
 import os
-import socket
 import time
 import threading
 from flask import Flask, request, jsonify, send_from_directory
@@ -13,21 +12,10 @@ import corpus
 import furigana
 import grammar
 import rag
+import ktv
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
-
-
-def find_free_port(base=5000, tries=50):
-    """从 base 开始向上探测可用端口（被占用则自动 +1），供启动器使用"""
-    for port in range(base, base + tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('0.0.0.0', port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f'{base}~{base + tries} 范围内没有可用端口')
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}
@@ -71,9 +59,11 @@ def stats():
     with db.get_conn() as c:
         n_sent = c.execute('SELECT COUNT(*) n FROM sentences').fetchone()['n']
         n_kanji = c.execute('SELECT COUNT(DISTINCT kanji) n FROM kanji_index').fetchone()['n']
+        n_song = c.execute('SELECT COUNT(*) n FROM songs').fetchone()['n']
         by_src = {r['source']: r['n'] for r in
                   c.execute('SELECT source, COUNT(*) n FROM sentences GROUP BY source')}
-    return jsonify({'sentences': n_sent, 'kanji': n_kanji, 'by_source': by_src,
+    return jsonify({'sentences': n_sent, 'kanji': n_kanji, 'songs': n_song,
+                    'by_source': by_src,
                     'srs': srs.overview(), 'fetching': _fetch_state['running'],
                     'last_fetch': _fetch_state['last'], 'last_added': _fetch_state['last_added']})
 
@@ -390,6 +380,82 @@ def api_rag_similar(sid):
                 item['score'] = score
                 out.append(item)
     return jsonify({'rows': out})
+
+
+# ---------- KTV 歌词 ----------
+@app.route('/api/songs')
+def api_songs():
+    q = (request.args.get('q') or '').strip()
+    songs = db.list_songs(q, limit=min(int(request.args.get('limit', 200)), 500))
+    return jsonify({'songs': songs, 'total': len(songs)})
+
+
+@app.route('/api/songs/<int:sid>')
+def api_song_get(sid):
+    row = db.get_song(sid)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    row['tokens'] = json.loads(row['tokens']) if row['tokens'] else []
+    return jsonify(row)
+
+
+@app.route('/api/songs/import', methods=['POST'])
+def api_songs_import():
+    d = request.json or {}
+    text = d.get('text') or ''
+    if not text.strip():
+        return jsonify({'error': 'empty'}), 400
+    parsed = ktv.parse_import(text)
+    if d.get('dry_run'):
+        return jsonify({'songs': [
+            {'title': p['title'], 'artist': p['artist'],
+             'lines': len([l for l in p['lyrics'].split('\n') if l.strip()])}
+            for p in parsed]})
+    created, skipped = [], []
+    for p in parsed:
+        if db.song_exists(p['title'], p['lyrics']):
+            skipped.append(p['title'])
+            continue
+        tokens, kcount = ktv.annotate_lyrics(p['lyrics'])
+        sid = db.add_song(p['title'], p['artist'], p['lyrics'], tokens, kcount)
+        db.log('song', f'导入歌词《{p["title"]}》（{kcount}个汉字）')
+        created.append({'id': sid, 'title': p['title']})
+    return jsonify({'created': created, 'skipped': skipped})
+
+
+@app.route('/api/songs/<int:sid>', methods=['POST'])
+def api_song_update(sid):
+    row = db.get_song(sid)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    d = request.json or {}
+    title = (d.get('title') if d.get('title') is not None else row['title'])
+    artist = (d.get('artist') if d.get('artist') is not None else row['artist'])
+    title, artist = (title or '未命名歌曲').strip()[:120], (artist or '').strip()[:120]
+    lyrics = d.get('lyrics')
+    if lyrics is not None:
+        lyrics = ktv.normalize_lyrics(lyrics)
+        if not lyrics:
+            return jsonify({'error': '歌词不能为空'}), 400
+        tokens, kcount = ktv.annotate_lyrics(lyrics)
+        db.update_song(sid, title=title, artist=artist, lyrics=lyrics,
+                       tokens=tokens, kanji_count=kcount)
+        db.log('song', f'编辑歌词《{title}》')
+    else:
+        db.update_song(sid, title=title, artist=artist)
+    row = db.get_song(sid)
+    row['tokens'] = json.loads(row['tokens']) if row['tokens'] else []
+    return jsonify(row)
+
+
+@app.route('/api/songs/<int:sid>', methods=['DELETE'])
+def api_song_delete(sid):
+    row = db.get_song(sid)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    db.delete_song(sid)
+    db.log('song', f'删除歌词《{row["title"]}》')
+    return jsonify({'ok': True})
 
 
 # ---------- 数据备份 ----------

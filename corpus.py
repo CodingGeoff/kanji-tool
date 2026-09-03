@@ -124,7 +124,10 @@ def _good_sentence(s):
     if re.search(r'[<>{}\[\]=|]', s):
         return False
     # 传记资料句（中西立太（なかにしりった、1934年3月18日-2009年…））：生卒日期括注
-    if re.search(r'\d+年\d+月\d+日\s*[-−–—]', s):
+    # 兼容夹注纪年写法：1880年〈明治13年〉7月16日-1942年（月日- 连排）、1880年-1942年（年份区间）
+    if re.search(r'\d+年\d+月\d+日\s*[-−–—]', s) or \
+       re.search(r'\d{1,2}月\d{1,2}日\s*[-−–—]\s*\d', s) or \
+       re.search(r'\d{3,4}年\s*[-−–—]\s*\d{3,4}年', s):
         return False
     # 资料碎片（身長157cm / 血液型A型）：ASCII字母≥2 且假名≤2 → 非自然语句
     kana_n = sum(1 for ch in s if 'ぁ' <= ch <= 'ん' or 'ァ' <= ch <= 'ヶ')

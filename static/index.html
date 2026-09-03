@@ -114,6 +114,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
     <button data-tab="kanji">汉字库</button>
     <button data-tab="favs">收藏夹</button>
     <button data-tab="subtitle">字幕注音</button>
+    <button data-tab="ktv">KTV歌词</button>
     <button data-tab="history">统计·历史</button>
   </nav>
   <div class="row" style="margin-left:auto;gap:6px">
@@ -251,6 +252,75 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
   </div>
 </section>
 
+<!-- ============ KTV 歌词 ============ -->
+<section id="tab-ktv" class="hidden">
+  <!-- 歌单 -->
+  <div id="ktvListWrap">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <input id="ktvQ" placeholder="🔍 搜歌名 / 歌手 / 歌词内容…" oninput="ktvSearchDebounced()" style="flex:1;min-width:150px">
+        <button class="btn primary" onclick="ktvShowImport(true)">＋ 导入歌词</button>
+      </div>
+      <div class="muted" style="margin-top:8px;font-size:12.5px">
+        一次可贴一首或多首：用 <b>《歌名》</b>、<b>曲名：</b>、<b>歌名 - 歌手</b> 或 <b>---</b> 分隔多首；段与段之间空一行自动分段。
+        汉字自动标大号平假名；纯罗马音行可一键转片假名。
+      </div>
+    </div>
+    <div id="ktvSongList" style="margin-top:12px"></div>
+  </div>
+
+  <!-- 导入面板 -->
+  <div id="ktvImport" class="card hidden" style="margin-bottom:12px">
+    <div class="row" style="justify-content:space-between">
+      <b>导入歌词（可整段粘贴多首，自动整理）</b>
+      <button class="btn" onclick="ktvShowImport(false)">✕ 关闭</button>
+    </div>
+    <textarea id="ktvPaste" style="min-height:220px;margin-top:8px" placeholder="例：&#10;《Lemon》&#10;夢ならばどれほどよかったのに&#10;現実はそうはいかない…&#10;&#10;---&#10;&#10;【打上花火】&#10;あの日見た花&#10;"></textarea>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap">
+      <button class="btn" onclick="ktvPreview()">预览识别结果</button>
+      <button class="btn primary" onclick="ktvDoImport()">全部导入</button>
+    </div>
+    <div id="ktvImportPrev" style="margin-top:8px"></div>
+  </div>
+
+  <!-- 歌曲视图 -->
+  <div id="ktvSongView" class="hidden">
+    <div class="card" style="position:sticky;top:0;z-index:5">
+      <div class="row" style="align-items:center;gap:6px;flex-wrap:wrap">
+        <button class="btn" onclick="ktvBack()" title="返回歌单">‹ 歌单</button>
+        <button class="btn" onclick="ktvStep(-1)" title="上一首">⏮</button>
+        <button class="btn" onclick="ktvStep(1)" title="下一首">⏭</button>
+        <b id="ktvTitle" style="flex:1;min-width:100px;font-size:19px;overflow-wrap:anywhere"></b>
+        <button class="btn" onclick="ktvCopyTitle()" title="一键复制歌名">复制歌名</button>
+      </div>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
+        <span class="muted" id="ktvMeta" style="font-size:12.5px"></span>
+        <span style="flex:1"></span>
+        <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
+        <button class="btn mini" onclick="ktvFont(2)" title="放大字号">A＋</button>
+        <label class="advtog"><input type="checkbox" id="ktvRubyTog" checked onchange="ktvRender()"><span>注音</span></label>
+        <label class="advtog"><input type="checkbox" id="ktvRomajiTog" checked onchange="ktvRender()"><span>罗马音→片假名</span></label>
+        <button class="btn mini" onclick="ktvCopyLyrics()">复制歌词</button>
+        <button class="btn mini" onclick="ktvEdit()">编辑</button>
+        <button class="btn mini danger" onclick="ktvDel()">删除</button>
+      </div>
+    </div>
+    <div id="ktvEditBox" class="card hidden" style="margin-top:12px">
+      <b>编辑歌曲</b>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <input id="ktvTitleIn" placeholder="歌名" style="flex:2;min-width:140px">
+        <input id="ktvArtistIn" placeholder="歌手（可空）" style="flex:1;min-width:120px">
+      </div>
+      <textarea id="ktvLyricsIn" style="min-height:220px;margin-top:8px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" onclick="ktvSave()">保存（自动重新注音）</button>
+        <button class="btn" onclick="$('#ktvEditBox').classList.add('hidden')">取消</button>
+      </div>
+    </div>
+    <div id="ktvLyrics"></div>
+  </div>
+</section>
+
 <!-- ============ 历史 ============ -->
 <section id="tab-history" class="hidden">
   <div class="stat-grid" id="histStats"></div>
@@ -269,6 +339,26 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 <style>
 .noruby rt{visibility:hidden}
 .noruby ruby:hover rt{visibility:visible}
+
+/* ---------- KTV 歌词 ---------- */
+#ktvLyrics{margin-top:12px;touch-action:pan-y;-webkit-overflow-scrolling:touch}
+#ktvLyrics .kstanza{margin:18px 0;padding:6px 10px;border-radius:12px;background:var(--card);border:1px solid var(--line)}
+#ktvLyrics .kline{line-height:2.15;margin:6px 0;font-size:inherit;overflow-wrap:anywhere}
+#ktvLyrics .kline.jp{font-size:inherit}
+/* KTV 注音：比字幕模式更大更醒目（.62em of 22px ≈ 14px，加粗+主题色） */
+#ktvLyrics ruby rt{font-size:.62em;font-weight:700;color:var(--accent);letter-spacing:.02em;opacity:.96}
+#ktvLyrics .kana-sub{font-size:.72em;color:var(--accent2);margin-top:2px;font-weight:600}
+#ktvLyrics.noruby rt{visibility:hidden}
+#ktvSongList .ksong{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer}
+#ktvSongList .ksong:active{background:rgba(127,127,127,.08)}
+#ktvSongList .ksong+.ksong{border-top:1px solid var(--line)}
+.ksong .kt{font-weight:700;overflow-wrap:anywhere}
+.ksong .km{font-size:12.5px}
+@media(max-width:600px){
+  #ktvLyrics{font-size:22px}
+  #ktvLyrics ruby rt{font-size:.6em}
+  #ktvSongList .ksong{padding:14px}
+}
 </style>
 
 <script>
@@ -413,7 +503,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active');
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,history:loadHistory}[b.dataset.tab]||(()=>{}))();
+  ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ---------- 统计 ---------- */
@@ -699,6 +789,129 @@ async function loadHistory(){
 async function clearHistory(){
   if(!confirm('确认清空全部历史记录？'))return;
   await api('/api/history',{method:'DELETE'});loadHistory();
+}
+
+/* ---------- KTV 歌词 ---------- */
+let ktvCache=[], ktvCur=null, ktvFontSize=+(localStorage.getItem('ktvFont')||24), ktvSearchTimer=null;
+function ktvLoad(){ if(!ktvCache.length) ktvSearch(''); }
+function ktvSearchDebounced(){ clearTimeout(ktvSearchTimer); ktvSearchTimer=setTimeout(()=>ktvSearch($('#ktvQ').value),250); }
+async function ktvSearch(q){
+  const d=await api('/api/songs?q='+encodeURIComponent(q||''));
+  ktvCache=d.songs||[];
+  const el=$('#ktvSongList');
+  if(!ktvCache.length){ el.innerHTML='<div class="card muted" style="padding:18px">还没有歌。点右上「＋ 导入歌词」，整段粘贴即可自动整理。</div>'; return; }
+  el.innerHTML='<div class="card" style="padding:0">'+ktvCache.map(s=>`
+    <div class="ksong" onclick="ktvOpen(${s.id})">
+      <div style="flex:1;min-width:0">
+        <div class="kt">${esc(s.title)}${s.artist?` <span class="muted" style="font-weight:400;font-size:13px">· ${esc(s.artist)}</span>`:''}</div>
+        <div class="km muted">${s.lines} 行 · ${s.kanji_count} 个汉字</div>
+      </div>
+      <button class="btn mini" onclick="event.stopPropagation();ktvQuickCopy(this,'${esc(s.title).replace(/'/g,"&#39;")}')" title="复制歌名">复制</button>
+    </div>`).join('')+'</div>';
+}
+async function ktvOpen(id){
+  try{ ktvCur=await api('/api/songs/'+id); }catch(e){ return toast('加载失败'); }
+  ktvCur._ids=ktvCache.map(s=>s.id);
+  $('#ktvListWrap').classList.add('hidden');
+  $('#ktvSongView').classList.remove('hidden');
+  $('#ktvTitle').textContent=ktvCur.title;
+  $('#ktvMeta').textContent=`${ktvCur.artist?ktvCur.artist+' · ':''}${ktvCur.lyrics.split('\n').filter(l=>l.trim()).length} 行 · ${ktvCur.kanji_count} 个汉字`;
+  ktvRender();
+  window.scrollTo(0,0);
+}
+function ktvRender(){
+  const el=$('#ktvLyrics');
+  el.style.fontSize=ktvFontSize+'px';
+  el.classList.toggle('noruby',!$('#ktvRubyTog').checked);
+  const showKana=$('#ktvRomajiTog').checked;
+  const lines=ktvCur.lyrics.split('\n');
+  const toks=ktvCur.tokens||[];
+  let html='',li=0;
+  const stanzas=ktvCur.lyrics.split(/\n{2,}/);
+  for(const st of stanzas){
+    html+='<div class="kstanza">';
+    for(const line of st.split('\n')){
+      const t=toks[li]; li++;
+      if(!line.trim()) continue;
+      if(t&&t.length===1&&t[0].k!==undefined){
+        html+=`<div class="kline">${esc(t[0].s)}${showKana?`<div class="kana-sub">${esc(t[0].k)}</div>`:''}</div>`;
+      }else{
+        html+=`<div class="kline jp">${rubyHTML(t&&t.length?t:[{s:line}],null)}</div>`;
+      }
+    }
+    html+='</div>';
+  }
+  el.innerHTML=html||'<div class="muted">（空）</div>';
+}
+function ktvBack(){ $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
+async function ktvStep(dir){
+  if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
+  const i=ktvCur._ids.indexOf(ktvCur.id);
+  const nid=ktvCur._ids[(i+dir+ktvCur._ids.length)%ktvCur._ids.length];
+  ktvOpen(nid);
+}
+function ktvFont(d){ ktvFontSize=Math.min(40,Math.max(16,ktvFontSize+d)); localStorage.setItem('ktvFont',ktvFontSize); ktvRender(); }
+function ktvCopyTitle(){ copyText(ktvCur.title,'歌名'); }
+function ktvCopyLyrics(){ copyText(ktvCur.lyrics,'歌词'); }
+function ktvQuickCopy(btn,txt){ copyText(txt,'歌名'); }
+function copyText(txt,what){
+  const done=()=>toast((what||'内容')+'已复制');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(done).catch(()=>copyFallback(txt,done));
+  }else copyFallback(txt,done);
+}
+function copyFallback(txt,done){
+  const ta=document.createElement('textarea');
+  ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); done(); }catch(e){ toast('复制失败，请长按手动复制'); }
+  document.body.removeChild(ta);
+}
+function ktvEdit(){
+  $('#ktvTitleIn').value=ktvCur.title;
+  $('#ktvArtistIn').value=ktvCur.artist||'';
+  $('#ktvLyricsIn').value=ktvCur.lyrics;
+  $('#ktvEditBox').classList.remove('hidden');
+  $('#ktvEditBox').scrollIntoView({behavior:'smooth'});
+}
+async function ktvSave(){
+  const title=$('#ktvTitleIn').value.trim()||'未命名歌曲';
+  const artist=$('#ktvArtistIn').value.trim();
+  const lyrics=$('#ktvLyricsIn').value;
+  const d=await api('/api/songs/'+ktvCur.id,{method:'POST',body:JSON.stringify({title,artist,lyrics})});
+  if(d.error) return toast(d.error);
+  $('#ktvEditBox').classList.add('hidden');
+  toast('已保存（自动重新注音）');
+  ktvOpen(ktvCur.id);
+}
+async function ktvDel(){
+  if(!confirm(`删除《${ktvCur.title}》？`))return;
+  await api('/api/songs/'+ktvCur.id,{method:'DELETE'});
+  toast('已删除');
+  ktvCache=ktvCache.filter(s=>s.id!==ktvCur.id);
+  ktvBack();
+}
+function ktvShowImport(on){ $('#ktvImport').classList.toggle('hidden',!on); if(on){$('#ktvPaste').focus();} }
+async function ktvPreview(){
+  const text=$('#ktvPaste').value;
+  if(!text.trim()) return toast('先粘贴歌词');
+  const d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text,dry_run:true})});
+  if(d.error) return toast('识别失败');
+  $('#ktvImportPrev').innerHTML=d.songs.length
+    ? '<b>识别出 '+d.songs.length+' 首：</b><ol style="margin:6px 0 0 18px">'+d.songs.map(s=>
+        `<li>${esc(s.title)}${s.artist?' <span class="muted">· '+esc(s.artist)+'</span>':''} <span class="muted">（${s.lines} 行）</span></li>`).join('')+'</ol>'
+    : '<span class="muted">没识别到内容，请检查粘贴文本</span>';
+}
+async function ktvDoImport(){
+  const text=$('#ktvPaste').value;
+  if(!text.trim()) return toast('先粘贴歌词');
+  const d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text})});
+  if(d.error) return toast('导入失败');
+  const n=d.created.length, sk=d.skipped.length;
+  toast(`已导入 ${n} 首${sk?`，跳过重复 ${sk} 首`:''}`);
+  $('#ktvPaste').value=''; $('#ktvImportPrev').innerHTML='';
+  ktvShowImport(false);
+  ktvCache=[]; ktvSearch('');
 }
 
 /* ---------- 启动 ---------- */

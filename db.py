@@ -64,16 +64,39 @@ def init_db():
             type TEXT,
             detail TEXT
         );
+        CREATE TABLE IF NOT EXISTS songs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            artist TEXT DEFAULT '',
+            lyrics TEXT NOT NULL,
+            tokens TEXT,
+            kanji_count INTEGER DEFAULT 0,
+            created_at REAL,
+            updated_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title);
         ''')
 
 
 def _migrate():
-    """兼容性迁移：为既有库补列（不破坏任何数据）"""
+    """兼容性迁移：为既有库补列/补表（不破坏任何数据）"""
     with get_conn() as c:
         try:
             c.execute('ALTER TABLE sentences ADD COLUMN orig_text TEXT')
         except sqlite3.OperationalError:
             pass
+        # KTV 歌词表（旧库升级时补建）
+        c.execute('''CREATE TABLE IF NOT EXISTS songs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            artist TEXT DEFAULT '',
+            lyrics TEXT NOT NULL,
+            tokens TEXT,
+            kanji_count INTEGER DEFAULT 0,
+            created_at REAL,
+            updated_at REAL
+        )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title)')
 
 
 _migrate()
@@ -144,6 +167,67 @@ def query_sentences(q=None, kanji=None, page=1, per=20):
 def sentence_exists(text):
     with get_conn() as c:
         return c.execute('SELECT 1 FROM sentences WHERE text=?', (text,)).fetchone() is not None
+
+
+# ---------- KTV 歌曲 CRUD ----------
+
+def add_song(title, artist, lyrics, tokens, kanji_count):
+    now = time.time()
+    with _lock, get_conn() as c:
+        cur = c.execute(
+            'INSERT INTO songs(title,artist,lyrics,tokens,kanji_count,created_at,updated_at) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (title, artist or '', lyrics,
+             json.dumps(tokens, ensure_ascii=False), kanji_count, now, now))
+        return cur.lastrowid
+
+
+def update_song(sid, title=None, artist=None, lyrics=None, tokens=None, kanji_count=None):
+    with _lock, get_conn() as c:
+        if title is not None:
+            c.execute('UPDATE songs SET title=? WHERE id=?', (title, sid))
+        if artist is not None:
+            c.execute('UPDATE songs SET artist=? WHERE id=?', (artist, sid))
+        if lyrics is not None:
+            c.execute('UPDATE songs SET lyrics=?, tokens=?, kanji_count=?, updated_at=? WHERE id=?',
+                      (lyrics,
+                       json.dumps(tokens, ensure_ascii=False) if tokens is not None else None,
+                       kanji_count or 0, time.time(), sid))
+        else:
+            c.execute('UPDATE songs SET updated_at=? WHERE id=?', (time.time(), sid))
+
+
+def delete_song(sid):
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM songs WHERE id=?', (sid,))
+
+
+def get_song(sid):
+    with get_conn() as c:
+        r = c.execute('SELECT * FROM songs WHERE id=?', (sid,)).fetchone()
+        return dict(r) if r else None
+
+
+def list_songs(q='', limit=200):
+    """按更新时间倒序；可按歌名/歌手/歌词模糊搜索。"""
+    with get_conn() as c:
+        if q:
+            rows = c.execute(
+                'SELECT id,title,artist,kanji_count,length(lyrics)-length(replace(lyrics,char(10),\'\'))+1 lines,'
+                'updated_at FROM songs WHERE title LIKE ? OR artist LIKE ? OR lyrics LIKE ? '
+                'ORDER BY updated_at DESC LIMIT ?',
+                (f'%{q}%', f'%{q}%', f'%{q}%', limit)).fetchall()
+        else:
+            rows = c.execute(
+                'SELECT id,title,artist,kanji_count,length(lyrics)-length(replace(lyrics,char(10),\'\'))+1 lines,'
+                'updated_at FROM songs ORDER BY updated_at DESC LIMIT ?', (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def song_exists(title, lyrics):
+    with get_conn() as c:
+        return c.execute('SELECT 1 FROM songs WHERE title=? AND lyrics=?',
+                         (title, lyrics)).fetchone() is not None
 
 
 # ---------- 汉字 ----------
