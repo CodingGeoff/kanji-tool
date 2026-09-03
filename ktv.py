@@ -315,7 +315,76 @@ def annotate_lyrics(lyrics: str):
             tokens.append([{'s': ln}])
             continue
         try:
-            tokens.append(furigana.annotate(ln))
+            toks = furigana.annotate(ln)
+            _seg_mark(toks, ln)      # 学习模式：意思群空格标记
+            tokens.append(toks)
         except Exception:
             tokens.append([{'s': ln}])
     return tokens, len(kanji)
+
+# ---------------------------------------------------------------
+# 学习模式：意思群切分（分かち書き）
+# 用 MeCab 形态素合并成「意思群」：内容词开头断开、助词/助动词/接尾辞跟随前词、
+# 连续名词性成分合并为一个群（如 一筋縄／夜空に），行内以空格分隔、只在群间换行
+# ---------------------------------------------------------------
+
+_tagger = None
+
+
+def _get_tagger():
+    global _tagger
+    if _tagger is None:
+        import fugashi
+        _tagger = fugashi.Tagger()
+    return _tagger
+
+# 能开启新意思群的词类
+_HEAD_POS1 = {'名詞', '代名詞', '動詞', '形容詞', '形状詞', '副詞', '接続詞',
+              '感動詞', '連体詞', 'フィラー', '接頭辞'}
+# 名词性成分（连续出现时合并为一个群：数詞+助数詞、名詞+接尾辞、接頭辞+名詞）
+_NOUNY_POS1 = {'名詞', '代名詞', '接頭辞', '接尾辞'}
+
+
+def chunk_starts(line: str):
+    """返回各意思群的起始字符偏移集合（不含 0）。"""
+    starts = set()
+    off, prev_p1 = 0, None
+    for w in _get_tagger()(line):
+        p1 = w.feature.pos1 or ''
+        if off > 0 and p1 in _HEAD_POS1:
+            if not (p1 in _NOUNY_POS1 and prev_p1 in _NOUNY_POS1):
+                starts.add(off)
+        off += len(w.surface)
+        prev_p1 = p1
+    return starts
+
+
+def _seg_mark(tokens, line):
+    """给 furigana token 列表打 sp=True 标记（该 token 前应有意思群空格）。"""
+    starts = chunk_starts(line)
+    if not starts:
+        return False
+    off, changed = 0, False
+    for t in tokens:
+        if off > 0 and off in starts and not t.get('sp'):
+            t['sp'] = True
+            changed = True
+        off += len(t.get('s') or '')
+    return changed
+
+
+def ensure_seg(song_row):
+    """兼容旧数据：没有分词标记的歌词 token 即时补算并回写。返回 token 列表。"""
+    toks = json.loads(song_row['tokens']) if song_row['tokens'] else []
+    lyrics = song_row['lyrics']
+    lines = lyrics.split('\n')
+    if len(toks) != len(lines):
+        return toks
+    changed = False
+    for ln, t in zip(lines, toks):
+        if t and isinstance(t, list) and t and 'k' not in t[0] and 's' in t[0]:
+            changed |= _seg_mark(t, ln)
+    if changed:
+        import db as _db
+        _db.update_song_tokens(song_row['id'], toks)
+    return toks

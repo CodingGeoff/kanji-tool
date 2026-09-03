@@ -202,6 +202,13 @@ def delete_song(sid):
         c.execute('DELETE FROM songs WHERE id=?', (sid,))
 
 
+def update_song_tokens(sid, tokens):
+    """只更新 token（学习模式分词标记补算回写用）。"""
+    with _lock, get_conn() as c:
+        c.execute('UPDATE songs SET tokens=? WHERE id=?',
+                  (json.dumps(tokens, ensure_ascii=False), sid))
+
+
 def get_song(sid):
     with get_conn() as c:
         r = c.execute('SELECT * FROM songs WHERE id=?', (sid,)).fetchone()
@@ -222,6 +229,65 @@ def list_songs(q='', limit=200):
                 'SELECT id,title,artist,kanji_count,length(lyrics)-length(replace(lyrics,char(10),\'\'))+1 lines,'
                 'updated_at FROM songs ORDER BY updated_at DESC LIMIT ?', (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def _mn(a, b):
+    return a if b is None else (b if a is None else min(a, b))
+
+
+def _mx(a, b):
+    return a if b is None else (b if a is None else max(a, b))
+
+
+def upsert_srs(rows):
+    """导入备份时合并 SRS：保留更高阶段、更早的 next_due/added_at、更晚的 last_at，累计 ok/ng（NULL 安全）。"""
+    added = merged = 0
+    with _lock, get_conn() as c:
+        for r in rows:
+            ex = c.execute('SELECT * FROM srs WHERE kanji=?', (r['kanji'],)).fetchone()
+            if ex:
+                c.execute('UPDATE srs SET stage=?,next_due=?,added_at=?,last_at=?,ok=?,ng=? WHERE kanji=?',
+                          (_mx(ex['stage'], r['stage'] or 0), _mn(ex['next_due'], r['next_due']),
+                           _mn(ex['added_at'], r['added_at']), _mx(ex['last_at'], r['last_at']),
+                           (ex['ok'] or 0) + (r['ok'] or 0), (ex['ng'] or 0) + (r['ng'] or 0), r['kanji']))
+                merged += 1
+            else:
+                c.execute('INSERT INTO srs(kanji,stage,next_due,added_at,last_at,ok,ng) VALUES(?,?,?,?,?,?,?)',
+                          (r['kanji'], r['stage'] or 0, r['next_due'], r['added_at'],
+                           r['last_at'], r['ok'] or 0, r['ng'] or 0))
+                added += 1
+    return added, merged
+
+
+def add_history_rows(rows):
+    """导入历史（按 ts+type+detail 去重，导回自己的备份不会翻倍）。返回实际新增数。"""
+    n = 0
+    with _lock, get_conn() as c:
+        for r in rows:
+            cur = c.execute('''INSERT INTO history(ts,type,detail)
+                         SELECT ?,?,? WHERE NOT EXISTS
+                         (SELECT 1 FROM history WHERE ts=? AND type=? AND detail=?)''',
+                            (r['ts'], r['type'], r['detail'], r['ts'], r['type'], r['detail']))
+            n += cur.rowcount if cur.rowcount > 0 else 0
+    return n
+
+
+def import_fav_word(word, reading, note, created_at):
+    with _lock, get_conn() as c:
+        cur = c.execute('INSERT OR IGNORE INTO fav_words(word,reading,note,created_at) VALUES(?,?,?,?)',
+                        (word, reading, note or '', created_at or time.time()))
+        return cur.rowcount > 0
+
+
+def import_fav_sentence(text, note, created_at):
+    """按句子文本找回 id 再收藏（备份里的 sentence_id 在新库会变）。"""
+    with _lock, get_conn() as c:
+        row = c.execute('SELECT id FROM sentences WHERE text=?', (text,)).fetchone()
+        if not row:
+            return False
+        cur = c.execute('INSERT OR IGNORE INTO fav_sentences(sentence_id,note,created_at) VALUES(?,?,?)',
+                        (row['id'], note or '', created_at or time.time()))
+        return cur.rowcount > 0
 
 
 def song_exists(title, lyrics):

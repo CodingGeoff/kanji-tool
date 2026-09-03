@@ -458,6 +458,216 @@ _TPLS_SINGLE = [
     '{name}「{surface}」：{meaning}。',
 ]
 
+# 名称里已含「surface」时使用（避免「た」「た」式重复引用）
+_TPLS_NOSURF = [
+    '这是{level}句型{name}（接续：{structure}）——{meaning}。本句「{ctx}」中就是这个用法。',
+    '{name}：{meaning}。接续方式是 {structure}，请对照句中「{ctx}」体会。',
+    '注意「{ctx}」这一段：核心语法是{name}（{level}）。{meaning}，形态上表现为 {structure}。',
+    '{name}登场：{meaning}。前后文是「{ctx}」。',
+]
+_TPLS_SINGLE_NOSURF = [
+    '{name}——{meaning}。',
+    '句中{name}：{meaning}。',
+    '这里是{name}：{meaning}。',
+    '{name}，{meaning}。',
+]
+
+
+# ---------------------------------------------------------------
+# 助词功能消歧：用邻接词的特征（POS/lemma/活用）+ 小词典，把多义助词定位到本句用法
+# 规则命中 → 给出确定解释 + 判据；未命中 → 保留多义列表（诚实兜底）
+# ---------------------------------------------------------------
+
+_QUOTE_CORE = {'言う', '云う', '呼ぶ'}          # 名词后也直接算引用（命名/称呼）
+_QUOTE_VERBS = {'言う', '云う', '話す', '聞く', '書く', '読む', '思う', '考える',
+                '感じる', '呼ぶ', '命じる', '頼む', '誓う', '答える', '叫ぶ', '呟く',
+                '説明する', '提案する', '主張する', '決める', '結論する', '指摘する'}
+_COMP_WORDS = {'同じ', '等しい', '似る', '似合う', '比べる', 'どちら', 'どっち', '何方',
+               '違う', '違い', '差', '勝る', '劣る', '方', 'ほう'}
+_JOINT_VERBS = {'会う', '遊ぶ', '結婚する', '別れる', '喧嘩する', '相談する',
+                '暮らす', '住む', '働く', 'デートする', '付き合う', '話し合う'}
+_TIME_SUFFIX = ('時', '分', '秒', '日', '月', '年', '週', '曜日', '頃', '時期', '時代',
+                '世紀', '朝', '昼', '夜', '晩', '春', '夏', '秋', '冬',
+                '今日', '明日', '昨日', '今朝', '今夜', '毎日', '毎年', '毎朝',
+                '来週', '先週', '来年', '去年', '来月', '先月', '午前', '午後', '誕生日')
+_GOAL_VERBS = {'行く', '来る', '帰る', '戻る', '入る', '乗る', '座る', '着く', '到着する', '引っ越す'}
+_PARTNER_VERBS = {'あげる', '上げる', 'くれる', '呉れる', 'もらう', '貰う', 'やる', '遣る',
+                  '差し上げる', 'いただく', '戴く', '頂く',
+                  '教える', '習う', '貸す', '借りる', '渡す', '送る', '届ける', '電話する',
+                  '尋ねる', '似合う', '負ける', '勝つ'}
+_CAUSE_PREV = {'雨', '雪', '台風', '地震', '病気', '風邪', '怪我', '火事', '事故', '戦争',
+               'お陰', 'おかげ', 'せい', '疲れ', 'ショック', '感動'}
+_CAUSE_NEXT = {'泣く', '驚く', '困る', '遅れる', '休む', '騒ぐ', '悔しい', '悲しむ', '喜ぶ', '自慢する'}
+_MEANS_WORDS = {'電車', 'バス', '車', '自転車', '飛行機', '船', 'タクシー', '地下鉄', '新幹線',
+                '英語', '日本語', '中国語', '韓国語', '外国語', '言葉', '手話',
+                '手', '目', '口', '足', '力', '心', '箸', 'ハサミ', 'ペン', '鉛筆',
+                'ナイフ', '包丁', 'クレヨン', 'キーボード', 'メール', '電話'}
+_RANGE_NEXT = {'一番', '最も', '最初', '最高', '最大', '最新'}
+_PASSAGE_VERBS = {'渡る', '飛ぶ', '歩く', '走る', '通る', '過ぎる', '曲がる', '横切る',
+                  '下りる', '降りる', '散歩する', '泳ぐ', '旅行する'}
+_SENTIMENT_VERBS = {'できる', '出来る', '分かる', 'わかる', '好き', '嫌い', '上手', '下手',
+                    '得意', '不得意', '苦手', '欲しい', '見える', '聞こえる', '要る',
+                    '違う', '必要'}
+_YOKEN = ('名詞', '代名詞', '接尾辞', '接頭辞')  # 名词性（UniDic 常把 館/時 拆成接尾辞）
+_YOGEN = ('動詞', '助動詞', '形容詞', '形状詞')
+
+
+def _lw(w):
+    return (w.feature.lemma or w.surface).split('-')[0]
+
+
+def _nouny(w):
+    return w is not None and w.feature.pos1 in _YOKEN
+
+
+def _yogen(w):
+    return w is not None and w.feature.pos1 in _YOGEN
+
+
+def _next_verb(words, i, maxskip=5):
+    """向后找第一个用言（跳过名词/助词），处理サ変（散歩+する→散歩する）；遇句读点即止。"""
+    for j in range(i + 1, min(len(words), i + 1 + maxskip)):
+        f = words[j].feature
+        if words[j].surface in ('。', '！', '？', '！', '？', '．', '，', ','):
+            return None
+        if f.pos1 == '動詞':
+            lm = _lw(words[j])
+            if lm in ('する', '為る') and _nouny(words[j - 1]):
+                lm = _lw(words[j - 1]) + 'する'
+            return j, lm
+        if f.pos1 == '助動詞':
+            return j, _lw(words[j])
+        if f.pos1 in ('名詞', '代名詞', '助詞', '接尾辞', '接頭辞', '記号', '空白'):
+            continue
+        return None
+    return None
+
+
+def _find_lemma(words, start, lexicon, maxn=5, stop_at=None):
+    for j in range(start, min(len(words), start + maxn)):
+        if stop_at and words[j].surface in stop_at:
+            return None
+        if _lw(words[j]) in lexicon or words[j].surface in lexicon:
+            return j, _lw(words[j])
+    return None
+
+
+def _refine_particle(w, words, i, name, meaning):
+    """返回 (name, meaning, evidence) —— 把多义助词定位到本句的具体用法。"""
+    prev = words[i - 1] if i > 0 else None
+    nxt = words[i + 1] if i + 1 < len(words) else None
+    surf = w.surface
+
+    def hit(tag, better, ev):
+        return (f'{name}（{tag}）', better, ev)
+
+    def prev_txt():
+        if i >= 2 and len(prev.surface) == 1 and _nouny(words[i - 2]):
+            return words[i - 2].surface + prev.surface
+        return prev.surface
+
+    if surf == 'と':
+        # 1) 引用：と + 言う/思う…（言う/呼ぶ 名词后也算；其他要求前面是用言句节或带引号）
+        if nxt is not None:
+            lm = _lw(nxt)
+            if lm in _QUOTE_CORE or (lm in _QUOTE_VERBS and
+                                     (_yogen(prev) or (prev is not None and
+                                                       prev.surface.endswith(('」', '』'))))):
+                return hit('引用', '引用内容「说/想～」：标出所说、所想、所写的内容',
+                           f'后面紧接「{nxt.surface}」')
+        # 2) 比較：后面 5 词内出现 同じ/どちら/比べる…（中途遇别的「と」则让给它）
+        c = _find_lemma(words, i + 1, _COMP_WORDS, 5, stop_at={'と'})
+        if c and not _yogen(prev):
+            return hit('比較', '比较基准「和～相比/与～不同」', f'后面出现了「{c[1]}」')
+        # 3) 並列：前后都是名词性成分
+        if _nouny(prev) and _nouny(nxt):
+            return hit('並列', '完全并列「～和～」：两者地位对等、共同担任后面的成分',
+                       '前后都是名词')
+        # 4) 条件：前面是动词/形容词句节（一～就）
+        if _yogen(prev) and prev.feature.pos1 != '名詞':
+            return hit('条件', '恒常条件「一～就～/如果～就」', '前面是动词/形容词（接续助词用法）')
+        # 5) 共同/相手：名词 + と + （一起做的动作）
+        if _nouny(prev):
+            v = _next_verb(words, i)
+            if v:
+                if v[1] in _JOINT_VERBS:
+                    return hit('共同', '共同动作的对象「和～（一起）」', f'后面有「{v[1]}」类一起做的动作')
+                return hit('相手', '动作的对象/伙伴「和～」', '前面是名词、后面是动作')
+    elif surf == 'に':
+        if nxt is not None and _lw(nxt) == 'なる':
+            return hit('変化', '变化的结果「变成～」', '后面是「なる」')
+        if _nouny(prev) and (prev.surface.endswith(_TIME_SUFFIX) or prev.feature.pos2 == '数詞'):
+            return hit('時間', '时间点「在～」', f'前面「{prev_txt()}」是时间词')
+        if prev is not None and prev.feature.pos1 == '動詞' and \
+                (prev.feature.cForm or '').startswith('連用形'):
+            v = _next_verb(words, i, 1)
+            if v and v[1] in ('行く', '来る'):
+                return hit('目的', '目的「去做～」', '前面是动词连用形（如 買い物に行く）')
+        v = _next_verb(words, i)
+        if v:
+            if v[1] in _PARTNER_VERBS:
+                return hit('相手', '动作的接收方「给/对～」', f'后面是「{v[1]}」')
+            if v[1] in _GOAL_VERBS:
+                return hit('到達点', '到达点/方向「到/去/回～」', f'后面是「{v[1]}」')
+        # 受身の動作主：に 之后几个词内出现「名词+を」+被动助动词（強证据）
+        saw_wo = False
+        for j in range(i + 1, min(len(words), i + 6)):
+            fj = words[j].feature
+            if words[j].surface == 'を' and _nouny(words[j - 1]):
+                saw_wo = True
+            elif fj.pos1 == '助動詞' and (fj.cType or '').startswith(('助動詞-レル', '助動詞-ラレル')) \
+                    and saw_wo:
+                return hit('受身の動作主', '被动句中动作的施加者「被～」',
+                           '后面有を宾语+被动助动词れる/られる')
+            elif words[j].surface in ('。', '！', '？', '．', '、'):
+                break
+    elif surf == 'で':
+        if prev is not None and _lw(prev) in _CAUSE_PREV:
+            return hit('原因', '原因「因为～」', f'前面「{prev.surface}」是原因类名词')
+        v = _next_verb(words, i, 4)
+        if v and v[1] in _CAUSE_NEXT:
+            return hit('原因', '原因「因为～」', f'后面是「{v[1]}」类情感/结果动词')
+        if prev is not None and (_lw(prev) in _MEANS_WORDS or prev.surface in _MEANS_WORDS):
+            return hit('手段', '手段·工具「用/坐/说～」', f'前面「{prev_txt()}」是工具/交通/语言类词')
+        if v and v[1] in _RANGE_NEXT:
+            return hit('範囲', '范围「在～之中」', f'后面是「{v[1]}」')
+        if _nouny(prev) and v:
+            return hit('場所', '动作发生的场所「在～」', '前面是名词、后面是动作')
+    elif surf == 'を':
+        v = _next_verb(words, i)
+        if v and v[1] in _PASSAGE_VERBS:
+            return hit('経過点', '移动动词的经过点/离开点「沿·穿·离开～」',
+                       f'后面是移动动词「{v[1]}」')
+        return hit('目的語', '标记他动词的宾语「～（做什么）」', '后面不是移动动词')
+    elif surf == 'が':
+        v = _next_verb(words, i, 3)
+        if v:
+            if v[1] in _SENTIMENT_VERBS:
+                return hit('対象', '能力·好恶·欲求的对象（这类对象必须用が）',
+                           f'后面是「{v[1]}」')
+            j = v[0]
+            if j + 1 < len(words):
+                nf = words[j + 1].feature
+                if nf.pos1 == '助動詞' and (nf.cType or '').startswith('助動詞-タイ'):
+                    return hit('対象', '愿望「たい」的对象（欲求对象用が）', '后面是愿望助动词たい')
+        return hit('主語', '标记主语（新信息、疑问词主语、存在主体）', '后面不是能力·好恶类词')
+    elif surf == 'は':
+        for j in range(i + 1, len(words)):
+            su = words[j].surface
+            if su in ('。', '！', '？', '．', '！', '？'):
+                break
+            if su in ('ない', 'ぬ', 'ません', 'ん') or \
+                    (words[j].feature.pos1 == '助動詞' and _lw(words[j]) in ('ない', '無い', 'ぬ')):
+                return hit('対比', '提示主题，句中有否定时兼表对比「（别的且不论）～则不～」',
+                           '后半句是否定形')
+        return hit('主題', '提示主题「说到～」', '本句为肯定句')
+    elif surf == 'から':
+        if w.feature.pos2 == '接続助詞' or _yogen(prev):
+            return hit('原因', '主观原因「因为～」（接续助词用法，常在句尾）',
+                       '前面是动词/形容词（接续助词）')
+        return hit('起点', '起点「从～（时间/场所）」', '前面是名词（格助词用法）')
+    return None
+
 
 def _pick(templates, seed):
     return templates[int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(templates)]
@@ -535,7 +745,8 @@ def analyze(text: str):
             surface = ''.join(words[j].surface for j in range(s_idx, e_idx))
             ctx = _context(words, s_idx, e_idx)
             seed = f'{text}|{pat["name"]}|{s_idx}'
-            explain = _pick(_TPLS, seed).format(
+            _tpls = _TPLS_NOSURF if f'「{surface}」' in pat['name'] else _TPLS
+            explain = _pick(_tpls, seed).format(
                 surface=surface, name=pat['name'], level=pat['level'],
                 structure=pat['structure'], meaning=pat['meaning'], ctx=ctx)
             if pat.get('note'):
@@ -599,9 +810,18 @@ def analyze(text: str):
                 entry = ('N3', f'助動詞「{w.surface}」', f'助动词（原形：{f.lemma}），已标记待补充详解')
         if entry:
             level, name, meaning = entry
+            evidence = None
+            # 助词功能消歧：多义助词定位到本句具体用法（附判据）
+            if f.pos1 == '助詞' and w.surface in ('と', 'に', 'で', 'を', 'が', 'は', 'から'):
+                r = _refine_particle(w, words, i, name, meaning)
+                if r:
+                    name, meaning, evidence = r
             seed = f'{text}|{name}|{i}'
-            explain = _pick(_TPLS_SINGLE, seed).format(
+            _tpls1 = _TPLS_SINGLE_NOSURF if f'「{w.surface}」' in name else _TPLS_SINGLE
+            explain = _pick(_tpls1, seed).format(
                 surface=w.surface, name=name, meaning=meaning)
+            if evidence:
+                explain += f'（判据：{evidence}）'
             b3, c3, a3 = _context3(words, i, i + 1)
             found.append({'name': name, 'level': level, 'structure': '—',
                           'surface': w.surface, 'before': b3, 'core': c3, 'after': a3,

@@ -175,6 +175,8 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
       <span class="muted">后台每 10 分钟自动抓取扩充；所有语料缓存到本地 SQLite，优先离线读取。</span>
       <button class="btn" onclick="doCleanup()" title="修复内嵌注音文本、删除含时间戳/下划线的垃圾句子">🧹 清理脏数据</button>
       <a class="btn" href="/api/backup" style="text-decoration:none">💾 备份数据库</a>
+      <a class="btn" href="/api/export" style="text-decoration:none" title="全量JSON：语料+歌词+SRS+收藏+历史">📤 导出备份</a>
+      <button class="btn" onclick="importPick()" title="导入JSON备份，自动合并去重、重新注音">📥 导入备份</button>
     </div>
   </div>
   <div class="card">
@@ -259,7 +261,11 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
     <div class="card">
       <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
         <input id="ktvQ" placeholder="🔍 搜歌名 / 歌手 / 歌词内容…" oninput="ktvSearchDebounced()" style="flex:1;min-width:150px">
-        <button class="btn primary" onclick="ktvShowImport(true)">＋ 导入歌词</button>
+        <div class="row" style="gap:6px">
+          <button class="btn mini" onclick="exportAll()" title="导出全部数据（语料+歌词+进度+收藏）为JSON">📤 导出</button>
+          <button class="btn mini" onclick="importPick()" title="导入JSON备份，自动合并去重">📥 导入</button>
+          <button class="btn primary" onclick="ktvShowImport(true)">＋ 导入歌词</button>
+        </div>
       </div>
       <div class="muted" style="margin-top:8px;font-size:12.5px">
         一次可贴一首或多首：用 <b>《歌名》</b>、<b>曲名：</b>、<b>歌名 - 歌手</b> 或 <b>---</b> 分隔多首；段与段之间空一行自动分段。
@@ -299,6 +305,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
         <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
         <button class="btn mini" onclick="ktvFont(2)" title="放大字号">A＋</button>
         <label class="advtog"><input type="checkbox" id="ktvRubyTog" checked onchange="ktvRender()"><span>注音</span></label>
+        <label class="advtog"><input type="checkbox" id="ktvSegTog" checked onchange="ktvSegSave();ktvRender()"><span>分词</span></label>
         <label class="advtog"><input type="checkbox" id="ktvRomajiTog" checked onchange="ktvRender()"><span>罗马音→片假名</span></label>
         <button class="btn mini" onclick="ktvCopyLyrics()">复制歌词</button>
         <button class="btn mini" onclick="ktvEdit()">编辑</button>
@@ -348,6 +355,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 /* KTV 注音：比字幕模式更大更醒目（.62em of 22px ≈ 14px，加粗+主题色） */
 #ktvLyrics ruby rt{font-size:.62em;font-weight:700;color:var(--accent);letter-spacing:.02em;opacity:.96}
 #ktvLyrics .kana-sub{font-size:.72em;color:var(--accent2);margin-top:2px;font-weight:600}
+#ktvLyrics .kc{display:inline-block;white-space:nowrap;max-width:100%;overflow-wrap:anywhere;vertical-align:baseline}
 #ktvLyrics.noruby rt{visibility:hidden}
 #ktvSongList .ksong{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer}
 #ktvSongList .ksong:active{background:rgba(127,127,127,.08)}
@@ -824,17 +832,27 @@ function ktvRender(){
   el.style.fontSize=ktvFontSize+'px';
   el.classList.toggle('noruby',!$('#ktvRubyTog').checked);
   const showKana=$('#ktvRomajiTog').checked;
-  const lines=ktvCur.lyrics.split('\n');
-  const toks=ktvCur.tokens||[];
-  let html='',li=0;
+  const seg=$('#ktvSegTog').checked;
+  _ktvLineIdx=0;
   const stanzas=ktvCur.lyrics.split(/\n{2,}/);
+  let html='';
   for(const st of stanzas){
     html+='<div class="kstanza">';
     for(const line of st.split('\n')){
-      const t=toks[li]; li++;
       if(!line.trim()) continue;
+      const t=ktvLineTokens();
       if(t&&t.length===1&&t[0].k!==undefined){
-        html+=`<div class="kline">${esc(t[0].s)}${showKana?`<div class="kana-sub">${esc(t[0].k)}</div>`:''}</div>`;
+        const kana=showKana?`<div class="kana-sub">${esc(t[0].k)}</div>`:'';
+        if(seg){
+          html+=`<div class="kline">${t[0].s.trim().split(/\s+/).map(w=>`<span class="kc">${esc(w)}</span>`).join(' ')}${kana}</div>`;
+        }else{
+          html+=`<div class="kline">${esc(t[0].s)}${kana}</div>`;
+        }
+      }else if(seg&&t&&t.length){
+        // 学习模式：按意思群分组，组间空格、只在组间换行（初学者友好）
+        const groups=[[]];
+        for(const tk of t){ if(tk.sp&&groups[groups.length-1].length) groups.push([]); groups[groups.length-1].push(tk); }
+        html+=`<div class="kline jp">${groups.map(g=>`<span class="kc">${g.map(x=>rubyHTML([x],null)).join('')}</span>`).join(' ')}</div>`;
       }else{
         html+=`<div class="kline jp">${rubyHTML(t&&t.length?t:[{s:line}],null)}</div>`;
       }
@@ -843,6 +861,17 @@ function ktvRender(){
   }
   el.innerHTML=html||'<div class="muted">（空）</div>';
 }
+let _ktvLineIdx=0;
+function ktvLineTokens(){
+  // 从 tokens 里按顺序取与当前非空行对应的条目（空行=跳过但游标推进）
+  const toks=ktvCur.tokens||[];
+  const lines=ktvCur.lyrics.split('\n');
+  while(_ktvLineIdx<lines.length&&!lines[_ktvLineIdx].trim()) _ktvLineIdx++;
+  const t=toks[_ktvLineIdx]||null;
+  _ktvLineIdx++;
+  return t;
+}
+function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
 function ktvBack(){ $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
@@ -914,9 +943,29 @@ async function ktvDoImport(){
   ktvCache=[]; ktvSearch('');
 }
 
+/* ---------- 备份：完整导出 / 导入（JSON，含歌词） ---------- */
+function exportAll(){ location.href='/api/export'; }
+function importPick(){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
+  inp.onchange=async()=>{
+    const f=inp.files[0]; if(!f) return;
+    const fd=new FormData(); fd.append('file',f);
+    toast('正在导入（自动重新注音，稍候）…');
+    try{
+      const r=await fetch('/api/import',{method:'POST',body:fd});
+      const d=await r.json();
+      if(d.error) return toast('导入失败：'+d.error);
+      toast(`导入完成：语料+${d.sentences_added}（跳过${d.sentences_skipped}）· 歌词+${d.songs_added} · SRS+${d.srs_added} · 收藏+${d.fav_sentences_added+d.fav_words_added}`);
+      ktvCache=[]; if(typeof refreshStats==='function') refreshStats();
+    }catch(e){ toast('导入失败：文件格式错误'); }
+  };
+  inp.click();
+}
+
 /* ---------- 启动 ---------- */
 initVoices();
 initAdv();
+if(localStorage.getItem('ktvSeg')==='0')$('#ktvSegTog').checked=false;
 loadReview();
 setInterval(refreshStats,60000);
 </script>

@@ -188,6 +188,9 @@ romaji_tok = tokens[2]
 check(len(romaji_tok) == 1 and romaji_tok[0].get('k') == 'キミ ワ ボク ノ ヒカリ',
       f"3.3 罗马音行转片假名={romaji_tok}")
 check(kcount > 0, '3.4 汉字计数>0')
+toks2, _ = ktv.annotate_lyrics('夜空に瞬く星を見上げて')
+sps = [t['s'] for t in toks2[0] if t.get('sp')]
+check(sps == ['瞬', '星', '見上'], f'3.5 意思群标记={sps}')
 
 # ============ 4. 旧库兼容迁移 ============
 print('== 旧库兼容（无 songs 表的老 kanji.db） ==')
@@ -288,6 +291,50 @@ r = client.delete(f'/api/songs/{sid}')
 check(r.get_json().get('ok'), '5.11 删除')
 r = client.get(f'/api/songs/{sid}')
 check(r.status_code == 404, '5.12 删除后 404')
+
+# ============ 6. 导出 / 导入（全量 JSON 备份） ============
+print('== 导出/导入备份 ==')
+r = client.get('/api/export')
+data = r.get_json()
+check(all(k in data for k in ('sentences', 'songs', 'srs', 'fav_words', 'fav_sentences', 'history')),
+      '6.1 导出包含全部数据')
+check(any(x['title'] == '朝の光' for x in data['songs']), '6.2 导出含歌词')
+check(any('lyrics' in x for x in data['songs']), '6.2b 歌词正文在')
+n_sent = len(data['sentences'])
+
+sid2 = d['created'][1]['id'] if len(d.get('created', [])) > 1 else None
+client.delete(f'/api/songs/{sid2}')                     # 删掉一首
+data['sentences'].append({'text': '完全に新しい導入テスト文である。', 'source': 'import'})
+r = client.post('/api/import', json=data)
+imp = r.get_json()
+check(imp and imp.get('songs_added') == 1, f"6.3 删掉的歌恢复={imp}")
+check(imp and imp.get('sentences_added') == 1 and imp.get('sentences_skipped') == n_sent,
+      f"6.4 语料增量导入+去重={imp}")
+r = client.get('/api/songs?q=朝の光')
+check(r.get_json()['total'] == 1, '6.5 恢复后可搜索')
+sid2 = r.get_json()['songs'][0]['id']                   # 恢复后的新 id
+
+# 旧数据兼容：抹掉分词标记后 GET 应自动补算
+if sid2:
+    import json as _json
+    row = db.get_song(sid2)
+    toks = _json.loads(row['tokens'])
+    for line in toks:
+        if isinstance(line, list):
+            for t in line:
+                if isinstance(t, dict):
+                    t.pop('sp', None)
+    db.update_song_tokens(sid2, toks)
+    r = client.get(f'/api/songs/{sid2}')
+    toks2 = r.get_json()['tokens']
+    has_sp = any(isinstance(t, dict) and t.get('sp')
+                 for line in toks2 if isinstance(line, list) for t in line)
+    check(has_sp, '6.6 旧歌词无分词标记 → GET 自动补算')
+
+# 重复导入 → 全部跳过
+r = client.post('/api/import', json=data)
+imp2 = r.get_json()
+check(imp2.get('songs_added') == 0 and imp2.get('sentences_added') == 0, f"6.7 再次导入全跳过={imp2}")
 
 # 清理另一首
 r = client.get('/api/songs?q=朝の光')

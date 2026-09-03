@@ -395,7 +395,7 @@ def api_song_get(sid):
     row = db.get_song(sid)
     if not row:
         return jsonify({'error': 'not found'}), 404
-    row['tokens'] = json.loads(row['tokens']) if row['tokens'] else []
+    row['tokens'] = ktv.ensure_seg(row) if row['tokens'] else []
     return jsonify(row)
 
 
@@ -458,11 +458,99 @@ def api_song_delete(sid):
     return jsonify({'ok': True})
 
 
-# ---------- 数据备份 ----------
+# ---------- 数据备份：完整导出 / 导入（JSON，跨库合并） ----------
 @app.route('/api/backup')
 def api_backup():
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'kanji.db',
                                as_attachment=True, download_name='kanji_backup.db')
+
+
+@app.route('/api/export')
+def api_export():
+    """全量 JSON 备份：语料+歌词+SRS进度+收藏+历史（可在任何实例导入合并）。"""
+    with db.get_conn() as c:
+        sentences = [dict(r) for r in c.execute(
+            'SELECT text,translation,source,url,orig_text FROM sentences')]
+        songs = [dict(r) for r in c.execute('SELECT title,artist,lyrics FROM songs')]
+        srs_rows = [dict(r) for r in c.execute(
+            'SELECT kanji,stage,next_due,added_at,last_at,ok,ng FROM srs')]
+        fav_s = [dict(r) for r in c.execute(
+            'SELECT fs.note, fs.created_at, s.text sentence '
+            'FROM fav_sentences fs JOIN sentences s ON s.id=fs.sentence_id')]
+        fav_w = [dict(r) for r in c.execute(
+            'SELECT word,reading,note,created_at FROM fav_words')]
+        hist = [dict(r) for r in c.execute(
+            'SELECT ts,type,detail FROM history ORDER BY id DESC LIMIT 1000')]
+    data = {'app': 'kanji-tool', 'version': 2, 'exported_at': time.time(),
+            'sentences': sentences, 'songs': songs, 'srs': srs_rows,
+            'fav_sentences': fav_s, 'fav_words': fav_w, 'history': hist}
+    from flask import Response
+    fn = time.strftime('kanji_backup_%Y%m%d_%H%M.json')
+    resp = Response(json.dumps(data, ensure_ascii=False), mimetype='application/json')
+    resp.headers['Content-Disposition'] = f'attachment; filename={fn}'
+    db.log('export', f'导出 JSON 备份（语料{len(sentences)} 歌词{len(songs)}）')
+    return resp
+
+
+@app.route('/api/import', methods=['POST'])
+def api_import():
+    d = request.json if request.is_json else None
+    if d is None:
+        f = request.files.get('file')
+        if f is None:
+            return jsonify({'error': '未收到文件'}), 400
+        try:
+            d = json.load(f)
+        except Exception:
+            return jsonify({'error': 'JSON 解析失败'}), 400
+    if not isinstance(d, dict) or ('sentences' not in d and 'songs' not in d):
+        return jsonify({'error': '不是本工具的备份文件（缺少 sentences/songs）'}), 400
+
+    sent_add = sent_skip = song_add = song_skip = 0
+    # 1) 语料（按文本去重，重新注音建索引）
+    for r in d.get('sentences', []):
+        text = (r.get('text') or '').strip()
+        if not text:
+            continue
+        if db.sentence_exists(text):
+            sent_skip += 1
+            continue
+        tokens = furigana.annotate(text)
+        db.add_sentence(text, r.get('translation'), r.get('source') or 'import',
+                        r.get('url'), tokens, furigana.extract_kanji_words(tokens),
+                        r.get('orig_text'))
+        sent_add += 1
+    # 2) 歌词（按 标题+正文 去重，重新注音+分词）
+    for r in d.get('songs', []):
+        title = (r.get('title') or '').strip()
+        lyrics = r.get('lyrics') or ''
+        if not lyrics or db.song_exists(title, lyrics):
+            song_skip += 1
+            continue
+        tokens, kc = ktv.annotate_lyrics(lyrics)
+        db.add_song(title or '未命名歌曲', r.get('artist') or '', lyrics, tokens, kc)
+        song_add += 1
+    # 3) SRS 进度合并
+    srs_add = srs_merge = 0
+    rows = [r for r in d.get('srs', []) if r.get('kanji')]
+    if rows:
+        srs_add, srs_merge = db.upsert_srs(rows)
+    # 4) 收藏合并
+    fav_s = sum(db.import_fav_sentence(r.get('sentence') or '', r.get('note') or '',
+                                       r.get('created_at'))
+                for r in d.get('fav_sentences', []) if r.get('sentence'))
+    fav_w = sum(db.import_fav_word(r['word'], r.get('reading'), r.get('note') or '',
+                                   r.get('created_at'))
+                for r in d.get('fav_words', []) if r.get('word'))
+    # 5) 历史（保留原始时间戳）
+    hist = d.get('history', [])[:1000]
+    hist_n = db.add_history_rows(hist) if hist else 0
+    db.log('import', f"导入备份：语料+{sent_add} 歌词+{song_add} SRS+{srs_add}/合并{srs_merge}")
+    return jsonify({'sentences_added': sent_add, 'sentences_skipped': sent_skip,
+                    'songs_added': song_add, 'songs_skipped': song_skip,
+                    'srs_added': srs_add, 'srs_merged': srs_merge,
+                    'fav_sentences_added': fav_s, 'fav_words_added': fav_w,
+                    'history_added': hist_n})
 
 
 # ---------- 历史记录 ----------
