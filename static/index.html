@@ -108,9 +108,9 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
   nav::-webkit-scrollbar{display:none}
   nav button{white-space:nowrap;padding:7px 11px;font-size:13px;flex:0 0 auto}
 }
-/* KTV 歌词沉浸模式：打开歌曲后，移动端隐藏顶栏（歌词最大化），桌面端顶栏不吸顶（让 KTV 工具栏正常吸顶） */
-body.ktv-song header{position:static}
-@media(max-width:600px){ body.ktv-song header{display:none} }
+/* KTV 歌词沉浸模式：打开歌曲后默认隐藏顶栏（歌词最大化），工具栏「☰ 菜单」随时唤出（非吸顶，不遮挡 KTV 工具栏） */
+body.ktv-song header{display:none}
+body.ktv-song.showhdr header{display:flex;position:static}
 </style>
 </head>
 <body>
@@ -312,6 +312,7 @@ body.ktv-song header{position:static}
         <button class="btn" onclick="ktvStep(-1)" title="上一首">⏮</button>
         <button class="btn" onclick="ktvStep(1)" title="下一首">⏭</button>
         <b id="ktvTitle" style="flex:1;min-width:100px;font-size:19px;overflow-wrap:anywhere"></b>
+        <button class="btn" onclick="ktvToggleHdr()" title="唤出/隐藏顶部菜单栏">☰ 菜单</button>
         <button class="btn" onclick="ktvCopyTitle()" title="一键复制歌名">复制歌名</button>
       </div>
       <div class="row" id="ktvBarRow2" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
@@ -528,7 +529,7 @@ function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLo
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  document.body.classList.remove('ktv-song');   // 离开 KTV 歌词视图时退出沉浸模式
+  document.body.classList.remove('ktv-song','showhdr');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
   ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
@@ -875,7 +876,8 @@ async function ktvSearch(q){
 async function ktvOpen(id){
   try{ ktvCur=await api('/api/songs/'+id); }catch(e){ return toast('加载失败'); }
   ktvCur._ids=ktvCache.map(s=>s.id);
-  document.body.classList.add('ktv-song');   // 沉浸模式：移动端隐藏顶栏
+  document.body.classList.add('ktv-song');   // 沉浸模式：默认隐藏顶栏
+  document.body.classList.remove('showhdr');
   $('#ktvListWrap').classList.add('hidden');
   $('#ktvSongView').classList.remove('hidden');
   $('#ktvTitle').textContent=ktvCur.title;
@@ -928,7 +930,8 @@ function ktvLineTokens(){
   return t;
 }
 function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
-function ktvBack(){ document.body.classList.remove('ktv-song'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
+function ktvToggleHdr(){ document.body.classList.toggle('showhdr'); }  // 沉浸模式下唤出/隐藏顶栏
+function ktvBack(){ document.body.classList.remove('ktv-song','showhdr'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
   const i=ktvCur._ids.indexOf(ktvCur.id);
