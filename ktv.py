@@ -338,7 +338,7 @@ def annotate_lyrics(lyrics: str):
         try:
             toks = furigana.annotate(ln)
             _seg_mark(toks, ln)      # 学习模式：意思群空格标记
-            tokens.append(toks)
+            tokens.append(_respace(toks, ln))   # 补回 MeCab 吞掉的空格
         except Exception:
             tokens.append([{'s': ln}])
     return tokens, len(kanji)
@@ -395,16 +395,20 @@ def _seg_mark(tokens, line):
 
 
 def ensure_seg(song_row):
-    """兼容旧数据：没有分词标记的歌词 token 即时补算并回写。返回 token 列表。"""
+    """兼容旧数据：没有分词标记/空格被吞的歌词 token 即时补算并回写。返回 token 列表。"""
     toks = json.loads(song_row['tokens']) if song_row['tokens'] else []
     lyrics = song_row['lyrics']
     lines = lyrics.split('\n')
     if len(toks) != len(lines):
         return toks
     changed = False
-    for ln, t in zip(lines, toks):
+    for i, (ln, t) in enumerate(zip(lines, toks)):
         if t and isinstance(t, list) and t and 'k' not in t[0] and 's' in t[0]:
             changed |= _seg_mark(t, ln)
+            fixed = _respace(t, ln)   # 旧数据：补回 MeCab 吞掉的空格
+            if len(fixed) != len(t):
+                toks[i] = fixed
+                changed = True
     if changed:
         import db as _db
         _db.update_song_tokens(song_row['id'], toks)
