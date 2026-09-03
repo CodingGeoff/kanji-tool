@@ -37,8 +37,8 @@ def _bg_fetch(source='all'):
 def _auto_loop():
     while True:
         try:
-            # 省流模式：不再自动抓取任何新语料
-            if db.get_setting('data_saver', '0') != '1':
+            # 省流模式（默认开启）：不再自动抓取任何新语料
+            if db.get_setting('data_saver', '1') != '1':
                 total, _ = db.query_sentences(per=1)
                 # 语料不足500句时快速补充，之后每10分钟慢速持续扩充
                 _bg_fetch('tatoeba' if total < 500 else 'all')
@@ -67,7 +67,7 @@ def stats():
         by_src = {r['source']: r['n'] for r in
                   c.execute('SELECT source, COUNT(*) n FROM sentences GROUP BY source')}
     return jsonify({'sentences': n_sent, 'kanji': n_kanji, 'songs': n_song,
-                    'by_source': by_src, 'data_saver': db.get_setting('data_saver', '0') == '1',
+                    'by_source': by_src, 'data_saver': db.get_setting('data_saver', '1') == '1',
                     'srs': srs.overview(), 'fetching': _fetch_state['running'],
                     'last_fetch': _fetch_state['last'], 'last_added': _fetch_state['last_added']})
 
@@ -409,7 +409,7 @@ def api_rag_similar(sid):
 # ---------- 设置（省流模式等） ----------
 @app.route('/api/settings')
 def api_settings_get():
-    return jsonify({'data_saver': db.get_setting('data_saver', '0') == '1'})
+    return jsonify({'data_saver': db.get_setting('data_saver', '1') == '1'})
 
 
 @app.route('/api/settings', methods=['POST'])
@@ -419,7 +419,7 @@ def api_settings_set():
     if 'data_saver' in d:
         db.set_setting('data_saver', '1' if d['data_saver'] else '0')
         db.log('setting', f"省流模式：{'开启（停止自动抓取）' if d['data_saver'] else '关闭'}")
-    out['data_saver'] = db.get_setting('data_saver', '0') == '1'
+    out['data_saver'] = db.get_setting('data_saver', '1') == '1'
     return jsonify(out)
 
 

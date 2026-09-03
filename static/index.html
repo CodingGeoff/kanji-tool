@@ -101,7 +101,16 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 #toast.show{opacity:1}
 .progressbar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin:10px 0}
 .progressbar i{display:block;height:100%;background:var(--accent2);transition:.3s}
-@media(max-width:600px){.jp{font-size:21px}.review-card .big{font-size:64px}}
+@media(max-width:600px){.jp{font-size:21px}.review-card .big{font-size:64px}
+  /* 移动端：导航单行横向滑动，不再折行占据大量竖向空间 */
+  header{padding:10px 12px;gap:8px}
+  nav{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{white-space:nowrap;padding:7px 11px;font-size:13px;flex:0 0 auto}
+}
+/* KTV 歌词沉浸模式：打开歌曲后，移动端隐藏顶栏（歌词最大化），桌面端顶栏不吸顶（让 KTV 工具栏正常吸顶） */
+body.ktv-song header{position:static}
+@media(max-width:600px){ body.ktv-song header{display:none} }
 </style>
 </head>
 <body>
@@ -363,7 +372,6 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 #ktvLyrics .kana-sub{font-size:.72em;color:var(--accent2);margin-top:2px;font-weight:600}
 #ktvLyrics .kc{display:inline-block;white-space:nowrap;max-width:100%;overflow-wrap:anywhere;vertical-align:baseline}
 #ktvLyrics.noruby rt{visibility:hidden}
-#ktvBar{transition:padding .22s ease}
 #ktvBar.slim{padding-top:7px;padding-bottom:7px}
 #ktvBar.slim #ktvBarRow2{display:none}
 #ktvBar.slim #ktvTitle{font-size:15px}
@@ -520,6 +528,7 @@ function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLo
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
+  document.body.classList.remove('ktv-song');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
   ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
@@ -866,6 +875,7 @@ async function ktvSearch(q){
 async function ktvOpen(id){
   try{ ktvCur=await api('/api/songs/'+id); }catch(e){ return toast('加载失败'); }
   ktvCur._ids=ktvCache.map(s=>s.id);
+  document.body.classList.add('ktv-song');   // 沉浸模式：移动端隐藏顶栏
   $('#ktvListWrap').classList.add('hidden');
   $('#ktvSongView').classList.remove('hidden');
   $('#ktvTitle').textContent=ktvCur.title;
@@ -918,7 +928,7 @@ function ktvLineTokens(){
   return t;
 }
 function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
-function ktvBack(){ $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
+function ktvBack(){ document.body.classList.remove('ktv-song'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
   const i=ktvCur._ids.indexOf(ktvCur.id);
@@ -1015,15 +1025,30 @@ async function toggleSaver(on){
   toast(on?'省流模式已开启：不再自动抓取新语料':'省流模式已关闭：恢复自动扩充语料');
 }
 
-/* ---------- KTV 顶栏：移动端下滑收起、上滑展开 ---------- */
-let _ktvLastY=0;
+/* ---------- KTV 顶栏：下滑收起、上滑展开 ----------
+   防抖动：切换 slim 会改变页面总高度，桌面端贴底时浏览器会钳位 scrollY，
+   由此触发的 scroll 事件会与方向判定形成反馈环导致页面不停抖动。
+   对策：切换时按高度差补偿滚动位置（阅读位置不跳），并在切换后短暂锁定判定。 */
+let _ktvLastY=0, _ktvLockTill=0;
 window.addEventListener('scroll',()=>{
   const bar=$('#ktvBar'); if(!bar)return;
   if($('#tab-ktv').classList.contains('hidden')||$('#ktvSongView').classList.contains('hidden')){bar.classList.remove('slim');return;}
   const y=window.scrollY;
-  if(y>_ktvLastY+6&&y>70) bar.classList.add('slim');
-  else if(y<_ktvLastY-6||y<=10) bar.classList.remove('slim');
-  _ktvLastY=y;
+  const now=performance.now();
+  if(now<_ktvLockTill){ _ktvLastY=y; return; }  // 锁定期内只记录，不判定方向
+  if(y>_ktvLastY+6&&y>70&&!bar.classList.contains('slim')){
+    const h0=bar.offsetHeight;
+    bar.classList.add('slim');
+    window.scrollBy(0,bar.offsetHeight-h0);      // 高度差补偿，阅读位置不跳
+    _ktvLockTill=now+400; _ktvLastY=window.scrollY;
+  }else if((y<_ktvLastY-6||y<=10)&&bar.classList.contains('slim')){
+    const h0=bar.offsetHeight;
+    bar.classList.remove('slim');
+    window.scrollBy(0,bar.offsetHeight-h0);      // 高度差补偿
+    _ktvLockTill=now+400; _ktvLastY=window.scrollY;
+  }else{
+    _ktvLastY=y;
+  }
 },{passive:true});
 
 /* ---------- 启动 ---------- */
