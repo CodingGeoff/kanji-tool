@@ -75,6 +75,10 @@ def init_db():
             updated_at REAL
         );
         CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title);
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
         ''')
 
 
@@ -100,6 +104,18 @@ def _migrate():
 
 
 _migrate()
+
+
+def get_setting(key, default=None):
+    with get_conn() as c:
+        r = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    return r['value'] if r else default
+
+
+def set_setting(key, value):
+    with _lock, get_conn() as c:
+        c.execute('INSERT INTO settings(key,value) VALUES(?,?) '
+                  'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, str(value)))
 
 
 def log(type_, detail):

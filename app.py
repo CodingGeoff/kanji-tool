@@ -13,6 +13,7 @@ import furigana
 import grammar
 import rag
 import ktv
+import structsim
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
@@ -36,16 +37,19 @@ def _bg_fetch(source='all'):
 def _auto_loop():
     while True:
         try:
-            total, _ = db.query_sentences(per=1)
-            # 语料不足500句时快速补充，之后每10分钟慢速持续扩充
-            _bg_fetch('tatoeba' if total < 500 else 'all')
+            # 省流模式：不再自动抓取任何新语料
+            if db.get_setting('data_saver', '0') != '1':
+                total, _ = db.query_sentences(per=1)
+                # 语料不足500句时快速补充，之后每10分钟慢速持续扩充
+                _bg_fetch('tatoeba' if total < 500 else 'all')
         except Exception:
             pass
-        total, _ = db.query_sentences(per=1)
-        time.sleep(60 if total < 500 else 600)
+        time.sleep(90)
 
 
 threading.Thread(target=_auto_loop, daemon=True).start()
+# 句子结构索引后台预热（首次约10秒，之后增量）
+structsim.INDEX.warmup_async()
 
 
 @app.route('/')
@@ -63,7 +67,7 @@ def stats():
         by_src = {r['source']: r['n'] for r in
                   c.execute('SELECT source, COUNT(*) n FROM sentences GROUP BY source')}
     return jsonify({'sentences': n_sent, 'kanji': n_kanji, 'songs': n_song,
-                    'by_source': by_src,
+                    'by_source': by_src, 'data_saver': db.get_setting('data_saver', '0') == '1',
                     'srs': srs.overview(), 'fetching': _fetch_state['running'],
                     'last_fetch': _fetch_state['last'], 'last_added': _fetch_state['last_added']})
 
@@ -359,8 +363,28 @@ def api_rag_search():
                 item['tokens'] = json.loads(item['tokens'])
                 item['score'] = score
                 out.append(item)
-    db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果）')
-    return jsonify({'rows': out})
+    # 句子结构相似检索：输入是整句时，分析成分并匹配结构相似的句子（歌词优先）
+    struct = None
+    if structsim.is_sentence(q):
+        sig = structsim.signature(q)
+        hits = structsim.INDEX.query(q, limit=8)
+        srows = []
+        for sc, kind, title, txt, shared in hits:
+            if sc < 0.25:
+                continue
+            item = {'type': kind, 'title': title, 'text': txt,
+                    'score': round(min(sc, 1.0), 3),
+                    'shared_particles': sorted(shared),
+                    'tokens': furigana.annotate(txt)}
+            srows.append(item)
+        struct = {'is_sentence': True, 'components': structsim.describe(sig, q),
+                  'rows': srows}
+    db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果'
+                 + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
+    resp = {'rows': out}
+    if struct:
+        resp['struct'] = struct
+    return jsonify(resp)
 
 
 @app.route('/api/rag/similar/<int:sid>')
@@ -382,6 +406,23 @@ def api_rag_similar(sid):
     return jsonify({'rows': out})
 
 
+# ---------- 设置（省流模式等） ----------
+@app.route('/api/settings')
+def api_settings_get():
+    return jsonify({'data_saver': db.get_setting('data_saver', '0') == '1'})
+
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings_set():
+    d = request.json or {}
+    out = {}
+    if 'data_saver' in d:
+        db.set_setting('data_saver', '1' if d['data_saver'] else '0')
+        db.log('setting', f"省流模式：{'开启（停止自动抓取）' if d['data_saver'] else '关闭'}")
+    out['data_saver'] = db.get_setting('data_saver', '0') == '1'
+    return jsonify(out)
+
+
 # ---------- KTV 歌词 ----------
 @app.route('/api/songs')
 def api_songs():
@@ -397,6 +438,29 @@ def api_song_get(sid):
         return jsonify({'error': 'not found'}), 404
     row['tokens'] = ktv.ensure_seg(row) if row['tokens'] else []
     return jsonify(row)
+
+
+@app.route('/api/songs/search')
+def api_songs_search():
+    """在歌词行中搜索（语料库·高级学习模式用）。返回逐行命中+注音。"""
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'rows': [], 'total': 0})
+    with db.get_conn() as c:
+        songs = c.execute('SELECT id, title, lyrics FROM songs').fetchall()
+    rows, seen = [], set()
+    for s in songs:
+        for ln in (s['lyrics'] or '').split('\n'):
+            t = ln.strip()
+            if t and q in t and (s['id'], t) not in seen:
+                seen.add((s['id'], t))
+                rows.append({'sid': s['id'], 'title': s['title'], 'line': t,
+                             'tokens': furigana.annotate(t)})
+            if len(rows) >= 30:
+                break
+        if len(rows) >= 30:
+            break
+    return jsonify({'rows': rows, 'total': len(rows)})
 
 
 @app.route('/api/songs/import', methods=['POST'])

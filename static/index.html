@@ -121,6 +121,9 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
     <label class="advtog" id="advTog" title="开启后点击任意句子即可解析全部语法点">
       <input type="checkbox" id="advMode" onchange="toggleAdv()"><span>高级模式</span>
     </label>
+    <label class="advtog" title="省流模式：开启后停止后台自动抓取新语料，节省流量（手动抓取不受影响）">
+      <input type="checkbox" id="saverMode" onchange="toggleSaver(this.checked)"><span>省流</span>
+    </label>
     <select id="voiceSel" class="mini" title="朗读音色">
       <option value="ja-JP-NanamiNeural">七海 Nanami（女·日语原生）</option>
       <option value="ja-JP-KeitaNeural">圭太 Keita（男·日语原生）</option>
@@ -184,6 +187,9 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
       <input id="corpusQ" placeholder="搜索句子/翻译…" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')loadCorpus(1)">
       <button class="btn" onclick="loadCorpus(1)">搜索</button>
       <button class="btn primary" onclick="toggleAddForm()">＋ 手动添加</button>
+      <label class="advtog" title="高级学习模式：搜索时同时检索已导入的歌词（含汉字行，带注音）">
+        <input type="checkbox" id="corpusSongs" checked onchange="localStorage.cs=this.checked?'1':'0';loadCorpus(1)"><span>🎵 含歌词</span>
+      </label>
     </div>
     <div id="addForm" class="hidden" style="margin-top:12px">
       <textarea id="addText" placeholder="日语句子（自动注音）"></textarea>
@@ -217,10 +223,10 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 <!-- ============ 收藏夹 ============ -->
 <section id="tab-favs" class="hidden">
   <div class="card">
-    <b>🔍 RAG 语义检索</b>
-    <div class="muted" style="margin:6px 0 10px">基于 TF-IDF 字符向量索引的相似度检索——输入任意日文或关键词，从本地语料库召回语义最相关的例句（不只是字面匹配）。</div>
+    <b>🔍 RAG 语义检索 / Web 搜索</b>
+    <div class="muted" style="margin:6px 0 10px">输入<b>关键词</b>→语义相似例句；输入<b>整句</b>→自动分析句子成分（助词链/词性链/句尾形态），从语料库+歌词中匹配<b>结构相似</b>的句子（歌词优先）。</div>
     <div class="row">
-      <input id="ragQ" placeholder="例：勉強を始める / 天气 / 食べ物…" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
+      <input id="ragQ" placeholder="词：勉強 / 食べ物…　　整句：私は毎日電車で学校に行く。" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
       <button class="btn primary" onclick="ragSearch()">检索</button>
     </div>
     <div id="ragOut" style="margin-top:8px"></div>
@@ -291,7 +297,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 
   <!-- 歌曲视图 -->
   <div id="ktvSongView" class="hidden">
-    <div class="card" style="position:sticky;top:0;z-index:5">
+    <div class="card" id="ktvBar" style="position:sticky;top:0;z-index:5">
       <div class="row" style="align-items:center;gap:6px;flex-wrap:wrap">
         <button class="btn" onclick="ktvBack()" title="返回歌单">‹ 歌单</button>
         <button class="btn" onclick="ktvStep(-1)" title="上一首">⏮</button>
@@ -299,7 +305,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
         <b id="ktvTitle" style="flex:1;min-width:100px;font-size:19px;overflow-wrap:anywhere"></b>
         <button class="btn" onclick="ktvCopyTitle()" title="一键复制歌名">复制歌名</button>
       </div>
-      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
+      <div class="row" id="ktvBarRow2" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
         <span class="muted" id="ktvMeta" style="font-size:12.5px"></span>
         <span style="flex:1"></span>
         <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
@@ -357,6 +363,11 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 #ktvLyrics .kana-sub{font-size:.72em;color:var(--accent2);margin-top:2px;font-weight:600}
 #ktvLyrics .kc{display:inline-block;white-space:nowrap;max-width:100%;overflow-wrap:anywhere;vertical-align:baseline}
 #ktvLyrics.noruby rt{visibility:hidden}
+#ktvBar{transition:padding .22s ease}
+#ktvBar.slim{padding-top:7px;padding-bottom:7px}
+#ktvBar.slim #ktvBarRow2{display:none}
+#ktvBar.slim #ktvTitle{font-size:15px}
+#ktvBar.slim .btn{padding:4px 10px}
 #ktvSongList .ksong{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer}
 #ktvSongList .ksong:active{background:rgba(127,127,127,.08)}
 #ktvSongList .ksong+.ksong{border-top:1px solid var(--line)}
@@ -619,9 +630,23 @@ async function addSentence(){
   toast(d.repaired?'检测到内嵌注音，已自动修复后入库':'已添加并自动注音');loadCorpus(1);
 }
 async function loadCorpus(page){
-  const q=encodeURIComponent($('#corpusQ').value||'');
+  const qtxt=$('#corpusQ').value.trim();
+  const q=encodeURIComponent(qtxt||'');
   const d=await api(`/api/sentences?page=${page}&q=${q}`);
-  $('#corpusList').innerHTML=d.rows.map(r=>`
+  let lyricHtml='';
+  if($('#corpusSongs').checked && qtxt){
+    try{
+      const ls=await api('/api/songs/search?q='+encodeURIComponent(qtxt));
+      lyricHtml=(ls.rows||[]).map(r=>`
+    <div class="sent-item" style="border-left:3px solid var(--accent2)">
+      <div class="jp" data-raw="${esc(r.line)}" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.line)}</div>
+      <div class="meta"><span class="tag">🎵 歌词</span><span>${esc(r.title)}</span>
+        <button onclick="ktvJump(${r.sid})">在KTV打开</button></div>
+    </div>`).join('');
+      if(lyricHtml) lyricHtml='<div class="muted" style="margin:2px 0 8px">🎵 歌词命中</div>'+lyricHtml+'<div class="muted" style="margin:8px 0 4px">📚 语料库</div>';
+    }catch(e){}
+  }
+  $('#corpusList').innerHTML=lyricHtml+d.rows.map(r=>`
     <div class="sent-item" id="sent-${r.id}">
       <div class="jp" data-raw="${esc(r.text)}" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
@@ -639,6 +664,7 @@ async function loadCorpus(page){
     <span class="muted">${page}/${pages} · 共${d.total}句</span>
     <button class="btn" ${page>=pages?'disabled':''} onclick="loadCorpus(${page+1})">下一页</button>`;
 }
+function ktvJump(sid){document.querySelector('[data-tab=ktv]').click();ktvOpen(sid);}
 async function editSentence(id){
   const el=$(`#sent-${id}`);
   const text=prompt('修改句子（将重新注音）：',el.querySelector('.jp').dataset.raw||el.querySelector('.jp').textContent.replace(/\s+/g,''));
@@ -771,13 +797,33 @@ async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
   const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,limit:10})});
-  $('#ragOut').innerHTML=(d.rows||[]).map(r=>`
+  let html='';
+  if(d.struct){
+    const c=d.struct.components;
+    html+=`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;margin:6px 0;background:linear-gradient(135deg,#fdf7ee,#f0f7ff)">
+      <b>📐 句子成分分析</b> <span class="muted">（识别为整句）</span>
+      <div class="meta" style="margin-top:6px">${c.particles.map(p=>`<span class="tag">${esc(p)}</span>`).join(' ')}
+        <span class="muted">← 助词链</span></div>
+      <div style="margin-top:5px;font-size:14px">${esc(c.pos_chain)}　<span class="muted">句尾：</span><b>${esc(c.ending)}</b></div>
+      <div class="muted" style="margin:10px 0 2px"><b>结构相似句（歌词优先）</b></div>
+      ${(d.struct.rows||[]).map(r=>`
+        <div class="sent-item" style="margin-top:6px;${r.type==='lyric'?'border-left:3px solid var(--accent2)':''}">
+          <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+          <div class="meta"><span class="tag">${r.type==='lyric'?'🎵 '+esc(r.title):'📚 语料'}</span>
+            <span class="tag">结构 ${(r.score*100).toFixed(0)}%</span>
+            ${r.shared_particles&&r.shared_particles.length?`<span class="muted">共用助词 ${r.shared_particles.map(esc).join('・')}</span>`:''}</div>
+        </div>`).join('')||'<div class="muted">语料库中暂无结构相似句</div>'}
+    </div>
+    <div class="muted" style="margin:10px 0 4px">语义相似（TF-IDF）：</div>`;
+  }
+  html+=(d.rows||[]).map(r=>`
     <div class="sent-item">
       <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
       ${r.translation?`<div class="tr muted">${esc(r.translation)}</div>`:''}
       <div class="meta"><span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span>
         <button onclick="favToggle(${r.id},this)">☆收藏</button></div>
     </div>`).join('')||'<div class="muted" style="padding:10px 0">没有找到相关例句</div>';
+  $('#ragOut').innerHTML=html;
 }
 async function doCleanup(){
   toast('清理中…');
@@ -962,9 +1008,29 @@ function importPick(){
   inp.click();
 }
 
+/* ---------- 省流模式 ---------- */
+async function initSaver(){try{const st=await api('/api/settings');$('#saverMode').checked=!!st.data_saver;}catch(e){}}
+async function toggleSaver(on){
+  await api('/api/settings',{method:'POST',body:JSON.stringify({data_saver:on})});
+  toast(on?'省流模式已开启：不再自动抓取新语料':'省流模式已关闭：恢复自动扩充语料');
+}
+
+/* ---------- KTV 顶栏：移动端下滑收起、上滑展开 ---------- */
+let _ktvLastY=0;
+window.addEventListener('scroll',()=>{
+  const bar=$('#ktvBar'); if(!bar)return;
+  if($('#tab-ktv').classList.contains('hidden')||$('#ktvSongView').classList.contains('hidden')){bar.classList.remove('slim');return;}
+  const y=window.scrollY;
+  if(y>_ktvLastY+6&&y>70) bar.classList.add('slim');
+  else if(y<_ktvLastY-6||y<=10) bar.classList.remove('slim');
+  _ktvLastY=y;
+},{passive:true});
+
 /* ---------- 启动 ---------- */
 initVoices();
 initAdv();
+initSaver();
+if(localStorage.cs==='0')$('#corpusSongs').checked=false;
 if(localStorage.getItem('ktvSeg')==='0')$('#ktvSegTog').checked=false;
 loadReview();
 setInterval(refreshStats,60000);
