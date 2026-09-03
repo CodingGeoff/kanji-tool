@@ -11,7 +11,21 @@ import threading
 ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
 
-from app import app, find_free_port
+
+def find_free_port(base=5000, tries=50):
+    """从 base 开始向上探测可用端口（被占用则自动 +1）。
+    定义在启动器内部，不依赖 app.py，避免后端文件被改动后启动失败。"""
+    for port in range(base, base + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f'{base}~{base + tries} 范围内没有可用端口')
+
+
+from app import app
 import db
 
 db.init_db()

@@ -4,10 +4,45 @@
 
 ## 启动
 
+### 方式一：桌面快捷方式（推荐日常使用）
+
+运行一次 `python make_shortcut.py` 生成桌面快捷方式「日语汉字学习工具」，之后双击即可启动并自动打开浏览器。
+
+### 方式二：start.bat / start.py（推荐开发使用）
+
 ```bash
-pip install flask fugashi unidic-lite requests sudachipy sudachidict_core edge-tts
-python3 app.py        # 打开 http://localhost:5000
+venv\Scripts\python.exe start.py     # Windows
+./venv/bin/python start.py           # Linux/macOS
 ```
+
+启动器会自动完成：探测可用端口 → 打印 API 列表 → **等服务真正开始监听后再打开浏览器**（不会出现「拒绝连接」）。
+
+### 方式三：直接运行（最简）
+
+```bash
+pip install -r requirements.txt
+python app.py                       # 固定使用 5000 端口
+```
+
+### 端口自动自增
+
+`start.py` 内置 `find_free_port(5000)`：5000 被占用时自动尝试 5001、5002……（最多 +50），并在控制台提示实际使用的端口。该函数定义在 `start.py` 内部、不依赖 `app.py`，因此后端文件无论如何改动都不会导致启动器崩溃。
+
+这解决了两个常见问题：
+- 旧服务进程残留占用 5000 端口导致新实例无法启动
+- 端口被其他程序占用
+
+### 常见故障排查
+
+| 现象 | 原因 | 解决方法 |
+|------|------|----------|
+| `ImportError: cannot import name 'find_free_port'` | 运行了旧版 `start.py`（从 `app.py` 导入该函数） | 更新到内置 `find_free_port` 的 `start.py`；新版启动器不再依赖 `app.py` |
+| 浏览器「拒绝连接」 | 服务尚未启动完成浏览器就打开了，或启动时报错退出 | `start.py` 已改为端口就绪后才开浏览器；若仍出现，查看控制台报错信息 |
+| 端口冲突 | 5000 被残留进程占用 | `start.py` 自动换端口；也可手动结束旧进程：`Get-Process python \| Stop-Process` |
+| 高级模式点击句子「解析失败」 | 正在运行的是没有 `/api/grammar` 接口的旧服务进程 | 重启服务（结束旧 python 进程后重新运行 `start.py`） |
+| 修改过的代码「自动变回去」 | git 操作（checkout/reset）或其他会话覆盖了文件 | 用 `git status` / `git diff` 检查；重要改动及时 commit |
+
+> 提示：更新代码后务必重启服务，否则浏览器访问的仍是旧进程的逻辑。
 
 ## 功能对照需求
 
@@ -78,6 +113,8 @@ python3 app.py        # 打开 http://localhost:5000
 
 ## 文件结构
 - `app.py` — Flask 后端 + 后台抓取线程
+- `start.py` — 启动器（端口自增 + 服务就绪后自动开浏览器 + API 列表；`find_free_port` 内置于此）
+- `start.bat` — Windows 一键启动入口（桌面快捷方式指向它）
 - `furigana.py` — 注音引擎（可独立运行 `python3 furigana.py` 自测）
 - `corpus.py` — 三渠道语料抓取
 - `srs.py` — 艾宾浩斯调度
