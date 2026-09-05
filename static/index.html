@@ -249,6 +249,28 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
       <input id="ragQ" placeholder="词：勉強 / 食べ物…　　整句：私は毎日電車で学校に行く。" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
       <button class="btn primary" onclick="ragSearch()">检索</button>
     </div>
+    <div class="row" style="margin-top:8px;gap:10px;flex-wrap:wrap;align-items:center">
+      <span class="muted" style="font-size:12.5px">⚙ 每首上限</span>
+      <select id="ragPerSong" class="mini" onchange="ragCfgSave()">
+        <option value="1">1 句</option><option value="2">2 句</option>
+        <option value="3" selected>3 句</option><option value="5">5 句</option>
+        <option value="0">不限</option>
+      </select>
+      <span class="muted" style="font-size:12.5px">歌词最低匹配</span>
+      <select id="ragMinAff" class="mini" onchange="ragCfgSave()">
+        <option value="0">全部</option>
+        <option value="0.12">12%</option>
+        <option value="0.18" selected>18%</option>
+        <option value="0.25">25%</option>
+      </select>
+      <span class="muted" style="font-size:12.5px">语料最低相似</span>
+      <select id="ragMinScore" class="mini" onchange="ragCfgSave()">
+        <option value="0" selected>全部</option>
+        <option value="0.1">10%</option>
+        <option value="0.15">15%</option>
+      </select>
+    </div>
+    <div id="ragHist" class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap"></div>
     <div id="ragOut" style="margin-top:8px"></div>
   </div>
   <div class="card">
@@ -813,14 +835,37 @@ async function showSimilar(sid,btn){
       <span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span> ${spkBtn(r.text)}
     </div>`).join(''):'<div class="muted" style="margin-top:8px">暂无相似句</div>';
 }
+function ragCfg(){
+  return {per_song:+$('#ragPerSong').value, min_affinity:+$('#ragMinAff').value,
+          min_score:+$('#ragMinScore').value, limit:12};
+}
+function ragCfgSave(){
+  localStorage.ragCfg=JSON.stringify(ragCfg());
+  ragHistRender();
+  if($('#ragQ').value.trim()) ragSearch();
+}
+function ragHistRender(){
+  let hist=[]; try{hist=JSON.parse(localStorage.ragHist)||[]}catch(e){}
+  $('#ragHist').innerHTML=hist.length
+    ? '<span class="muted" style="font-size:12.5px">🕘 最近：</span>'+hist.map(h=>
+      `<button class="btn mini" onclick="$('#ragQ').value=this.dataset.q;ragSearch()" data-q="${esc(h)}">${esc(h.length>14?h.slice(0,14)+'…':h)}</button>`).join('')
+    : '';
+}
 async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
-  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,limit:10})});
+  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,...ragCfg()})});
+  let hist=[]; try{hist=JSON.parse(localStorage.ragHist)||[]}catch(e){}
+  hist=[q,...hist.filter(x=>x!==q)].slice(0,8);
+  localStorage.ragHist=JSON.stringify(hist); ragHistRender();
   let html='';
   if(d.lyrics&&d.lyrics.length){
-    html+=`<div class="muted" style="margin:6px 0 4px"><b>🎵 歌词命中</b>（词/句自动匹配）</div>`+
-      d.lyrics.map(r=>`
+    html+=`<div class="muted" style="margin:6px 0 4px"><b>🎵 歌词命中</b>（词/句自动匹配 · 已去重）</div>`+
+      d.lyrics.map(r=> r.title_match
+        ? `<div class="sent-item" style="border-left:3px solid var(--accent2)">
+      <div style="font-size:17px;font-weight:600">🎵《${esc(r.title)}》<span class="muted" style="font-weight:400">—— 歌名匹配（整首）</span></div>
+      <div class="meta"><button onclick="ktvJump(${r.sid})">在KTV打开</button></div></div>`
+        : `
     <div class="sent-item" style="border-left:3px solid var(--accent2)">
       <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
       <div class="meta"><span class="tag">🎵 ${esc(r.title)}</span>
@@ -1093,6 +1138,12 @@ async function toggleSaver(on){
 initVoices();
 initAdv();
 initSaver();
+try{const rc=JSON.parse(localStorage.ragCfg);if(rc){
+  if(rc.per_song!==undefined)$('#ragPerSong').value=rc.per_song;
+  if(rc.min_affinity!==undefined)$('#ragMinAff').value=rc.min_affinity;
+  if(rc.min_score!==undefined)$('#ragMinScore').value=rc.min_score;
+}}catch(e){}
+ragHistRender();
 if(localStorage.cs==='0')$('#corpusSongs').checked=false;
 if(localStorage.getItem('ktvSeg')==='0')$('#ktvSegTog').checked=false;
 loadReview();

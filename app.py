@@ -367,7 +367,8 @@ def api_rag_search():
     struct = None
     if structsim.is_sentence(q):
         sig = structsim.signature(q)
-        hits = structsim.INDEX.query(q, limit=8)
+        hits = structsim.INDEX.query(q, limit=8,
+                                     per_song=int(d.get('per_song', 2)))
         srows = []
         for sc, kind, title, sid, txt, shared in hits:
             if sc < 0.25:
@@ -382,11 +383,17 @@ def api_rag_search():
         struct = {'is_sentence': True, 'components': comp, 'rows': srows}
     db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果'
                  + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
+    min_score = float(d.get('min_score', 0))
+    if min_score:
+        out = [r for r in out if r.get('score', 0) >= min_score]
     resp = {'rows': out}
     # 任意查询（词/句）自动匹配相关歌词行（亲和检索：子串+字符bigram）
-    lyric_hits = structsim.INDEX.lyric_affinity(q, limit=8)
+    lyric_hits = structsim.INDEX.lyric_affinity(
+        q, limit=8, per_song=int(d.get('per_song', 3)),
+        min_aff=float(d.get('min_affinity', 0.18)))
     for h in lyric_hits:
-        h['tokens'] = furigana.annotate(h['text'])
+        if h.get('text'):
+            h['tokens'] = furigana.annotate(h['text'])
     if lyric_hits:
         resp['lyrics'] = lyric_hits
     if struct:

@@ -178,32 +178,53 @@ class StructIndex:
         if not up2date and not self._warming:
             self._build()
 
-    def lyric_affinity(self, q, limit=8):
-        """任意查询（词/短语/句子）→ 歌词行亲和检索：字符bigram Dice + 子串加成。"""
+    def lyric_affinity(self, q, limit=8, per_song=3, min_aff=0.18):
+        """任意查询（词/短语/句子）→ 歌词行亲和检索：字符bigram Dice + 子串加成。
+        修复副歌重复：相同行去重；每首歌最多 per_song 条（0=不限）；
+        歌名命中 → 置顶「整首歌曲」条目。"""
         self.ensure()
         qb = _bigrams(q)
         with self._lock:
             lines = list(self._song_lines)
-        out = []
+            titles = {}
+            for sid, title, _ln, _sig in lines:
+                titles.setdefault(sid, title)
+        out, seen, song_cnt = [], set(), {}
+        # 歌名匹配（置顶）
+        for sid, title in titles.items():
+            if q and q in title:
+                out.append({'sid': sid, 'title': title, 'text': None,
+                            'title_match': True, 'affinity': 1.0})
+        cand = []
         for sid, title, ln, _sig in lines:
             lb = _bigrams(ln)
             if not lb:
                 continue
             inter = len(qb & lb)
             dice = 2 * inter / (len(qb) + len(lb))
-            if q in ln:
+            if q and q in ln:
                 dice = min(1.0, dice + 0.35)
-            if dice >= 0.18:
-                out.append({'sid': sid, 'title': title, 'text': ln,
-                            'affinity': round(dice, 3)})
-        out.sort(key=lambda x: -x['affinity'])
+            if dice >= min_aff:
+                cand.append((dice, sid, title, ln))
+        cand.sort(key=lambda x: -x[0])
+        for dice, sid, title, ln in cand:
+            key = re.sub(r'[\s。、！？!?]', '', ln)
+            if key in seen:
+                continue
+            if per_song and song_cnt.get(sid, 0) >= per_song:
+                continue
+            seen.add(key)
+            song_cnt[sid] = song_cnt.get(sid, 0) + 1
+            out.append({'sid': sid, 'title': title, 'text': ln,
+                        'affinity': round(dice, 3)})
+            if len(out) >= limit:
+                break
         return out[:limit]
 
-    def query(self, text, limit=10):
+    def query(self, text, limit=10, per_song=2):
         """返回 [(score, kind, title, sid, line_text, shared_particles)]。
-        高级排序：助词 IDF 加权（は/を/が 等高频助词降权，へ/より/と 等信息量大的助词升权）
-        + 词性链 LCS + 句尾形态 + 长度接近度 + 歌词加成；
-        去重（副歌重复行只留一条）+ 多样性（每首歌最多 2 条，防止单曲刷屏）。"""
+        高级排序：助词 IDF 加权 + 词性链 LCS + 句尾形态 + 长度接近度 + 歌词加成；
+        去重（副歌重复行只留一条）+ 多样性（每首歌最多 per_song 条，0=不限）。"""
         self.ensure()
         sig = signature(text)
         out = []
@@ -243,7 +264,7 @@ class StructIndex:
             key = re.sub(r'[\s。、！？!?]', '', txt)
             if key in seen_line:
                 continue
-            if kind == 'lyric' and song_cnt.get(sid, 0) >= 2:
+            if kind == 'lyric' and per_song and song_cnt.get(sid, 0) >= per_song:
                 continue
             if kind == 'lyric':
                 song_cnt[sid] = song_cnt.get(sid, 0) + 1
