@@ -50,8 +50,17 @@ for src, dst in ROMAJI_CASES:
 
 ROMAJI_LINE = [
     ('Kimi wa boku no hikari', True),
-    ('wow wow wow', True),
     ('yoru no sora ni hoshi ga mabataku', True),
+    ('la la la', True),
+    ('wow wow wow', False),               # 英文感叹词（词尾辅音 w）
+    # ===== 英文歌词行绝不转片假名（多层判别） =====
+    ('Brave shine', False),
+    ('Stay the night', False),
+    ('You save my life', False),
+    ("You're breaking dawn", False),
+    ('Your brave shine', False),
+    ('Break down', False),
+    ('I love you', False),
     ('夢ならばどれほどよかったでしょう', False),
     ('終わり', False),
     ('123', False),
@@ -210,6 +219,12 @@ ryo = [x for x in lyr4[0] if x.get('s') == '凉']
 check(ryo and ryo[0].get('r') in ('すず', 'りょう'), f'3.9 凉 有注音={ryo}')
 recon4 = ''.join(x.get('s') or '' for x in lyr4[0])
 check(recon4 == '凉しい風の中で会おう', '3.9b 简体字显示保留原文')
+
+# 3.9c 英文行 token：en 标记、绝不转片假名
+lines_en, _ = ktv.annotate_lyrics('Brave shine\nYou save my life\nKimi wa boku no hikari')
+check(lines_en[0] == [{'s': 'Brave shine', 'en': True}], f'3.9c 英文行={lines_en[0]}')
+check(lines_en[1][0].get('en') and 'k' not in lines_en[1][0], '3.9c2 英文行无片假名')
+check(lines_en[2][0].get('k') == 'キミ ワ ボク ノ ヒカリ', '3.9c3 真罗马音仍转换')
 
 # 3.10 注音一致性回填：同字混注 → 全部标注
 synthetic = [{'s': '風', 'r': 'かぜ'}, {'s': 'が'}, {'s': '風', 'r': None}]

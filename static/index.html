@@ -11,7 +11,27 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Hiragino Sans","Noto Sans JP","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+*{-webkit-tap-highlight-color:transparent}
+button,.btn,label,input,select,textarea,a{touch-action:manipulation}
+html{scroll-behavior:smooth}
 header{background:var(--card);border-bottom:1px solid var(--line);padding:14px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+#nav{display:flex;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;max-width:100%}
+#nav::-webkit-scrollbar{display:none}
+#nav button{flex:0 0 auto;white-space:nowrap}
+/* KTV 沉浸模式：进入歌词即隐藏全局顶栏（全设备），☰ 唤出时为非吸顶普通流 */
+body.ktv-immersive header{display:none}
+body.ktv-immersive.ktv-menu header{display:block;position:static}
+/* 歌词界面默认连工具栏也收起：全屏看词，右上角小 ☰ 悬浮按钮唤回（角落小目标，不易误触） */
+#ktvFab{display:none;position:fixed;top:calc(10px + env(safe-area-inset-top));right:14px;z-index:60;
+  width:38px;height:38px;border-radius:50%;border:1px solid rgba(255,255,255,.25);
+  background:rgba(30,30,30,.5);color:#fff;font-size:17px;line-height:1;
+  backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+#ktvFab:active{transform:scale(.9)}
+body.ktv-immersive.barhide #ktvBar{display:none}
+body.ktv-immersive.barhide #ktvFab{display:block}
+#ktvLyrics .kstanza:last-child{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+/* 结构相似结果：共用助词高亮 */
+.pm{background:linear-gradient(transparent 55%,#ffd9a0 55%);padding:0 1px;font-weight:700}
 header h1{font-size:19px;letter-spacing:1px}
 header h1 span{color:var(--accent)}
 nav{display:flex;gap:4px;flex-wrap:wrap}
@@ -101,16 +121,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 #toast.show{opacity:1}
 .progressbar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin:10px 0}
 .progressbar i{display:block;height:100%;background:var(--accent2);transition:.3s}
-@media(max-width:600px){.jp{font-size:21px}.review-card .big{font-size:64px}
-  /* 移动端：导航单行横向滑动，不再折行占据大量竖向空间 */
-  header{padding:10px 12px;gap:8px}
-  nav{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  nav::-webkit-scrollbar{display:none}
-  nav button{white-space:nowrap;padding:7px 11px;font-size:13px;flex:0 0 auto}
-}
-/* KTV 歌词沉浸模式：打开歌曲后默认隐藏顶栏（歌词最大化），工具栏「☰ 菜单」随时唤出（非吸顶，不遮挡 KTV 工具栏） */
-body.ktv-song header{display:none}
-body.ktv-song.showhdr header{display:flex;position:static}
+@media(max-width:600px){.jp{font-size:21px}.review-card .big{font-size:64px}}
 </style>
 </head>
 <body>
@@ -279,6 +290,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
         <div class="row" style="gap:6px">
           <button class="btn mini" onclick="exportAll()" title="导出全部数据（语料+歌词+进度+收藏）为JSON">📤 导出</button>
           <button class="btn mini" onclick="importPick()" title="导入JSON备份，自动合并去重">📥 导入</button>
+          <button class="btn mini" onclick="ktvReannotate()" title="引擎升级后，全部歌曲用最新算法重新注音">♻ 重新注音</button>
           <button class="btn primary" onclick="ktvShowImport(true)">＋ 导入歌词</button>
         </div>
       </div>
@@ -306,13 +318,15 @@ body.ktv-song.showhdr header{display:flex;position:static}
 
   <!-- 歌曲视图 -->
   <div id="ktvSongView" class="hidden">
+    <button id="ktvFab" onclick="ktvToggleBar()" title="展开工具栏（切歌/复制/字号/菜单）">☰</button>
     <div class="card" id="ktvBar" style="position:sticky;top:0;z-index:5">
       <div class="row" style="align-items:center;gap:6px;flex-wrap:wrap">
         <button class="btn" onclick="ktvBack()" title="返回歌单">‹ 歌单</button>
         <button class="btn" onclick="ktvStep(-1)" title="上一首">⏮</button>
         <button class="btn" onclick="ktvStep(1)" title="下一首">⏭</button>
         <b id="ktvTitle" style="flex:1;min-width:100px;font-size:19px;overflow-wrap:anywhere"></b>
-        <button class="btn" onclick="ktvToggleHdr()" title="唤出/隐藏顶部菜单栏">☰ 菜单</button>
+        <button class="btn mini" onclick="ktvToggleBar()" title="收起工具栏，全屏看词（右上角 ☰ 随时唤回）">⌃ 收起</button>
+        <button class="btn" onclick="ktvMenu(this)" title="唤出/隐藏顶部菜单（音色·语速·导航）" id="ktvMenuBtn">☰ 菜单</button>
         <button class="btn" onclick="ktvCopyTitle()" title="一键复制歌名">复制歌名</button>
       </div>
       <div class="row" id="ktvBarRow2" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
@@ -373,10 +387,6 @@ body.ktv-song.showhdr header{display:flex;position:static}
 #ktvLyrics .kana-sub{font-size:.72em;color:var(--accent2);margin-top:2px;font-weight:600}
 #ktvLyrics .kc{display:inline-block;white-space:nowrap;max-width:100%;overflow-wrap:anywhere;vertical-align:baseline}
 #ktvLyrics.noruby rt{visibility:hidden}
-#ktvBar.slim{padding-top:7px;padding-bottom:7px}
-#ktvBar.slim #ktvBarRow2{display:none}
-#ktvBar.slim #ktvTitle{font-size:15px}
-#ktvBar.slim .btn{padding:4px 10px}
 #ktvSongList .ksong{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer}
 #ktvSongList .ksong:active{background:rgba(127,127,127,.08)}
 #ktvSongList .ksong+.ksong{border-top:1px solid var(--line)}
@@ -527,9 +537,9 @@ function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLo
 
 /* ---------- 导航 ---------- */
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
+  document.body.classList.remove('ktv-immersive','ktv-menu');
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  document.body.classList.remove('ktv-song','showhdr');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
   ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
@@ -808,20 +818,37 @@ async function ragSearch(){
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
   const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,limit:10})});
   let html='';
+  if(d.lyrics&&d.lyrics.length){
+    html+=`<div class="muted" style="margin:6px 0 4px"><b>🎵 歌词命中</b>（词/句自动匹配）</div>`+
+      d.lyrics.map(r=>`
+    <div class="sent-item" style="border-left:3px solid var(--accent2)">
+      <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+      <div class="meta"><span class="tag">🎵 ${esc(r.title)}</span>
+        <span class="tag">匹配度 ${(r.affinity*100).toFixed(0)}%</span>
+        <button onclick="ktvJump(${r.sid})">在KTV打开</button></div>
+    </div>`).join('');
+    html+='<div class="muted" style="margin:10px 0 4px">📚 语料库</div>';
+  }
   if(d.struct){
     const c=d.struct.components;
+    const markShared=(toks,shared)=>toks.map(t=>{
+      const base=rubyHTML([t]);
+      return (shared&&shared.includes(t.s)&&t.s.length<=2)?`<b class="pm">${base}</b>`:base;
+    }).join('');
     html+=`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;margin:6px 0;background:linear-gradient(135deg,#fdf7ee,#f0f7ff)">
       <b>📐 句子成分分析</b> <span class="muted">（识别为整句）</span>
+      ${c.template?`<div style="margin-top:6px"><span class="tag" style="font-size:13px">🧩 结构模板：${esc(c.template)}</span></div>`:''}
       <div class="meta" style="margin-top:6px">${c.particles.map(p=>`<span class="tag">${esc(p)}</span>`).join(' ')}
         <span class="muted">← 助词链</span></div>
       <div style="margin-top:5px;font-size:14px">${esc(c.pos_chain)}　<span class="muted">句尾：</span><b>${esc(c.ending)}</b></div>
-      <div class="muted" style="margin:10px 0 2px"><b>结构相似句（歌词优先）</b></div>
+      <div class="muted" style="margin:10px 0 2px"><b>结构相似句（歌词优先 · 已去重）</b></div>
       ${(d.struct.rows||[]).map(r=>`
         <div class="sent-item" style="margin-top:6px;${r.type==='lyric'?'border-left:3px solid var(--accent2)':''}">
-          <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+          <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${markShared(r.tokens,r.shared_particles)} ${spkBtn(r.text)}</div>
           <div class="meta"><span class="tag">${r.type==='lyric'?'🎵 '+esc(r.title):'📚 语料'}</span>
             <span class="tag">结构 ${(r.score*100).toFixed(0)}%</span>
-            ${r.shared_particles&&r.shared_particles.length?`<span class="muted">共用助词 ${r.shared_particles.map(esc).join('・')}</span>`:''}</div>
+            ${r.shared_particles&&r.shared_particles.length?`<span class="muted">共用助词 ${r.shared_particles.map(esc).join('・')}</span>`:''}
+            ${r.type==='lyric'?`<button onclick="ktvJump(${r.id})">在KTV打开</button>`:`<button onclick="favToggle(${r.id},this)">☆收藏</button>`}</div>
         </div>`).join('')||'<div class="muted">语料库中暂无结构相似句</div>'}
     </div>
     <div class="muted" style="margin:10px 0 4px">语义相似（TF-IDF）：</div>`;
@@ -873,13 +900,19 @@ async function ktvSearch(q){
       <button class="btn mini" onclick="event.stopPropagation();ktvQuickCopy(this,'${esc(s.title).replace(/'/g,"&#39;")}')" title="复制歌名">复制</button>
     </div>`).join('')+'</div>';
 }
+function ktvMenu(btn){
+  const on=document.body.classList.toggle('ktv-menu');
+  if(btn) btn.textContent=on?'✕ 菜单':'☰ 菜单';
+  if(on) window.scrollTo({top:0,behavior:'smooth'});
+}
 async function ktvOpen(id){
   try{ ktvCur=await api('/api/songs/'+id); }catch(e){ return toast('加载失败'); }
   ktvCur._ids=ktvCache.map(s=>s.id);
-  document.body.classList.add('ktv-song');   // 沉浸模式：默认隐藏顶栏
-  document.body.classList.remove('showhdr');
   $('#ktvListWrap').classList.add('hidden');
   $('#ktvSongView').classList.remove('hidden');
+  document.body.classList.add('ktv-immersive','barhide');
+  document.body.classList.remove('ktv-menu');
+  const mb=$('#ktvMenuBtn'); if(mb) mb.textContent='☰ 菜单';
   $('#ktvTitle').textContent=ktvCur.title;
   $('#ktvMeta').textContent=`${ktvCur.artist?ktvCur.artist+' · ':''}${ktvCur.lyrics.split('\n').filter(l=>l.trim()).length} 行 · ${ktvCur.kanji_count} 个汉字`;
   ktvRender();
@@ -899,7 +932,11 @@ function ktvRender(){
     for(const line of st.split('\n')){
       if(!line.trim()) continue;
       const t=ktvLineTokens();
-      if(t&&t.length===1&&t[0].k!==undefined){
+      if(t&&t.length===1&&t[0].en){
+        // 纯英文行：原样显示（绝不转片假名）；分词模式按单词成组
+        html+=seg?`<div class="kline">${t[0].s.trim().split(/\s+/).map(w=>`<span class="kc">${esc(w)}</span>`).join(' ')}</div>`
+                 :`<div class="kline">${esc(t[0].s)}</div>`;
+      }else if(t&&t.length===1&&t[0].k!==undefined){
         const kana=showKana?`<div class="kana-sub">${esc(t[0].k)}</div>`:'';
         if(seg){
           html+=`<div class="kline">${t[0].s.trim().split(/\s+/).map(w=>`<span class="kc">${esc(w)}</span>`).join(' ')}${kana}</div>`;
@@ -908,9 +945,22 @@ function ktvRender(){
         }
       }else if(seg&&t&&t.length){
         // 学习模式：按意思群分组，组间空格、只在组间换行（初学者友好）
+        // 组边界上的纯空白 token 由 join(' ') 取代；组内空格保留（英文单词间距）
+        const isSpace=x=>/^\s+$/.test(x.s||'');
         const groups=[[]];
-        for(const tk of t){ if(tk.sp&&groups[groups.length-1].length) groups.push([]); groups[groups.length-1].push(tk); }
-        html+=`<div class="kline jp">${groups.map(g=>`<span class="kc">${g.map(x=>rubyHTML([x],null)).join('')}</span>`).join(' ')}</div>`;
+        for(const tk of t){
+          if(tk.sp&&groups[groups.length-1].length) groups.push([]);
+          if(isSpace(tk)){
+            if(!groups[groups.length-1].length) continue;   // 组首空白丢弃
+            groups[groups.length-1].push(tk);
+            groups.push([]);                                 // 空白即组界
+            continue;
+          }
+          groups[groups.length-1].push(tk);
+        }
+        let gl=groups.filter(g=>g.length);
+        gl=gl.map(g=>{while(g.length&&isSpace(g[g.length-1]))g.pop();return g;});
+        html+=`<div class="kline jp">${gl.map(g=>`<span class="kc">${g.map(x=>rubyHTML([x],null)).join('')}</span>`).join(' ')}</div>`;
       }else{
         html+=`<div class="kline jp">${rubyHTML(t&&t.length?t:[{s:line}],null)}</div>`;
       }
@@ -930,8 +980,19 @@ function ktvLineTokens(){
   return t;
 }
 function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
-function ktvToggleHdr(){ document.body.classList.toggle('showhdr'); }  // 沉浸模式下唤出/隐藏顶栏
-function ktvBack(){ document.body.classList.remove('ktv-song','showhdr'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
+function ktvBack(){
+  $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden');
+  document.body.classList.remove('ktv-immersive','ktv-menu','barhide');
+  ktvSearch($('#ktvQ').value);
+}
+function ktvToggleBar(){ document.body.classList.toggle('barhide'); }
+async function ktvReannotate(){
+  if(!confirm('全部歌曲用最新引擎重新注音？（引擎升级后使用，歌词原文不变）'))return;
+  toast('重新注音中…');
+  const d=await api('/api/songs/reannotate',{method:'POST'});
+  toast(`已重新注音 ${d.reannotated} 首`);
+  if(!$('#ktvSongView').classList.contains('hidden')&&ktvCur) ktvOpen(ktvCur.id);
+}
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
   const i=ktvCur._ids.indexOf(ktvCur.id);
@@ -1027,32 +1088,6 @@ async function toggleSaver(on){
   await api('/api/settings',{method:'POST',body:JSON.stringify({data_saver:on})});
   toast(on?'省流模式已开启：不再自动抓取新语料':'省流模式已关闭：恢复自动扩充语料');
 }
-
-/* ---------- KTV 顶栏：下滑收起、上滑展开 ----------
-   防抖动：切换 slim 会改变页面总高度，桌面端贴底时浏览器会钳位 scrollY，
-   由此触发的 scroll 事件会与方向判定形成反馈环导致页面不停抖动。
-   对策：切换时按高度差补偿滚动位置（阅读位置不跳），并在切换后短暂锁定判定。 */
-let _ktvLastY=0, _ktvLockTill=0;
-window.addEventListener('scroll',()=>{
-  const bar=$('#ktvBar'); if(!bar)return;
-  if($('#tab-ktv').classList.contains('hidden')||$('#ktvSongView').classList.contains('hidden')){bar.classList.remove('slim');return;}
-  const y=window.scrollY;
-  const now=performance.now();
-  if(now<_ktvLockTill){ _ktvLastY=y; return; }  // 锁定期内只记录，不判定方向
-  if(y>_ktvLastY+6&&y>70&&!bar.classList.contains('slim')){
-    const h0=bar.offsetHeight;
-    bar.classList.add('slim');
-    window.scrollBy(0,bar.offsetHeight-h0);      // 高度差补偿，阅读位置不跳
-    _ktvLockTill=now+400; _ktvLastY=window.scrollY;
-  }else if((y<_ktvLastY-6||y<=10)&&bar.classList.contains('slim')){
-    const h0=bar.offsetHeight;
-    bar.classList.remove('slim');
-    window.scrollBy(0,bar.offsetHeight-h0);      // 高度差补偿
-    _ktvLockTill=now+400; _ktvLastY=window.scrollY;
-  }else{
-    _ktvLastY=y;
-  }
-},{passive:true});
 
 /* ---------- 启动 ---------- */
 initVoices();

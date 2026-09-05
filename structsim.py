@@ -127,6 +127,7 @@ class StructIndex:
         self._lock = threading.Lock()
         self._sents = {}      # sid -> (text, sig)
         self._song_lines = []  # (song_id, title, line, sig)
+        self._pdf = {}         # 助词 -> 出现文档数（IDF 用）
         self._n_sent = -1
         self._n_song = -1
         self._warming = False
@@ -139,17 +140,23 @@ class StructIndex:
 
     def _build(self):
         rows, songs = self._collect()
-        sents = {}
+        sents, lines, pdf = {}, [], {}
         for r in rows:
-            sents[r['id']] = (r['text'], signature(r['text']))
-        lines = []
+            sig = signature(r['text'])
+            sents[r['id']] = (r['text'], sig)
+            for p in set(sig['p']):
+                pdf[p] = pdf.get(p, 0) + 1
         for s in songs:
             for ln in (s['lyrics'] or '').split('\n'):
                 if _line_usable(ln):
-                    lines.append((s['id'], s['title'], ln.strip(), signature(ln)))
+                    sig = signature(ln)
+                    lines.append((s['id'], s['title'], ln.strip(), sig))
+                    for p in set(sig['p']):
+                        pdf[p] = pdf.get(p, 0) + 1
         with self._lock:
             self._sents = sents
             self._song_lines = lines
+            self._pdf = pdf
             self._n_sent = len(rows)
             self._n_song = len(songs)
 
@@ -193,21 +200,86 @@ class StructIndex:
         return out[:limit]
 
     def query(self, text, limit=10):
-        """返回 [(score, kind, title, line_text, shared_particles)]，歌词加成后排序。"""
+        """返回 [(score, kind, title, sid, line_text, shared_particles)]。
+        高级排序：助词 IDF 加权（は/を/が 等高频助词降权，へ/より/と 等信息量大的助词升权）
+        + 词性链 LCS + 句尾形态 + 长度接近度 + 歌词加成；
+        去重（副歌重复行只留一条）+ 多样性（每首歌最多 2 条，防止单曲刷屏）。"""
         self.ensure()
         sig = signature(text)
         out = []
         with self._lock:
-            sents = list(self._sents.values())
+            sents = list(self._sents.items())
             lines = list(self._song_lines)
-        for t, s in sents:
-            sc = similarity(sig, s, len(text), len(t))
-            out.append((sc, 'corpus', None, t, set(sig['p']) & set(s['p'])))
+            pdf = dict(self._pdf)
+
+        def pw(p):                      # 助词信息量权重（越罕见越重）
+            return 1.0 / (pdf.get(p, 0) + 1)
+
+        def psim(sb):
+            pa, pb = set(sig['p']), set(sb['p'])
+            if not pa and not pb:
+                return 1.0
+            inter, union = pa & pb, pa | pb
+            if not inter:
+                return 0.0
+            wu = sum(pw(p) for p in union)
+            return (sum(pw(p) for p in inter) / wu) if wu else 0.0
+
+        def rest(sb, lt):
+            seq = _lcs(sig['s'], sb['s']) / max(len(sig['s']), len(sb['s']), 1)
+            end = 1.0 if sig['e'] and sig['e'] == sb['e'] else 0.0
+            ln = 1.0 - abs(len(text) - lt) / max(len(text), lt, 1)
+            return 0.25 * seq + 0.15 * end + 0.15 * ln
+
+        for sid, (t, s) in sents:
+            sc = 0.45 * psim(s) + rest(s, len(t))
+            out.append((sc, 'corpus', None, sid, t, set(sig['p']) & set(s['p'])))
         for sid, title, ln, s in lines:
-            sc = similarity(sig, s, len(text), len(ln)) + 0.05   # 歌词优先
-            out.append((sc, 'lyric', title, ln, set(sig['p']) & set(s['p'])))
+            sc = 0.45 * psim(s) + rest(s, len(ln)) + 0.05   # 歌词优先
+            out.append((sc, 'lyric', title, sid, ln, set(sig['p']) & set(s['p'])))
         out.sort(key=lambda x: -x[0])
-        return out[:limit]
+        results, seen_line, song_cnt = [], set(), {}
+        for sc, kind, title, sid, txt, shared in out:
+            key = re.sub(r'[\s。、！？!?]', '', txt)
+            if key in seen_line:
+                continue
+            if kind == 'lyric' and song_cnt.get(sid, 0) >= 2:
+                continue
+            if kind == 'lyric':
+                song_cnt[sid] = song_cnt.get(sid, 0) + 1
+            seen_line.add(key)
+            results.append((sc, kind, title, sid, txt, shared))
+            if len(results) >= limit:
+                break
+        return results
+
+
+_P_LABEL = {'は': '主题は', 'を': '宾语を', 'が': '主语/对象が', 'に': 'に（对象/时点）',
+             'で': 'で（场所/手段）', 'と': 'と（并列/引用）', 'から': 'から（起点/原因）',
+             'へ': 'へ（方向）', 'も': 'も（也）', 'の': 'の（所属）', 'まで': 'まで（界限）',
+             'より': 'より（比较）'}
+_END_TPL = [('助動詞-タ', '动词た形（过去·完了）'), ('助動詞-マス', 'ます形（礼貌）'),
+            ('助動詞-ナイ', 'ない形（否定）'), ('助動詞-ヌ', 'ぬ（文语否定）'),
+            ('助動詞-デス', 'です（礼貌断定）'), ('助動詞-ダ', 'だ（断定）'),
+            ('助動詞-ウ', 'う/よう（意志·推量）'), ('助動詞-タイ', 'たい（愿望）'),
+            ('助動詞-レル', 'れる/られる（被动·可能）'), ('助動詞-セル', 'せる/させる（使役）'),
+            ('助動詞-ベシ', 'べし（文语当然）'), ('助動詞-マイ', 'まい（否定推量）'),
+            ('助動詞-ラスイ', 'らしい（推量）')]
+
+
+def structure_template(sig):
+    """把成分签名转成人能读的结构模板，如「宾语を ＋ 动词た形（过去·完了）」。"""
+    parts = ' '.join(_P_LABEL.get(p, p) for p in sig['p']) or '（无助词的短句）'
+    e = sig['e'] or ''
+    for key, lab in _END_TPL:
+        if e.startswith(key):
+            return f'{parts} ＋ {lab}'
+    for k in ('五段', '一段', 'サ変', 'カ変', '上二段', '下二段'):
+        if k in e:
+            return f'{parts} ＋ 动词（{e.split("-")[0]}活用）'
+    if e:
+        return f'{parts} ＋ {e}'
+    return parts
 
 
 INDEX = StructIndex()

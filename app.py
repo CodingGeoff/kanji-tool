@@ -369,16 +369,17 @@ def api_rag_search():
         sig = structsim.signature(q)
         hits = structsim.INDEX.query(q, limit=8)
         srows = []
-        for sc, kind, title, txt, shared in hits:
+        for sc, kind, title, sid, txt, shared in hits:
             if sc < 0.25:
                 continue
-            item = {'type': kind, 'title': title, 'text': txt,
+            item = {'type': kind, 'id': sid, 'title': title, 'text': txt,
                     'score': round(min(sc, 1.0), 3),
                     'shared_particles': sorted(shared),
                     'tokens': furigana.annotate(txt)}
             srows.append(item)
-        struct = {'is_sentence': True, 'components': structsim.describe(sig, q),
-                  'rows': srows}
+        comp = structsim.describe(sig, q)
+        comp['template'] = structsim.structure_template(sig)
+        struct = {'is_sentence': True, 'components': comp, 'rows': srows}
     db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果'
                  + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
     resp = {'rows': out}

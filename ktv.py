@@ -117,83 +117,70 @@ def romaji_to_kana(s: str) -> str:
 
 _ROMAJI_LINE_RE = re.compile(r"^[A-Za-z'’\-.,!?~;: ()&0-9]+$")
 
+# 高频英文词表（歌词场景）：整词命中 → 判定英文行（第一层，最强证据）
+_ENGLISH_WORDS = frozenset('''
+the you your yours my me mine i a an and or but so if to of in on at for with from by as is are was were be been being
+do does did don cant can will would shall should may might must have has had
+this that these those there here what who whom when where why how not no yes
+night stay save shine brave break breaking broken dawn down up out off back
+life live love loved lover heart hand hands eye eyes dream dreams light dark
+never ever always again still just only all both each some any
+one two three first last long short new old day days today tonight tomorrow yesterday
+time world star stars moon sun sky rain snow fire water wind sea
+true real come came go went going know knew say said see saw seen feel felt
+need want take took make made keep kept hold held find found give gave get got
+lose lost win won stop start end begin walk run fly fall rise sing song dance
+music baby darling dear kiss touch away over under near far high low close open
+black white red blue green deep free mind soul face head voice word words
+land ground floor door room home house boy girl man men woman women
+smile cry tears laugh goodbye hello forever memory alone together
+'''.split())
 
-def is_romaji_line(line: str) -> bool:
-    """整行仅 ASCII 字母/标点（≥2 个字母）→ 视为罗马音行。"""
+
+def _latin_words(line):
+    return re.findall(r"[A-Za-z'’]+", line)
+
+
+def classify_latin_line(line: str) -> str:
+    """纯拉丁字母行 → 'english' / 'romaji' / 'other'。多层保底：
+    第1层 高频英文词典整词命中（≥3字母）→ english
+    第2层 音系规则：罗马音词只能以元音或 n 结尾、绝不以 y/辅音结尾 → 违反即 english
+    第3层 完全可转换性：逐音节转换后仍残留拉丁字母 → english
+    全部通过才算罗马音（任何一层否决都安全落到 english，绝不乱转片假名）。"""
     t = line.strip()
     if not t or not _ROMAJI_LINE_RE.match(t):
-        return False
-    return len(re.findall(r'[A-Za-z]', t)) >= 2
+        return 'other'
+    if len(re.findall(r'[A-Za-z]', t)) < 2:
+        return 'other'
+    words = [w.lower() for w in _latin_words(t)]
+    # 第1层：英文词典（含撇号拆分: you're → you/re）
+    for w in words:
+        parts = re.split(r"['’]", w)
+        for part in ([w] + parts):
+            if len(part) >= 3 and part in _ENGLISH_WORDS:
+                return 'english'
+    # 第2层：罗马音音系（词尾必须是元音或 n；y 只能出现在 ya/yu/yo，不在词尾）
+    for w in words:
+        w2 = w.rstrip("n'’")
+        if not w2:
+            continue
+        if w2[-1] not in 'aeiou':
+            return 'english'
+    # 第3层：完全可转换（残留任何拉丁字母 → 英文）
+    kana = romaji_to_kana(t)
+    if re.search(r'[A-Za-z]', kana):
+        return 'english'
+    return 'romaji'
 
 
-# ---------------------------------------------------------------
-# 纯 ASCII 行语言判定（多层保底）：区分「罗马音行」与「英文行」
-# 英文行绝不音译成假名（杜绝 "my bラヴェ シネ" 这类半吊子转写）
-# ---------------------------------------------------------------
-
-# 第 2 层：明确英文词（其中不少恰好能完整转为假名，如 shine→シネ、time→チメ、
-# honey→ホネ、moon→モオン、fire→フィレ，不列进来必被误判成罗马音）
-_EN_STRONG = frozenset('''
-i you your yours we our he she it its this that these those
-in on at by of the and or but if when where why how all can will
-was were be been do does did just only than then there here
-don't can't won't i'm it's that's you're we're they're he's she's there's
-ain't gonna wanna gotta let's
-one two nine ten time same home side shine mine name make take
-give live have use case base sense rise site life line
-some someone forever never change come go more see believe
-honey moon rain fire again long young again fine five wave save move dive
-hero motion ocean nation emotion imagination vacation message image game page
-love heart dream night tonight baby darling sweet true blue sky star sun wind
-light dark deep high low day days again everybody everything nothing something
-anything yeah oh hey away feel know look little long short new old young good
-bad best last first next maybe tell call find hold stay
-'''.split())
-
-# 第 3 层歧义词：既是英文高频词、也可能是日文罗马音独立词
-_EN_AMBIG = frozenset({'no', 'so', 'me', 'hi', 'he', 'made'})
-
-# 日文罗马音标记词：行内出现任一 → 歧义词按日文理解（如 "boku no uta" 的 no=の）
-_JP_MARKERS = frozenset('''
-wa ga wo ni de to mo ya ne yo ze zo sa e kara kedo node keredo
-desu masu da nai naru suru aru iru
-kimi boku anata kono sono are kore sore doko itsu nani ima ashita
-yume sora umi hoshi kaze ame yuki ai koi kokoro naka soto ue shita
-te kuchi suki kirai daisuki
-'''.split())
-
-_ASCII_LETTER_RE = re.compile(r'[a-z]')
+def is_romaji_line(line: str) -> bool:
+    """真·罗马音行（多层判别后确认是罗马音，而非英文）。"""
+    return classify_latin_line(line) == 'romaji'
 
 
-def _word_fails_romaji(w: str) -> bool:
-    """单词转片假名后仍有未转换的英文字母 → 绝不是罗马音（英文词）。
-    英文辅音丛/词尾辅音（brave 的 br、my 的 y）都会残留 → 必败。"""
-    k = romaji_to_kana(w.strip("'’").lower())
-    return bool(_ASCII_LETTER_RE.search(k))
-
-
-def _is_english_line(line: str) -> bool:
-    """多层保底判定纯 ASCII 行是否为英文：
-    第 1 层 单词级：任何单词无法完整转假名 → 英文
-    第 2 层 词典：出现明确英文词 → 英文
-    第 3 层 歧义消解：出现 no/so/me 等歧义词且无日文标记词 → 英文
-    第 4 层 保底：全部单词均可完整转换且无英文词 → 罗马音（返回 False）
-    任何情况下绝不输出半假名半字母的拼凑转写。"""
-    words = [w.strip("'’").lower() for w in re.split(r"[^A-Za-z'’]+", line) if w.strip("'’")]
-    letters = [w for w in words if _ASCII_LETTER_RE.search(w)]
-    if not letters:
-        return False
-    # 第 1 层：辅音残留
-    if any(_word_fails_romaji(w) for w in letters):
-        return True
-    # 第 2 层：明确英文词典
-    if any(w in _EN_STRONG for w in letters):
-        return True
-    # 第 3 层：歧义词（no/so/me/hi/he/made）且行内无日文罗马音标记
-    if any(w in _EN_AMBIG for w in letters) and not any(w in _JP_MARKERS for w in letters):
-        return True
-    # 第 4 层：完全可转换 → 视为罗马音
-    return False
+def is_latin_line(line: str) -> bool:
+    """纯拉丁字母行（罗马音或英文都算，用于歌名借用等）。"""
+    return classify_latin_line(line) in ('romaji', 'english')
 
 
 # ---------------------------------------------------------------
@@ -229,7 +216,7 @@ def _looks_like_title(line: str) -> bool:
         return False
     if _CJK_RE.search(t):
         return True
-    if is_romaji_line(t) and len(t) <= 30 and len(t.split()) <= 4:
+    if is_latin_line(t) and len(t) <= 30 and len(t.split()) <= 4:
         return True
     return False
 
@@ -367,31 +354,123 @@ def parse_import(text: str):
 
 _KANJI_RE = re.compile(r'[一-鿿]')
 
+# ---------------------------------------------------------------
+# 简体字 → 日本汉字（歌词里中文转录常见字；自动转换用于词典查找，显示保留原字）
+# ---------------------------------------------------------------
+_S2J = {
+    '凉': '涼', '风': '風', '龙': '竜', '丰': '豊', '广': '広', '庄': '荘',
+    '庆': '慶', '应': '応', '库': '庫', '战': '戦', '归': '帰', '带': '帯',
+    '岁': '歳', '岛': '島', '变': '変', '泪': '涙', '满': '満', '灵': '霊',
+    '热': '熱', '爱': '愛', '牵': '牽', '碎': '砕', '节': '節', '纯': '純',
+    '纱': '紗', '线': '線', '组': '組', '终': '終', '经': '経', '结': '結',
+    '绝': '絶', '给': '給', '继': '継', '绿': '緑', '胜': '勝', '苍': '蒼',
+    '荣': '栄', '蓝': '藍', '藏': '蔵', '许': '許', '诗': '詩', '语': '語',
+    '说': '説', '请': '請', '读': '読', '谁': '誰', '谣': '謡', '转': '転',
+    '轮': '輪', '轻': '軽', '辉': '輝', '边': '辺', '达': '達', '过': '過',
+    '运': '運', '还': '還', '远': '遠', '连': '連', '迟': '遅', '选': '選',
+    '乡': '郷', '银': '銀', '铁': '鉄', '铃': '鈴', '长': '長', '门': '門',
+    '问': '問', '间': '間', '阳': '陽', '阴': '陰', '隐': '隠', '难': '難',
+    '雾': '霧', '韵': '韻', '须': '須', '飞': '飛', '饭': '飯', '饮': '飲',
+    '鸟': '鳥', '鱼': '魚', '车': '車', '马': '馬', '齐': '斉', '无': '無',
+    '时': '時', '实': '実', '乐': '楽', '举': '挙', '传': '伝', '卖': '売',
+    '买': '買', '华': '華', '单': '単', '严': '厳', '丽': '麗', '剑': '剣',
+    '図': None, '图': '図', '圆': '円', '坏': '壊', '处': '処', '备': '備',
+    '复': '復', '头': '頭', '奋': '奮', '宁': '寧', '将': '将', '师': '師',
+    '扫': '掃', '气': '気', '樱': '桜', '乘': '乗', '剧': '劇', '势': '勢',
+    '团': '団', '园': '園', '场': '場', '卷': '巻', '关': '関', '兴': '興',
+    '恶': '悪', '愿': '願', '户': '戸', '扩': '拡', '摇': '揺', '杀': '殺',
+    '树': '樹', '欢': '歓', '决': '決', '泽': '沢', '红': '紅', '约': '約',
+    '纸': '紙', '编': '編', '缘': '縁', '闻': '聞', '叶': '葉', '后': '後',
+    '从': '従', '怀': '懐', '姬': '姫', '窗': '窓', '发': '髪', '丝': '糸',
+    '净': '浄', '机': '機', '种': '種', '东': '東', '现': '現', '动': '動',
+    '静': '静', '争': '争', '音': '音', '咲': '咲',
+}
+_S2J = {k: v for k, v in _S2J.items() if v and k != v}
 
-def _respace(tokens, line: str):
-    """MeCab 会吞掉原文空格：按原文位置把空格补回 token 流，保持英文单词间距。"""
-    out, pos = [], 0
-    for t in tokens:
+_ASCII_WORD_RE = re.compile(r'^[A-Za-z0-9\'’\-\.]+$')
+_ASCII_HAS_LETTER_RE = re.compile(r'[A-Za-z]')
+
+
+def _to_jp(line: str) -> str:
+    return ''.join(_S2J.get(ch, ch) for ch in line)
+
+
+def _restore_original_chars(toks, jp_line, orig_line):
+    """把转换掉的简体字还原为用户原文写法（读音保留日文字形查到的结果）。"""
+    if jp_line == orig_line:
+        return
+    off = 0
+    for t in toks:
+        s = t.get('s') or ''
+        n = len(s)
+        if n and len(orig_line) >= off + n and jp_line[off:off + n] != orig_line[off:off + n]:
+            t['s'] = orig_line[off:off + n]
+        off += n
+
+
+def _restore_spaces(toks, line):
+    """补全分词时丢失的原文空格：token 表面在原文中定位，缺口以空格 token 填充。"""
+    out, off = [], 0
+    for t in toks:
         s = t.get('s') or ''
         if not s:
-            continue
-        idx = line.find(s, pos)
-        if idx < 0 or idx == pos:
             out.append(t)
-            if idx >= 0:
-                pos = idx + len(s)
             continue
-        out.append({'s': line[pos:idx], 'r': None})   # 被吞掉的空格/符号
+        if line.startswith(s, off):
+            out.append(t)
+            off += len(s)
+            continue
+        idx = line.find(s, off)
+        if idx < 0:                       # 表面异常（如数字融合），尽力前进
+            out.append(t)
+            off = min(len(line), off + len(s))
+            continue
+        gap = line[off:idx]
+        if gap.strip() == '':             # 纯空白缺口 → 空格 token
+            out.append({'s': gap, 'r': None})
+        else:
+            out.append({'s': gap})
         out.append(t)
-        pos = idx + len(s)
-    if pos < len(line):
-        out.append({'s': line[pos:], 'r': None})
+        off = idx + len(s)
+    if off < len(line) and line[off:].strip() == '':
+        out.append({'s': line[off:], 'r': None})
     return out
 
 
+
+def _protect_ascii(toks):
+    """英文单词绝不注音：去掉读音/候选/未知标记。"""
+    for t in toks:
+        s = t.get('s') or ''
+        if _ASCII_HAS_LETTER_RE.search(s) and _ASCII_WORD_RE.match(s.strip()):
+            t['r'] = None
+            t.pop('alt', None)
+            t.pop('unk', None)
+    return toks
+
+
+def _backfill_ruby(toks):
+    """注音一致性：同一行内同一汉字，别处有注音而此处缺失 → 回填（保守：仅单字词）。"""
+    known = {}
+    for t in toks:
+        r = t.get('r')
+        if r and len(t.get('s') or '') == 1 and _KANJI_RE.match(t['s']):
+            known.setdefault(t['s'], r)
+    for t in toks:
+        if t.get('r'):
+            continue
+        s = t.get('s') or ''
+        if len(s) == 1 and s in known:
+            t['r'] = known[s]
+            t['c'] = 'mid'
+            t.pop('unk', None)
+    return toks
+
+
 def annotate_lyrics(lyrics: str):
-    """返回 (tokens, kanji_count)。tokens 与 lyrics.split('\\n') 逐行对齐：空行=None；
-    普通行=furigana token 列表；纯罗马音行=[{s:原行, k:片假名}]。"""
+    """返回 (tokens, kanji_count)。tokens 与 lyrics.split('\n') 逐行对齐：空行=None；
+    普通行=furigana token 列表（含分词标记 sp / 空格 token / 简体字还原）；
+    纯罗马音行=[{s:原行, k:片假名}]。"""
     lines = lyrics.split('\n')
     tokens, kanji = [], set()
     for ln in lines:
@@ -399,19 +478,25 @@ def annotate_lyrics(lyrics: str):
             tokens.append(None)
             continue
         kanji.update(_KANJI_RE.findall(ln))
-        if is_romaji_line(ln):
-            if _is_english_line(ln):        # 英文行：绝不编造假名音译
-                tokens.append([{'s': ln}])
-            else:                           # 罗马音行：整行转片假名
-                tokens.append([{'s': ln, 'k': romaji_to_kana(ln)}])
+        cls = classify_latin_line(ln)
+        if cls == 'romaji':
+            tokens.append([{'s': ln, 'k': romaji_to_kana(ln)}])
+            continue
+        if cls == 'english':
+            tokens.append([{'s': ln, 'en': True}])
             continue
         if len(ln) > 160:            # 超长行（整段糊成一行）不注音，原样保留
             tokens.append([{'s': ln}])
             continue
         try:
-            toks = furigana.annotate(ln)
-            _seg_mark(toks, ln)      # 学习模式：意思群空格标记
-            tokens.append(_respace(toks, ln))   # 补回 MeCab 吞掉的空格
+            jp = _to_jp(ln)                  # 简体字 → 日本汉字（查词典用）
+            toks = furigana.annotate(jp)
+            _restore_original_chars(toks, jp, ln)   # 显示还原为原文写法
+            toks = _restore_spaces(toks, ln)        # 补回丢失的空格
+            _protect_ascii(toks)                     # 英文不注音
+            _backfill_ruby(toks)                     # 同字注音一致性
+            _seg_mark(toks, ln)                      # 学习模式：意思群标记
+            tokens.append(toks)
         except Exception:
             tokens.append([{'s': ln}])
     return tokens, len(kanji)
@@ -440,17 +525,43 @@ _NOUNY_POS1 = {'名詞', '代名詞', '接頭辞', '接尾辞'}
 
 
 def chunk_starts(line: str):
-    """返回各意思群的起始字符偏移集合（不含 0）。"""
+    """返回各意思群的起始字符偏移集合（不含 0）。英文单词连续段视为一个群。"""
+    ms = [(off, w.surface, w.feature.pos1 or '') for off, w in
+          _offset_words(line)]
     starts = set()
-    off, prev_p1 = 0, None
-    for w in _get_tagger()(line):
-        p1 = w.feature.pos1 or ''
-        if off > 0 and p1 in _HEAD_POS1:
-            if not (p1 in _NOUNY_POS1 and prev_p1 in _NOUNY_POS1):
-                starts.add(off)
-        off += len(w.surface)
-        prev_p1 = p1
+    for k in range(1, len(ms)):
+        off, surf, p1 = ms[k]
+        prev = ms[k - 1]
+        prev_ascii = bool(_ASCII_WORD_RE.match(prev[1] or ''))
+        # 英文连续段内部：不断开（I love you = 一个群）
+        if _ASCII_HAS_LETTER_RE.search(surf) and _ASCII_WORD_RE.match(surf):
+            if k + 1 < len(ms) and _ASCII_WORD_RE.match(ms[k + 1][1] or ''):
+                continue
+            if prev_ascii:
+                continue
+        # 英文段结束、回到日文词 → 新群（I love you | 君を…）
+        if prev_ascii and _CJK_RE.search(surf):
+            starts.add(off)
+            continue
+        if p1 not in _HEAD_POS1:
+            continue
+        if p1 in _NOUNY_POS1 and prev[2] in _NOUNY_POS1:
+            continue
+        starts.add(off)
     return starts
+
+
+def _offset_words(line):
+    """形态素真实字符偏移（MeCab 不输出空格 token，须跳过原文空白定位）。"""
+    off, n = 0, len(line)
+    for w in _get_tagger()(line):
+        s = w.surface
+        if not s:
+            continue
+        while off < n and line[off].isspace():
+            off += 1
+        yield off, w
+        off += len(s)
 
 
 def _seg_mark(tokens, line):
@@ -468,33 +579,16 @@ def _seg_mark(tokens, line):
 
 
 def ensure_seg(song_row):
-    """兼容旧数据：英文行去掉假名音译、罗马音行重算、补空格、补意思群，并回写。"""
+    """兼容旧数据：没有分词标记的歌词 token 即时补算并回写。返回 token 列表。"""
     toks = json.loads(song_row['tokens']) if song_row['tokens'] else []
     lyrics = song_row['lyrics']
     lines = lyrics.split('\n')
     if len(toks) != len(lines):
         return toks
     changed = False
-    for i, (ln, t) in enumerate(zip(lines, toks)):
-        if not (t and isinstance(t, list) and t and 's' in t[0]):
-            continue
-        if 'k' in t[0]:
-            # 纯 ASCII 行：英文行去掉编造的假名；罗马音行重算保持一致
-            if is_romaji_line(ln) and _is_english_line(ln):
-                toks[i] = [{'s': ln}]
-            else:
-                k = romaji_to_kana(ln)
-                if t[0].get('k') != k:
-                    t[0]['k'] = k
-                else:
-                    continue
-            changed = True
-        else:
+    for ln, t in zip(lines, toks):
+        if t and isinstance(t, list) and t and 'k' not in t[0] and 's' in t[0]:
             changed |= _seg_mark(t, ln)
-            fixed = _respace(t, ln)   # 旧数据：补回 MeCab 吞掉的空格
-            if len(fixed) != len(t):
-                toks[i] = fixed
-                changed = True
     if changed:
         import db as _db
         _db.update_song_tokens(song_row['id'], toks)

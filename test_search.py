@@ -71,7 +71,7 @@ check(r.get_json().get('data_saver') is False, 'stats 暴露省流状态')
 r = client.post('/api/settings', json={'data_saver': True})
 check(r.get_json().get('data_saver') is True, '省流重新开启')
 
-# 2.3 导入两首歌（供歌词搜索 / 结构匹配）
+# 2.3 导入两首歌（供歌词搜索 / 结构匹配）；副歌重复行用于测试去重
 blob = """《青い空》
 私は歌を歌った
 君と公園を歩いた
@@ -79,6 +79,8 @@ blob = """《青い空》
 ---
 
 《赤い夕日》
+僕は絵を描いた
+夕日を見た
 僕は絵を描いた"""
 r = client.post('/api/songs/import', json={'text': blob})
 check(len(r.get_json()['created']) == 2, '导入 2 首测试歌')
@@ -108,6 +110,16 @@ if 'struct' in d:
     st = d['struct']
     check(st['components']['particles'] == ['は', 'を'], f"成分助词={st['components']['particles']}")
     check(st['components']['ending'], '句尾形态非空')
+    check('＋' in (st['components'].get('template') or ''), f"结构模板={st['components'].get('template')}")
+    # 去重：副歌重复行（僕は絵を描いた×2）只能出现一次
+    texts = [x['text'] for x in st['rows']]
+    check(len(texts) == len(set(texts)), f'结构结果无重复行 {texts}')
+    # 多样性：同一首歌最多 2 条
+    from collections import Counter as _C
+    cnt = _C(x['title'] for x in st['rows'] if x['type'] == 'lyric')
+    check(all(v <= 2 for v in cnt.values()), f'每首歌最多2条 {dict(cnt)}')
+    # corpus 行带 id（可收藏）
+    check(all(x.get('id') for x in st['rows']), '结果行都带 id')
     lyric_rows = [x for x in st['rows'] if x['type'] == 'lyric']
     check(any(x['text'] == '私は歌を歌った' for x in lyric_rows),
           f"结构同形歌词「私は歌を歌った」被召回 {[(x['type'], x['text']) for x in st['rows'][:5]]}")
