@@ -521,31 +521,60 @@ def _get_tagger():
 _HEAD_POS1 = {'名詞', '代名詞', '動詞', '形容詞', '形状詞', '副詞', '接続詞',
               '感動詞', '連体詞', 'フィラー', '接頭辞'}
 # 名词性成分（连续出现时合并为一个群：数詞+助数詞、名詞+接尾辞、接頭辞+名詞）
-_NOUNY_POS1 = {'名詞', '代名詞', '接頭辞', '接尾辞'}
+_NOUNY_POS1 = {'名詞', '代名詞', '接頭辞', '接尾辞', '連体詞'}
+# 复合动词第二要素（前接动词连用形时不开新群）：結び直す／走り込む／駆け上がる…
+_COMPOUND_V2 = {'直す', '込む', '出す', '上げる', '上がる', '下ろす', '返す', '合う',
+                '合わせる', '切る', '切れる', '付く', '付ける', '取る', '回す',
+                '果たす', '落とす', '過ぎる', '終える', '終わる', '始める'}
 
 
 def chunk_starts(line: str):
-    """返回各意思群的起始字符偏移集合（不含 0）。英文单词连续段视为一个群。"""
-    ms = [(off, w.surface, w.feature.pos1 or '') for off, w in
-          _offset_words(line)]
+    """返回各意思群的起始字符偏移集合（不含 0）——多层安全网，全部通过才开新群：
+      - 英文连续段是一个群（I love you）；英文段结束回到日文 → 新群
+      - 未知汉字（記号）连续段可开群，其后送假名跟随（啄ば|んで 不拆）
+      - 補助動詞跟随：て/で + 非自立可能动词（ている/てしまう/ていく/てみる…）
+      - 复合动词跟随：动词连用形 + 直す/込む/上がる…（結びなおす/立ち上がる）
+      - なさい（為さる命令形）接名词（ごめんなさい）
+      - 連体詞与名词性成分合并（あの日の）"""
+    ms = [(off, w.surface, w.feature.pos1 or '', w.feature.pos2 or '',
+           w.feature.cForm or '', (w.feature.lemma or '').split('-')[0])
+          for off, w in _offset_words(line)]
     starts = set()
     for k in range(1, len(ms)):
-        off, surf, p1 = ms[k]
-        prev = ms[k - 1]
-        prev_ascii = bool(_ASCII_WORD_RE.match(prev[1] or ''))
-        # 英文连续段内部：不断开（I love you = 一个群）
+        off, surf, p1, p2, cf, lemma = ms[k]
+        poff, psurf, pp1, pp2, pcf, plemma = ms[k - 1]
+        prev_ascii = bool(_ASCII_WORD_RE.match(psurf or ''))
+        # 英文连续段内部：不断开
         if _ASCII_HAS_LETTER_RE.search(surf) and _ASCII_WORD_RE.match(surf):
             if k + 1 < len(ms) and _ASCII_WORD_RE.match(ms[k + 1][1] or ''):
                 continue
             if prev_ascii:
                 continue
-        # 英文段结束、回到日文词 → 新群（I love you | 君を…）
+        # 英文段结束、回到日文词 → 新群
         if prev_ascii and _CJK_RE.search(surf):
             starts.add(off)
             continue
+        # 未知汉字段：自身可开群，但连续未知汉字/其送假名跟随
+        if p1 == '記号' and _CJK_RE.search(surf):
+            if pp1 == '記号':
+                continue
+            starts.add(off)
+            continue
+        if pp1 == '記号':
+            continue
         if p1 not in _HEAD_POS1:
             continue
-        if p1 in _NOUNY_POS1 and prev[2] in _NOUNY_POS1:
+        # 補助動詞：て/で + 非自立可能（いる/しまう/いく/みる/おく…）
+        if pp1 == '助詞' and pp2 == '接続助詞' and psurf in ('て', 'で') \
+                and p2 == '非自立可能':
+            continue
+        # 复合动词第二要素
+        if pp1 == '動詞' and pcf.startswith('連用形') and lemma in _COMPOUND_V2:
+            continue
+        # ごめんなさい（為さる命令形接名词）
+        if lemma == '為さる' and pp1 in ('名詞', '代名詞', '接尾辞'):
+            continue
+        if p1 in _NOUNY_POS1 and pp1 in _NOUNY_POS1:
             continue
         starts.add(off)
     return starts
@@ -565,11 +594,19 @@ def _offset_words(line):
 
 
 def _seg_mark(tokens, line):
-    """给 furigana token 列表打 sp=True 标记（该 token 前应有意思群空格）。"""
+    """给 furigana token 列表打 sp=True 标记（该 token 前应有意思群空格）。
+    多层安全网：
+      1) 先清除旧版算法遗留的错位 sp —— 旧歌打开即自愈；
+      2) token 逐字重建必须与原行完全一致，否则放弃分词（宁可不分，绝不分错）。"""
+    changed = False
+    for t in tokens:
+        if isinstance(t, dict) and t.pop('sp', None):
+            changed = True
     starts = chunk_starts(line)
-    if not starts:
-        return False
-    off, changed = 0, False
+    recon = ''.join(t.get('s') or '' for t in tokens if isinstance(t, dict))
+    if not starts or recon != line:
+        return changed
+    off = 0
     for t in tokens:
         if off > 0 and off in starts and not t.get('sp'):
             t['sp'] = True
