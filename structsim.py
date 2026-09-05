@@ -117,6 +117,11 @@ def _line_usable(line: str):
     return True
 
 
+def _bigrams(t):
+    t = re.sub(r'[\s。、！？!?，,.．「」『』（）()・：;；…—0-9０-９]', '', t)
+    return {t[i:i + 2] for i in range(len(t) - 1)} | ({t} if len(t) == 1 else set())
+
+
 class StructIndex:
     def __init__(self):
         self._lock = threading.Lock()
@@ -165,6 +170,27 @@ class StructIndex:
             up2date = len(rows) == self._n_sent and len(songs) == self._n_song
         if not up2date and not self._warming:
             self._build()
+
+    def lyric_affinity(self, q, limit=8):
+        """任意查询（词/短语/句子）→ 歌词行亲和检索：字符bigram Dice + 子串加成。"""
+        self.ensure()
+        qb = _bigrams(q)
+        with self._lock:
+            lines = list(self._song_lines)
+        out = []
+        for sid, title, ln, _sig in lines:
+            lb = _bigrams(ln)
+            if not lb:
+                continue
+            inter = len(qb & lb)
+            dice = 2 * inter / (len(qb) + len(lb))
+            if q in ln:
+                dice = min(1.0, dice + 0.35)
+            if dice >= 0.18:
+                out.append({'sid': sid, 'title': title, 'text': ln,
+                            'affinity': round(dice, 3)})
+        out.sort(key=lambda x: -x['affinity'])
+        return out[:limit]
 
     def query(self, text, limit=10):
         """返回 [(score, kind, title, line_text, shared_particles)]，歌词加成后排序。"""

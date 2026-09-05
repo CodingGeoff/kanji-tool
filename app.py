@@ -37,7 +37,7 @@ def _bg_fetch(source='all'):
 def _auto_loop():
     while True:
         try:
-            # 省流模式（默认开启）：不再自动抓取任何新语料
+            # 省流模式：不再自动抓取任何新语料
             if db.get_setting('data_saver', '1') != '1':
                 total, _ = db.query_sentences(per=1)
                 # 语料不足500句时快速补充，之后每10分钟慢速持续扩充
@@ -67,7 +67,7 @@ def stats():
         by_src = {r['source']: r['n'] for r in
                   c.execute('SELECT source, COUNT(*) n FROM sentences GROUP BY source')}
     return jsonify({'sentences': n_sent, 'kanji': n_kanji, 'songs': n_song,
-                    'by_source': by_src, 'data_saver': db.get_setting('data_saver', '1') == '1',
+                    'by_source': by_src, 'data_saver': db.get_setting('data_saver', '0') == '1',
                     'srs': srs.overview(), 'fetching': _fetch_state['running'],
                     'last_fetch': _fetch_state['last'], 'last_added': _fetch_state['last_added']})
 
@@ -382,6 +382,12 @@ def api_rag_search():
     db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果'
                  + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
     resp = {'rows': out}
+    # 任意查询（词/句）自动匹配相关歌词行（亲和检索：子串+字符bigram）
+    lyric_hits = structsim.INDEX.lyric_affinity(q, limit=8)
+    for h in lyric_hits:
+        h['tokens'] = furigana.annotate(h['text'])
+    if lyric_hits:
+        resp['lyrics'] = lyric_hits
     if struct:
         resp['struct'] = struct
     return jsonify(resp)
@@ -419,7 +425,7 @@ def api_settings_set():
     if 'data_saver' in d:
         db.set_setting('data_saver', '1' if d['data_saver'] else '0')
         db.log('setting', f"省流模式：{'开启（停止自动抓取）' if d['data_saver'] else '关闭'}")
-    out['data_saver'] = db.get_setting('data_saver', '1') == '1'
+    out['data_saver'] = db.get_setting('data_saver', '0') == '1'
     return jsonify(out)
 
 
@@ -461,6 +467,20 @@ def api_songs_search():
         if len(rows) >= 30:
             break
     return jsonify({'rows': rows, 'total': len(rows)})
+
+
+@app.route('/api/songs/reannotate', methods=['POST'])
+def api_songs_reannotate():
+    """引擎升级后：全部歌曲用最新引擎重新注音（含简体字转换/空格恢复/一致性回填）。"""
+    with db.get_conn() as c:
+        rows = c.execute('SELECT id,lyrics FROM songs').fetchall()
+    n = 0
+    for r in rows:
+        tokens, kc = ktv.annotate_lyrics(r['lyrics'])
+        db.update_song(r['id'], lyrics=r['lyrics'], tokens=tokens, kanji_count=kc)
+        n += 1
+    db.log('song', f'全部歌词重新注音（{n}首）')
+    return jsonify({'reannotated': n})
 
 
 @app.route('/api/songs/import', methods=['POST'])

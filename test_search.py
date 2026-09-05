@@ -60,16 +60,16 @@ with sqlite3.connect(api_db) as c0:
     tabs = {r[0] for r in c0.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 check('settings' in tabs, '旧库升级后补建 settings 表')
 
-# 2.2 省流模式开关
+# 2.2 省流模式：默认开启，可手动关闭
 r = client.get('/api/settings')
-check(r.get_json().get('data_saver') is False, '省流默认关闭')
-r = client.post('/api/settings', json={'data_saver': True})
-check(r.get_json().get('data_saver') is True, '省流开启')
-check(db.get_setting('data_saver', '0') == '1', '省流设置已持久化')
-r = client.get('/api/stats')
-check(r.get_json().get('data_saver') is True, 'stats 暴露省流状态')
+check(r.get_json().get('data_saver') is True, '省流默认开启')
 r = client.post('/api/settings', json={'data_saver': False})
-check(r.get_json().get('data_saver') is False, '省流关闭')
+check(r.get_json().get('data_saver') is False, '省流手动关闭')
+check(db.get_setting('data_saver', '1') == '0', '关闭状态已持久化')
+r = client.get('/api/stats')
+check(r.get_json().get('data_saver') is False, 'stats 暴露省流状态')
+r = client.post('/api/settings', json={'data_saver': True})
+check(r.get_json().get('data_saver') is True, '省流重新开启')
 
 # 2.3 导入两首歌（供歌词搜索 / 结构匹配）
 blob = """《青い空》
@@ -91,10 +91,14 @@ check(any(t.get('r') for t in d['rows'][0]['tokens']), '歌词行带注音')
 r = client.get('/api/songs/search?q=不存在的东西XYZ')
 check(r.get_json()['total'] == 0, '无命中返回空')
 
-# 2.5 RAG：关键词 → 无结构分析
-r = client.post('/api/rag/search', json={'q': '勉強', 'limit': 3})
+# 2.5 RAG：关键词 → 无结构分析，但自动匹配歌词
+r = client.post('/api/rag/search', json={'q': '歌った', 'limit': 3})
 d = r.get_json()
 check('struct' not in d and d.get('rows') is not None, '关键词→纯语义检索')
+check(any(x['title'] == '青い空' for x in d.get('lyrics', [])),
+      f"词查询自动匹配歌词={d.get('lyrics')}")
+if d.get('lyrics'):
+    check('tokens' in d['lyrics'][0], '歌词命中带注音')
 
 # 2.6 RAG：整句 → 成分分析 + 结构相似（歌词优先）
 r = client.post('/api/rag/search', json={'q': '私は本を読んだ。', 'limit': 8})

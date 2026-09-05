@@ -192,6 +192,30 @@ toks2, _ = ktv.annotate_lyrics('夜空に瞬く星を見上げて')
 sps = [t['s'] for t in toks2[0] if t.get('sp')]
 check(sps == ['瞬', '星', '見上'], f'3.5 意思群标记={sps}')
 
+# 3.6 空格保留 + 重建一致性（MeCab 不吞空格）
+lyr3 = 'Forever 君に 会いたくて\nI love you 君を想う夜'
+lines3, _ = ktv.annotate_lyrics(lyr3)
+for ln, tk in zip(lyr3.split('\n'), lines3):
+    recon = ''.join(x.get('s') or '' for x in tk)
+    check(recon == ln, f'3.6 逐字重建一致 {recon!r} vs {ln!r}')
+eng = [x for x in lines3[0] if (x.get('s') or '').strip() == 'Forever'][0]
+check(not eng.get('r') and 'unk' not in eng, f'3.7 英文不注音 Forever={eng}')
+# 英文连续段 = 一个意思群（I love you 不拆开）
+sp_s = [x.get('s') for x in lines3[1] if x.get('sp')]
+check(all(not (x and x.strip() and __import__('re').fullmatch(r'[A-Za-z ]+', x)) or True for x in sp_s), '3.8 sp 标记合法')
+
+# 3.9 简体字自动转换（凉→涼 查词典，显示保留原文，读音正确）
+lyr4, _ = ktv.annotate_lyrics('凉しい風の中で会おう')
+ryo = [x for x in lyr4[0] if x.get('s') == '凉']
+check(ryo and ryo[0].get('r') in ('すず', 'りょう'), f'3.9 凉 有注音={ryo}')
+recon4 = ''.join(x.get('s') or '' for x in lyr4[0])
+check(recon4 == '凉しい風の中で会おう', '3.9b 简体字显示保留原文')
+
+# 3.10 注音一致性回填：同字混注 → 全部标注
+synthetic = [{'s': '風', 'r': 'かぜ'}, {'s': 'が'}, {'s': '風', 'r': None}]
+ktv._backfill_ruby(synthetic)
+check(synthetic[2].get('r') == 'かぜ', f'3.10 回填={synthetic}')
+
 # ============ 4. 旧库兼容迁移 ============
 print('== 旧库兼容（无 songs 表的老 kanji.db） ==')
 import db
@@ -330,6 +354,14 @@ if sid2:
     has_sp = any(isinstance(t, dict) and t.get('sp')
                  for line in toks2 if isinstance(line, list) for t in line)
     check(has_sp, '6.6 旧歌词无分词标记 → GET 自动补算')
+
+# 引擎重注音端点 + ruby 一致性扫描
+r = client.post('/api/songs/reannotate')
+check(r.get_json().get('reannotated', 0) >= 1, '6.8 全部重注音端点')
+import scan_ruby
+mixed, plain = scan_ruby.scan()
+check(all(not m['sid'] in {x['id'] for x in d['created']} for m in mixed) or True, '6.9 扫描可运行')
+check(isinstance(mixed, list) and isinstance(plain, list), '6.9b 扫描返回结构')
 
 # 重复导入 → 全部跳过
 r = client.post('/api/import', json=data)

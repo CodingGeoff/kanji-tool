@@ -127,6 +127,76 @@ def is_romaji_line(line: str) -> bool:
 
 
 # ---------------------------------------------------------------
+# 纯 ASCII 行语言判定（多层保底）：区分「罗马音行」与「英文行」
+# 英文行绝不音译成假名（杜绝 "my bラヴェ シネ" 这类半吊子转写）
+# ---------------------------------------------------------------
+
+# 第 2 层：明确英文词（其中不少恰好能完整转为假名，如 shine→シネ、time→チメ、
+# honey→ホネ、moon→モオン、fire→フィレ，不列进来必被误判成罗马音）
+_EN_STRONG = frozenset('''
+i you your yours we our he she it its this that these those
+in on at by of the and or but if when where why how all can will
+was were be been do does did just only than then there here
+don't can't won't i'm it's that's you're we're they're he's she's there's
+ain't gonna wanna gotta let's
+one two nine ten time same home side shine mine name make take
+give live have use case base sense rise site life line
+some someone forever never change come go more see believe
+honey moon rain fire again long young again fine five wave save move dive
+hero motion ocean nation emotion imagination vacation message image game page
+love heart dream night tonight baby darling sweet true blue sky star sun wind
+light dark deep high low day days again everybody everything nothing something
+anything yeah oh hey away feel know look little long short new old young good
+bad best last first next maybe tell call find hold stay
+'''.split())
+
+# 第 3 层歧义词：既是英文高频词、也可能是日文罗马音独立词
+_EN_AMBIG = frozenset({'no', 'so', 'me', 'hi', 'he', 'made'})
+
+# 日文罗马音标记词：行内出现任一 → 歧义词按日文理解（如 "boku no uta" 的 no=の）
+_JP_MARKERS = frozenset('''
+wa ga wo ni de to mo ya ne yo ze zo sa e kara kedo node keredo
+desu masu da nai naru suru aru iru
+kimi boku anata kono sono are kore sore doko itsu nani ima ashita
+yume sora umi hoshi kaze ame yuki ai koi kokoro naka soto ue shita
+te kuchi suki kirai daisuki
+'''.split())
+
+_ASCII_LETTER_RE = re.compile(r'[a-z]')
+
+
+def _word_fails_romaji(w: str) -> bool:
+    """单词转片假名后仍有未转换的英文字母 → 绝不是罗马音（英文词）。
+    英文辅音丛/词尾辅音（brave 的 br、my 的 y）都会残留 → 必败。"""
+    k = romaji_to_kana(w.strip("'’").lower())
+    return bool(_ASCII_LETTER_RE.search(k))
+
+
+def _is_english_line(line: str) -> bool:
+    """多层保底判定纯 ASCII 行是否为英文：
+    第 1 层 单词级：任何单词无法完整转假名 → 英文
+    第 2 层 词典：出现明确英文词 → 英文
+    第 3 层 歧义消解：出现 no/so/me 等歧义词且无日文标记词 → 英文
+    第 4 层 保底：全部单词均可完整转换且无英文词 → 罗马音（返回 False）
+    任何情况下绝不输出半假名半字母的拼凑转写。"""
+    words = [w.strip("'’").lower() for w in re.split(r"[^A-Za-z'’]+", line) if w.strip("'’")]
+    letters = [w for w in words if _ASCII_LETTER_RE.search(w)]
+    if not letters:
+        return False
+    # 第 1 层：辅音残留
+    if any(_word_fails_romaji(w) for w in letters):
+        return True
+    # 第 2 层：明确英文词典
+    if any(w in _EN_STRONG for w in letters):
+        return True
+    # 第 3 层：歧义词（no/so/me/hi/he/made）且行内无日文罗马音标记
+    if any(w in _EN_AMBIG for w in letters) and not any(w in _JP_MARKERS for w in letters):
+        return True
+    # 第 4 层：完全可转换 → 视为罗马音
+    return False
+
+
+# ---------------------------------------------------------------
 # 导入解析：一大段文本 → 多首歌 [{title, artist, lyrics}]
 # ---------------------------------------------------------------
 
@@ -330,7 +400,10 @@ def annotate_lyrics(lyrics: str):
             continue
         kanji.update(_KANJI_RE.findall(ln))
         if is_romaji_line(ln):
-            tokens.append([{'s': ln, 'k': romaji_to_kana(ln)}])
+            if _is_english_line(ln):        # 英文行：绝不编造假名音译
+                tokens.append([{'s': ln}])
+            else:                           # 罗马音行：整行转片假名
+                tokens.append([{'s': ln, 'k': romaji_to_kana(ln)}])
             continue
         if len(ln) > 160:            # 超长行（整段糊成一行）不注音，原样保留
             tokens.append([{'s': ln}])
@@ -395,7 +468,7 @@ def _seg_mark(tokens, line):
 
 
 def ensure_seg(song_row):
-    """兼容旧数据：没有分词标记/空格被吞的歌词 token 即时补算并回写。返回 token 列表。"""
+    """兼容旧数据：英文行去掉假名音译、罗马音行重算、补空格、补意思群，并回写。"""
     toks = json.loads(song_row['tokens']) if song_row['tokens'] else []
     lyrics = song_row['lyrics']
     lines = lyrics.split('\n')
@@ -403,7 +476,20 @@ def ensure_seg(song_row):
         return toks
     changed = False
     for i, (ln, t) in enumerate(zip(lines, toks)):
-        if t and isinstance(t, list) and t and 'k' not in t[0] and 's' in t[0]:
+        if not (t and isinstance(t, list) and t and 's' in t[0]):
+            continue
+        if 'k' in t[0]:
+            # 纯 ASCII 行：英文行去掉编造的假名；罗马音行重算保持一致
+            if is_romaji_line(ln) and _is_english_line(ln):
+                toks[i] = [{'s': ln}]
+            else:
+                k = romaji_to_kana(ln)
+                if t[0].get('k') != k:
+                    t[0]['k'] = k
+                else:
+                    continue
+            changed = True
+        else:
             changed |= _seg_mark(t, ln)
             fixed = _respace(t, ln)   # 旧数据：补回 MeCab 吞掉的空格
             if len(fixed) != len(t):
