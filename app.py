@@ -54,7 +54,9 @@ structsim.INDEX.warmup_async()
 
 @app.route('/')
 def index():
-    return send_from_directory('static', 'index.html')
+    resp = send_from_directory('static', 'index.html')
+    resp.headers['Cache-Control'] = 'no-cache'   # 前端更新后不被旧缓存挡住
+    return resp
 
 
 # ---------- 统计 ----------
