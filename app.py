@@ -4,7 +4,7 @@ import json
 import os
 import time
 import threading
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 
 import db
 import srs
@@ -17,6 +17,21 @@ import structsim
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
+
+# ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
+APP_VERSION = 'v10'
+try:
+    import subprocess as _sp
+    _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
+                 capture_output=True, text=True, timeout=5,
+                 cwd=os.path.dirname(os.path.abspath(__file__)))
+    _parts = _g.stdout.strip().split('|')
+    BUILD_HASH = _parts[0] if _parts and _parts[0] else ''
+    BUILD_TIME = (_parts[1][:16].replace('T', ' ') if len(_parts) > 1 and _parts[1]
+                  else time.strftime('%Y-%m-%d %H:%M'))
+except Exception:
+    BUILD_HASH = ''
+    BUILD_TIME = time.strftime('%Y-%m-%d %H:%M')
 
 # ---------- 后台持续抓取线程：语料库源源不断扩充 ----------
 _fetch_state = {'running': False, 'last': None, 'last_added': 0}
@@ -54,9 +69,19 @@ structsim.INDEX.warmup_async()
 
 @app.route('/')
 def index():
-    resp = send_from_directory('static', 'index.html')
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'index.html'),
+              encoding='utf-8') as f:
+        html = f.read()
+    # 注入版本号与构建时间：缓存的旧页面不含这些新内容，前端"关于"界面可据此核对
+    html = html.replace('__APP_VERSION__', APP_VERSION).replace('__BUILD_TIME__', BUILD_TIME)
+    resp = Response(html, mimetype='text/html')
     resp.headers['Cache-Control'] = 'no-cache'   # 前端更新后不被旧缓存挡住
     return resp
+
+
+@app.route('/api/version')
+def api_version():
+    return jsonify({'version': APP_VERSION, 'build_time': BUILD_TIME, 'hash': BUILD_HASH})
 
 
 # ---------- 统计 ----------
