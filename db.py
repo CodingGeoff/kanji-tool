@@ -9,6 +9,83 @@ import threading
 DB_PATH = os.path.join(os.path.dirname(__file__), 'kanji.db')
 _lock = threading.Lock()
 
+# ---------- 自建课本（v11）需要的表：老库升级时自动补建，不破坏既有数据 ----------
+BOOK_DDL = '''
+CREATE TABLE IF NOT EXISTS books(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    author TEXT DEFAULT '',
+    level TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    deadline TEXT,
+    minutes_per_day INTEGER DEFAULT 30,
+    target_stage INTEGER DEFAULT 7,
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at REAL,
+    updated_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
+CREATE TABLE IF NOT EXISTS book_lessons(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    idx INTEGER DEFAULT 0,
+    title TEXT DEFAULT '',
+    created_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_bl_book ON book_lessons(book_id, idx);
+CREATE TABLE IF NOT EXISTS book_sentences(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    lesson_id INTEGER,
+    idx INTEGER DEFAULT 0,
+    sentence_id INTEGER NOT NULL,
+    created_at REAL,
+    UNIQUE(book_id, sentence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bs_book ON book_sentences(book_id, idx);
+CREATE TABLE IF NOT EXISTS book_kanji(
+    book_id INTEGER NOT NULL,
+    kanji TEXT NOT NULL,
+    word TEXT DEFAULT '',
+    reading TEXT DEFAULT '',
+    freq INTEGER DEFAULT 0,
+    first_idx INTEGER DEFAULT 0,
+    UNIQUE(book_id, kanji)
+);
+CREATE INDEX IF NOT EXISTS idx_bk_book ON book_kanji(book_id, first_idx);
+CREATE TABLE IF NOT EXISTS book_words(
+    book_id INTEGER NOT NULL,
+    word TEXT NOT NULL,
+    reading TEXT DEFAULT '',
+    kanji TEXT DEFAULT '',
+    pos TEXT DEFAULT '',
+    freq INTEGER DEFAULT 0,
+    first_idx INTEGER DEFAULT 0,
+    UNIQUE(book_id, word)
+);
+CREATE TABLE IF NOT EXISTS book_plan(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    is_new INTEGER DEFAULT 1,
+    kanji TEXT NOT NULL,
+    done INTEGER DEFAULT 0,
+    created_at REAL,
+    UNIQUE(book_id, day, kanji, is_new)
+);
+CREATE INDEX IF NOT EXISTS idx_bp_day ON book_plan(book_id, day);
+CREATE TABLE IF NOT EXISTS book_progress(
+    book_id INTEGER NOT NULL,
+    kanji TEXT NOT NULL,
+    state TEXT DEFAULT 'learning',
+    note TEXT DEFAULT '',
+    added_at REAL,
+    done_at REAL,
+    UNIQUE(book_id, kanji)
+);
+'''
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -80,6 +157,7 @@ def init_db():
             value TEXT
         );
         ''')
+        c.executescript(BOOK_DDL)
 
 
 def _migrate():
@@ -101,6 +179,8 @@ def _migrate():
             updated_at REAL
         )''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title)')
+        # 自建课本表（v11 老库升级补建）
+        c.executescript(BOOK_DDL)
 
 
 _migrate()
@@ -353,3 +433,356 @@ def sentences_for_kanji(kanji, limit=200):
             ORDER BY LENGTH(s.text) ASC, s.id DESC LIMIT ?
         ''', (kanji, limit)).fetchall()
         return [dict(r) for r in rows]
+# ================================================================
+# 自建课本（v11）：课本 / 课 / 句 / 字 / 词 / 计划 / 进度 完整增删改查
+# ================================================================
+
+def add_book(title, author='', level='', note='', deadline=None,
+             minutes_per_day=30, target_stage=7, active=1):
+    now = time.time()
+    with _lock, get_conn() as c:
+        cur = c.execute(
+            'INSERT INTO books(title,author,level,note,deadline,minutes_per_day,'
+            'target_stage,active,sort_order,created_at,updated_at) '
+            'VALUES(?,?,?,?,?,?,?,?,0,?,?)',
+            (title, author or '', level or '', note or '', deadline or None,
+             int(minutes_per_day or 30), int(target_stage or 7), 1 if active else 0, now, now))
+        return cur.lastrowid
+
+
+def get_book(book_id):
+    with get_conn() as c:
+        r = c.execute('SELECT * FROM books WHERE id=?', (book_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def find_book_by_title(title):
+    with get_conn() as c:
+        r = c.execute('SELECT * FROM books WHERE title=?', (title,)).fetchone()
+        return dict(r) if r else None
+
+
+def update_book(book_id, **kw):
+    """只允许白名单字段更新（标题/作者/难度/备注/截止日/每日时长/目标阶段/纳入学习）"""
+    fields = {'title', 'author', 'level', 'note', 'deadline',
+              'minutes_per_day', 'target_stage', 'active', 'sort_order'}
+    sets, args = [], []
+    for k, v in kw.items():
+        if k in fields and v is not None:
+            sets.append(f'{k}=?')
+            args.append(int(v) if k in ('minutes_per_day', 'target_stage', 'active', 'sort_order') else v)
+    if not sets:
+        return False
+    sets.append('updated_at=?')
+    args += [time.time(), book_id]
+    with _lock, get_conn() as c:
+        c.execute(f'UPDATE books SET {", ".join(sets)} WHERE id=?', args)
+    return True
+
+
+def delete_book(book_id):
+    """删书同时清掉它的课/句/字/词/计划/进度（语料本体不删，其他书/复习不受影响）"""
+    with _lock, get_conn() as c:
+        for t in ('book_lessons', 'book_sentences', 'book_kanji',
+                  'book_words', 'book_plan', 'book_progress'):
+            c.execute(f'DELETE FROM {t} WHERE book_id=?', (book_id,))
+        c.execute('DELETE FROM books WHERE id=?', (book_id,))
+
+def list_books(q=''):
+    """课本列表 + 规模统计 + 进度（已学/长期记忆自动识别）"""
+    with get_conn() as c:
+        if q:
+            rows = c.execute('SELECT * FROM books WHERE title LIKE ? OR author LIKE ? '
+                             'OR note LIKE ? ORDER BY sort_order, id',
+                             (f'%{q}%', f'%{q}%', f'%{q}%')).fetchall()
+        else:
+            rows = c.execute('SELECT * FROM books ORDER BY sort_order, id').fetchall()
+        out = []
+        for r in rows:
+            b = dict(r)
+            bid = b['id']
+            b['lessons'] = c.execute('SELECT COUNT(*) n FROM book_lessons WHERE book_id=?',
+                                     (bid,)).fetchone()['n']
+            b['sentences'] = c.execute('SELECT COUNT(*) n FROM book_sentences WHERE book_id=?',
+                                       (bid,)).fetchone()['n']
+            b['kanji_total'] = c.execute('SELECT COUNT(*) n FROM book_kanji WHERE book_id=?',
+                                         (bid,)).fetchone()['n']
+            b['words_total'] = c.execute('SELECT COUNT(*) n FROM book_words WHERE book_id=?',
+                                         (bid,)).fetchone()['n']
+            st = c.execute(
+                'SELECT SUM(CASE WHEN s.stage IS NOT NULL THEN 1 ELSE 0 END) learned, '
+                'SUM(CASE WHEN s.stage>=7 THEN 1 ELSE 0 END) mature, '
+                'SUM(CASE WHEN s.next_due IS NOT NULL AND s.next_due<=? THEN 1 ELSE 0 END) due '
+                'FROM book_kanji bk LEFT JOIN srs s ON s.kanji=bk.kanji WHERE bk.book_id=?',
+                (time.time(), bid)).fetchone()
+            b['learned'] = st['learned'] or 0
+            b['mature'] = st['mature'] or 0
+            b['due'] = st['due'] or 0
+            b['skipped'] = c.execute(
+                "SELECT COUNT(*) n FROM book_progress WHERE book_id=? AND state='skip'",
+                (bid,)).fetchone()['n']
+            b['done_marks'] = c.execute(
+                "SELECT COUNT(*) n FROM book_progress WHERE book_id=? AND state='done'",
+                (bid,)).fetchone()['n']
+            b['progress'] = round(100.0 * b['learned'] / b['kanji_total'], 1) if b['kanji_total'] else 0.0
+            b['plan_days'] = c.execute('SELECT COUNT(DISTINCT day) n FROM book_plan WHERE book_id=?',
+                                       (bid,)).fetchone()['n']
+            out.append(b)
+        return out
+
+
+def set_books_active(book_ids, active):
+    with _lock, get_conn() as c:
+        for bid in book_ids:
+            c.execute('UPDATE books SET active=?, updated_at=? WHERE id=?',
+                      (1 if active else 0, time.time(), bid))
+
+
+# ---------- 课（章节） ----------
+
+def add_lesson(book_id, idx, title):
+    with _lock, get_conn() as c:
+        cur = c.execute('INSERT INTO book_lessons(book_id,idx,title,created_at) VALUES(?,?,?,?)',
+                        (book_id, idx, title or '', time.time()))
+        return cur.lastrowid
+
+
+def list_lessons(book_id):
+    with get_conn() as c:
+        rows = c.execute(
+            'SELECT l.*, (SELECT COUNT(*) FROM book_sentences bs WHERE bs.lesson_id=l.id) n '
+            'FROM book_lessons l WHERE l.book_id=? ORDER BY l.idx, l.id', (book_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_lesson(lesson_id, title=None, idx=None):
+    with _lock, get_conn() as c:
+        if title is not None:
+            c.execute('UPDATE book_lessons SET title=? WHERE id=?', (title, lesson_id))
+        if idx is not None:
+            c.execute('UPDATE book_lessons SET idx=? WHERE id=?', (int(idx), lesson_id))
+
+
+def delete_lesson(lesson_id, keep_sentences=True):
+    """删课；keep_sentences=True 时句子退回「未分课」而不丢内容"""
+    with _lock, get_conn() as c:
+        if keep_sentences:
+            c.execute('UPDATE book_sentences SET lesson_id=NULL WHERE lesson_id=?', (lesson_id,))
+        else:
+            c.execute('DELETE FROM book_sentences WHERE lesson_id=?', (lesson_id,))
+# ---------- 课本句子 ----------
+
+def add_book_sentence(book_id, lesson_id, idx, sentence_id):
+    with _lock, get_conn() as c:
+        cur = c.execute('INSERT OR IGNORE INTO book_sentences(book_id,lesson_id,idx,sentence_id,created_at) '
+                        'VALUES(?,?,?,?,?)', (book_id, lesson_id, idx, sentence_id, time.time()))
+        return cur.rowcount > 0
+
+
+def list_book_sentences(book_id, lesson_id=None, q=None, page=1, per=30):
+    where, args = ['bs.book_id=?'], [book_id]
+    if lesson_id:
+        where.append('bs.lesson_id=?')
+        args.append(lesson_id)
+    if q:
+        where.append('(s.text LIKE ? OR s.translation LIKE ?)')
+        args += [f'%{q}%', f'%{q}%']
+    w = 'WHERE ' + ' AND '.join(where)
+    with get_conn() as c:
+        total = c.execute(f'SELECT COUNT(*) n FROM book_sentences bs '
+                          f'JOIN sentences s ON s.id=bs.sentence_id {w}', args).fetchone()['n']
+        rows = c.execute(
+            f'SELECT s.*, bs.id bs_id, bs.idx bs_idx, bs.lesson_id lesson_id, l.title lesson_title '
+            f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+            f'LEFT JOIN book_lessons l ON l.id=bs.lesson_id {w} '
+            f'ORDER BY bs.idx, bs.id LIMIT ? OFFSET ?', args + [per, (page - 1) * per]).fetchall()
+        return total, [dict(r) for r in rows]
+
+
+def delete_book_sentence(book_id, sentence_id):
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM book_sentences WHERE book_id=? AND sentence_id=?', (book_id, sentence_id))
+
+
+# ---------- 课本字/词索引 ----------
+
+def replace_book_index(book_id, kanji_rows, word_rows):
+    """重建本书的字/词索引（先删后插）"""
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM book_kanji WHERE book_id=?', (book_id,))
+        c.execute('DELETE FROM book_words WHERE book_id=?', (book_id,))
+        c.executemany('INSERT OR REPLACE INTO book_kanji(book_id,kanji,word,reading,freq,first_idx) '
+                      'VALUES(?,?,?,?,?,?)', [(book_id,) + tuple(r) for r in kanji_rows])
+        c.executemany('INSERT OR REPLACE INTO book_words(book_id,word,reading,kanji,pos,freq,first_idx) '
+                      'VALUES(?,?,?,?,?,?,?)', [(book_id,) + tuple(r) for r in word_rows])
+def list_book_kanji(book_id, filter_='all', q=None, book_ids=None, page=1, per=100):
+    """本书（或多本书合集）的汉字表 + 全局 SRS 状态 + 本书进度标记。
+    filter_: all | new(未学) | learning(已学未长期) | mature(stage>=7) | due(到期)
+             | skip(已跳过) | done(已标记掌握)"""
+    ids = book_ids or [book_id]
+    ph = ','.join('?' * len(ids))
+    where, args = [f'bk.book_id IN ({ph})'], list(ids)
+    if q:
+        where.append('bk.kanji=?')
+        args.append(q)
+    if filter_ == 'new':
+        where.append('s.stage IS NULL')
+    elif filter_ == 'learning':
+        where.append('s.stage IS NOT NULL AND (s.stage<7 OR s.stage IS NULL)')
+    elif filter_ == 'mature':
+        where.append('s.stage>=7')
+    elif filter_ == 'due':
+        where.append('s.next_due IS NOT NULL AND s.next_due<=?')
+        args.append(time.time())
+    elif filter_ == 'skip':
+        where.append("p.state='skip'")
+    elif filter_ == 'done':
+        where.append("p.state='done'")
+    w = 'WHERE ' + ' AND '.join(where)
+    sql_base = (f'FROM book_kanji bk LEFT JOIN srs s ON s.kanji=bk.kanji '
+                f'LEFT JOIN book_progress p ON p.kanji=bk.kanji AND p.book_id=bk.book_id {w}')
+    with get_conn() as c:
+        total = c.execute(f'SELECT COUNT(*) n {sql_base}', args).fetchone()['n']
+        rows = c.execute(
+            f'SELECT bk.kanji kanji, MIN(bk.first_idx) first_idx, SUM(bk.freq) freq, '
+            f'MAX(bk.word) word, MAX(bk.reading) reading, '
+            f'MAX(s.stage) stage, MAX(s.next_due) next_due, MAX(s.ok) ok, MAX(s.ng) ng, '
+            f'MAX(p.state) state {sql_base} '
+            f'GROUP BY bk.kanji ORDER BY first_idx, kanji LIMIT ? OFFSET ?',
+            args + [per, (page - 1) * per]).fetchall()
+        return total, [dict(r) for r in rows]
+
+
+def list_book_words(book_id, q=None, has_kanji=None, page=1, per=100):
+    where, args = ['book_id=?'], [book_id]
+    if q:
+        where.append('(word LIKE ? OR reading LIKE ?)')
+        args += [f'%{q}%', f'%{q}%']
+    if has_kanji is True:
+        where.append("kanji<>''")
+    elif has_kanji is False:
+        where.append("kanji=''")
+    w = 'WHERE ' + ' AND '.join(where)
+    with get_conn() as c:
+        total = c.execute(f'SELECT COUNT(*) n FROM book_words {w}', args).fetchone()['n']
+        rows = c.execute(f'SELECT * FROM book_words {w} ORDER BY first_idx, id LIMIT ? OFFSET ?',
+                         args + [per, (page - 1) * per]).fetchall()
+        return total, [dict(r) for r in rows]
+
+
+def book_kanji_set(book_ids, exclude_states=('skip', 'done')):
+    """多本书的汉字集合（用于计划/学习；默认剔除已跳过与已标记掌握的）"""
+    ids = list(book_ids)
+    if not ids:
+        return []
+    ph = ','.join('?' * len(ids))
+    with get_conn() as c:
+        rows = c.execute(
+            f'SELECT bk.kanji kanji, MIN(bk.first_idx) first_idx, SUM(bk.freq) freq '
+            f'FROM book_kanji bk LEFT JOIN book_progress p '
+            f'ON p.kanji=bk.kanji AND p.book_id=bk.book_id '
+            f'WHERE bk.book_id IN ({ph}) GROUP BY bk.kanji ORDER BY first_idx, kanji', ids).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d['state'] = c.execute(
+                f"SELECT state FROM book_progress WHERE kanji=? AND book_id IN ({ph}) LIMIT 1",
+                [d['kanji']] + ids).fetchone()
+            st = d['state']
+            if exclude_states and st and st['state'] in exclude_states:
+                continue
+            d.pop('state')
+            out.append(d)
+        return out
+# ---------- 学习计划（截止日 + 艾宾浩斯曲线排程） ----------
+
+def save_book_plan(book_id, rows):
+    """整体替换某本书的计划（rows: [(day, is_new, kanji)]）"""
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM book_plan WHERE book_id=?', (book_id,))
+        c.executemany('INSERT OR IGNORE INTO book_plan(book_id,day,is_new,kanji,done,created_at) '
+                      'VALUES(?,?,?,?,0,?)',
+                      [(book_id, d, 1 if is_new else 0, k, time.time()) for d, is_new, k in rows])
+
+
+def load_book_plan(book_ids):
+    """读取多本书的计划行（按天聚合由上层完成）"""
+    ids = list(book_ids)
+    if not ids:
+        return []
+    ph = ','.join('?' * len(ids))
+    with get_conn() as c:
+        rows = c.execute(f'SELECT * FROM book_plan WHERE book_id IN ({ph}) '
+                         f'ORDER BY day, is_new DESC, id', ids).fetchall()
+        return [dict(r) for r in rows]
+
+
+def clear_book_plan(book_ids):
+    ids = list(book_ids)
+    if not ids:
+        return 0
+    ph = ','.join('?' * len(ids))
+    with _lock, get_conn() as c:
+        cur = c.execute(f'DELETE FROM book_plan WHERE book_id IN ({ph})', ids)
+        return cur.rowcount
+
+
+def set_plan_done(book_ids, day=None, kanji=None, done=1):
+    """标记计划的某天（或某个字）为已完成/未完成"""
+    ids = list(book_ids)
+    if not ids:
+        return 0
+    ph = ','.join('?' * len(ids))
+    where, args = [f'book_id IN ({ph})'], list(ids)
+    if day:
+        where.append('day=?')
+        args.append(day)
+    if kanji:
+        where.append('kanji=?')
+        args.append(kanji)
+    with _lock, get_conn() as c:
+        cur = c.execute(f'UPDATE book_plan SET done=? WHERE {" AND ".join(where)}',
+                        [1 if done else 0] + args)
+        return cur.rowcount
+
+
+# ---------- 本书进度（增删改查保存） ----------
+
+def set_book_progress(book_id, kanji, state, note=''):
+    """state: learning(在学) | done(已掌握·不计入计划) | skip(跳过·不计入计划)"""
+    now = time.time()
+    with _lock, get_conn() as c:
+        c.execute('INSERT INTO book_progress(book_id,kanji,state,note,added_at,done_at) '
+                  'VALUES(?,?,?,?,?,?) ON CONFLICT(book_id,kanji) DO UPDATE SET '
+                  'state=excluded.state, note=excluded.note, done_at=excluded.done_at',
+                  (book_id, kanji, state or 'learning', note or '', now,
+                   now if state in ('done', 'skip') else None))
+
+
+def list_book_progress(book_id, state=None):
+    where, args = ['book_id=?'], [book_id]
+    if state:
+        where.append('state=?')
+        args.append(state)
+    with get_conn() as c:
+        rows = c.execute(f'SELECT * FROM book_progress WHERE {" AND ".join(where)} '
+                         f'ORDER BY added_at DESC', args).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_book_progress(book_id, kanji=None):
+    with _lock, get_conn() as c:
+        if kanji:
+            cur = c.execute('DELETE FROM book_progress WHERE book_id=? AND kanji=?', (book_id, kanji))
+        else:
+            cur = c.execute('DELETE FROM book_progress WHERE book_id=?', (book_id,))
+        return cur.rowcount
+
+
+def reset_book_plan_and_progress(book_id):
+    """一键重置本书的计划与进度标记（不动全局 SRS 记忆数据）"""
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM book_plan WHERE book_id=?', (book_id,))
+        c.execute('DELETE FROM book_progress WHERE book_id=?', (book_id,))
+        c.execute('UPDATE books SET updated_at=? WHERE id=?', (time.time(), book_id))
+        c.execute('DELETE FROM book_lessons WHERE id=?', (lesson_id,))
