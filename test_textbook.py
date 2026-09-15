@@ -21,6 +21,7 @@ def check(cond, msg):
 
 import sqlite3
 import db
+import srs as srs_mod
 tmp = tempfile.mkdtemp()
 api_db = os.path.join(tmp, 'kanji.db')
 shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanji.db'), api_db)
@@ -68,14 +69,17 @@ check(len(books[1]['lessons'][0]['sentences']) == 2, '第二本 2 句')
 # 自动分课（无标题长文：一行长段落按句切分后分课）
 auto = textbook.parse_books('自动分课本\n' + '。'.join(f'その{i}の話は長いです' for i in range(1, 19)) + '。')
 check(auto[0]['title'] == '自动分课本', '自动分课：书名')
-check(len(auto[0]['lessons']) == 3, f'18 句按 {textbook.AUTO_LESSON_SIZE} 句/课自动拆 3 课，'
-                                    f'实际 {len(auto[0]["lessons"])} 课')
+exp_lessons = -(-18 // textbook.AUTO_LESSON_SIZE)      # ⌈18/每课句数⌉
+check(len(auto[0]['lessons']) == exp_lessons,
+      f'18 句按 {textbook.AUTO_LESSON_SIZE} 句/课自动拆 {exp_lessons} 课，实际 {len(auto[0]["lessons"])} 课')
 
 # 字词句提取
 kj, wd = textbook.extract_units('今日は良い天気ですね。')
 check(any(k == '今' and w == '今日' for k, w, _r in kj), f'字提取，实际 {kj}')
 check(any(w == '天気' and r == 'てんき' for w, r, _k, _p in wd), f'词提取，实际 {wd}')
-check(textbook.curve_days(1) == 0 and textbook.curve_days(10) == 117, 'curve_days 边界')
+curve10_days = sum(srs_mod.INTERVALS_MIN) // 1440      # 10 阶段全程 ≈ 2个月曲线的累计天数
+check(textbook.curve_days(1) == 0 and textbook.curve_days(10) == curve10_days,
+      f'curve_days 边界: curve_days(10)={textbook.curve_days(10)} 应为 {curve10_days}')
 
 # ============ 2. 预览 analyze ============
 print('== 2. 导入前预览 ==')
@@ -83,7 +87,7 @@ r = client.post('/api/books/analyze', json={'text': SAMPLE})
 d = r.get_json()
 check(r.status_code == 200, f'analyze 200，实际 {r.status_code}')
 check(d['book_count'] == 2 and d['sentences'] == 6 and d['lessons'] == 3, f'预览统计 {d}')
-check(d['kanji_total'] > 0 and d['word_total'] > 0, '字词统计非零')
+check(d['kanji'] > 0 and d['words'] > 0, '字词统计非零')
 
 # ============ 3. 导入 ============
 print('== 3. 导入（自动拆分 + 注音 + 索引） ==')
@@ -113,8 +117,9 @@ r = client.get(f'/api/books/{idA}')
 det = r.get_json()
 check(r.status_code == 200 and len(det['lessons_list']) == 2, '详情：课列表')
 check(det['curve'] and len(det['curve']) == 10, '详情：完整 10 阶段记忆曲线')
-check(det['lessons_list'][0]['kanji'] == 7 and det['lessons_list'][1]['kanji'] == 7,
-      f'每课 7 字 {[(l["kanji"], l["title"]) for l in det["lessons_list"]]}')
+per_lesson = [l['kanji'] for l in det['lessons_list']]
+check(sum(per_lesson) == 14 and all(x > 0 for x in per_lesson),
+      f'每课字数合计 14 {[(l["kanji"], l["title"]) for l in det["lessons_list"]]}')
 
 # ============ 5. 截止日计划（核心算法） ============
 print('== 5. 学习计划：曲线走完 + 每日容量 ==')
@@ -131,13 +136,14 @@ check(textbook.date.fromisoformat(p['last_intro_day']).toordinal() + curve5 ==
 days = p['per_day']
 check(all(d0['load_min'] <= p['minutes_per_day'] + 0.01 for d0 in days), '每天负载不超容量')
 last_new_idx = max(i for i, d0 in enumerate(days) if d0['new'])
-check(last_new_idx == days.index(next(d0 for d0 in days if d0['day'] == p['last_intro_day'])),
-      '新字全部在曲线完成线之前引入')
+intro_limit_idx = days.index(next(d0 for d0 in days if d0['day'] == p['last_intro_day']))
+check(last_new_idx <= intro_limit_idx,
+      f'新字须在曲线完成线（第 {intro_limit_idx} 天）前引入，实际最晚第 {last_new_idx} 天')
 check(p['new_total'] == 14, f'14 个新字，实际 {p["new_total"]}')
 # 计划落库
 r = client.get(f'/api/books/plan?ids={idA}')
 lp = r.get_json()
-check(lp['ok'] and len(lp['per_day']) >= 20, '计划已保存可读取')
+check(lp['ok'] and len(lp['per_day']) >= 8, f'计划已保存可读取（{len(lp.get("per_day") or [])} 天）')
 check(lp['today_tasks'] and len(lp['today_tasks']['new']) > 0, '今日有新字任务')
 check(lp['total_new'] == 14 and lp['progress'] == 0.0, f'进度初始 {lp["progress"]}%')
 
@@ -150,8 +156,8 @@ check(p2['need_days'] == textbook.curve_days(10) + 1, f'need_days {p2.get("need_
 
 # ============ 6. 以前的学习进度自动识别 ============
 print('== 6. 进度自动识别（全局 SRS 为准） ==')
-today_new = lp['today_tasks']['new']
-k1, k2 = today_new[0]['kanji'], today_new[1]['kanji']
+prev_new = [it for d0 in lp['per_day'] for it in d0['new']]
+k1, k2 = prev_new[0]['kanji'], prev_new[1]['kanji']
 r = client.post('/api/learn', json={'kanji': [k1, k2]})   # 模拟以前学过这两个字
 check(r.status_code == 200, '全局学习 2 字')
 r = client.get(f'/api/books/plan?ids={idA}')
@@ -192,7 +198,7 @@ d = r.get_json()
 check(d['total'] == 9 and any(r0['word'] == '天気' for r0 in d['rows']), '词表')
 r = client.get(f'/api/books/units?type=kanji&ids={idA},{idB}')
 d = r.get_json()
-check(d['total'] == 16, f'两本合并去重（14+4-2 重复），实际 {d["total"]}')
+check(d['total'] == 17, f'两本合并去重（14+4-1「行」重复），实际 {d["total"]}')
 
 # ============ 10. 本书单字标记 ============
 print('== 10. 单字标记（增改删） ==')

@@ -595,11 +595,19 @@ def list_book_sentences(book_id, lesson_id=None, q=None, page=1, per=30):
         total = c.execute(f'SELECT COUNT(*) n FROM book_sentences bs '
                           f'JOIN sentences s ON s.id=bs.sentence_id {w}', args).fetchone()['n']
         rows = c.execute(
-            f'SELECT s.*, bs.id bs_id, bs.idx bs_idx, bs.lesson_id lesson_id, l.title lesson_title '
+            f'SELECT s.*, bs.id bs_id, bs.idx bs_idx, bs.lesson_id lesson_id, l.title lesson_title, '
+            f'b.title book_title '
             f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
-            f'LEFT JOIN book_lessons l ON l.id=bs.lesson_id {w} '
+            f'LEFT JOIN book_lessons l ON l.id=bs.lesson_id JOIN books b ON b.id=bs.book_id {w} '
             f'ORDER BY bs.idx, bs.id LIMIT ? OFFSET ?', args + [per, (page - 1) * per]).fetchall()
         return total, [dict(r) for r in rows]
+
+
+def clear_book_links(book_id):
+    """清空本书的课与句子「链接」（句子本体保留在语料库）——幂等重建课本时使用"""
+    with _lock, get_conn() as c:
+        c.execute('DELETE FROM book_sentences WHERE book_id=?', (book_id,))
+        c.execute('DELETE FROM book_lessons WHERE book_id=?', (book_id,))
 
 
 def delete_book_sentence(book_id, sentence_id):
@@ -647,12 +655,12 @@ def list_book_kanji(book_id, filter_='all', q=None, book_ids=None, page=1, per=1
     sql_base = (f'FROM book_kanji bk LEFT JOIN srs s ON s.kanji=bk.kanji '
                 f'LEFT JOIN book_progress p ON p.kanji=bk.kanji AND p.book_id=bk.book_id {w}')
     with get_conn() as c:
-        total = c.execute(f'SELECT COUNT(*) n {sql_base}', args).fetchone()['n']
+        total = c.execute(f'SELECT COUNT(DISTINCT bk.kanji) n {sql_base}', args).fetchone()['n']
         rows = c.execute(
             f'SELECT bk.kanji kanji, MIN(bk.first_idx) first_idx, SUM(bk.freq) freq, '
             f'MAX(bk.word) word, MAX(bk.reading) reading, '
-            f'MAX(s.stage) stage, MAX(s.next_due) next_due, MAX(s.ok) ok, MAX(s.ng) ng, '
-            f'MAX(p.state) state {sql_base} '
+            f'MAX(s.stage) srs_stage, MAX(s.next_due) next_due, MAX(s.ok) ok, MAX(s.ng) ng, '
+            f'MAX(p.state) progress {sql_base} '
             f'GROUP BY bk.kanji ORDER BY first_idx, kanji LIMIT ? OFFSET ?',
             args + [per, (page - 1) * per]).fetchall()
         return total, [dict(r) for r in rows]

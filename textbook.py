@@ -389,8 +389,19 @@ def import_book(book, deadline=None, minutes_per_day=30, target_stage=7,
     """把 parse_books 的结果写库：建书 → 建课 → 存句 → 建字/词索引。
     返回 {id, title, lessons, sentences, new_sentences, kanji, words}"""
     title = (book.get('title') or '未命名课本').strip()
-    bid = db.add_book(title, book.get('author') or '', level or book.get('level') or '',
-                      note or '', deadline, minutes_per_day, target_stage, 1)
+    exist = db.find_book_by_title(title)
+    if exist:
+        # 幂等导入：同名书复用（进度不分裂），清掉旧课与句子链接后按最新文本重建
+        bid = exist['id']
+        db.update_book(bid,
+                       author=book.get('author') or exist.get('author') or '',
+                       level=level or book.get('level') or exist.get('level') or '',
+                       note=note or exist.get('note') or '',
+                       deadline=deadline or exist.get('deadline'))
+        db.clear_book_links(bid)
+    else:
+        bid = db.add_book(title, book.get('author') or '', level or book.get('level') or '',
+                          note or '', deadline, minutes_per_day, target_stage, 1)
     n_new, n_dup, sid_ok = 0, 0, 0
     for li, lesson in enumerate(book.get('lessons') or []):
         lid = db.add_lesson(bid, li + 1, lesson.get('title') or f'第{li + 1}課')
@@ -573,38 +584,49 @@ def _future_review_days(row, day0_ts, horizon):
 
 
 def _simulate(fresh, existing_days, cap_sec, horizon, last_intro, target_stage, max_new_per_day):
-    """贪心负载平滑排程：新字排在容量允许的最早一天，且不得晚于 last_intro。
+    """负载平滑排程（水填充算法）：
+    ① 均匀铺开：每日新字目标 = ⌈总新字数 / 可用引入天数⌉，把新字尽量均匀分散到
+       [0, last_intro]，避免「第一天塞爆、之后全空闲」的突击式安排；
+    ② 容量顺延：某天装不下（当日成本 > 每日容量）就自动往后找最早有空的一天；
+    ③ 放宽重试：均匀目标内放不下时，逐步放宽到硬上限（max_new_per_day）再试；
+       全都放不下才进 unplaced（触发不可行报告）。
     返回 (new_of_day, load, rev_of_day, rev_count, unplaced)"""
     load = [n * REVIEW_SECONDS for n in existing_days]
     new_of_day = [[] for _ in range(horizon)]
     rev_of_day = [[] for _ in range(horizon)]
     rev_count = list(existing_days)
     unplaced = []
-    for k in fresh:
-        placed = False
-        for d in range(0, max(0, last_intro) + 1):
-            if max_new_per_day and len(new_of_day[d]) >= max_new_per_day:
+    intro_days = max(0, last_intro) + 1
+    hard_cap = max_new_per_day or 10 ** 9
+    limit = min(max(1, -(-len(fresh) // intro_days)), hard_cap)   # 每日目标新字数
+
+    def try_place(k, bid, max_count):
+        for d in range(0, intro_days):
+            if len(new_of_day[d]) >= max_count:
                 continue
             future = curve_future_days(d, horizon, target_stage)
-            # 当日成本 = 新字首次学习 + 3 次短复习（同日内完成）
+            # 当日成本 = 新字首次学习 + 3 次短复习（同日内完成）+ 后续曲线复习的分摊预告
             extra = NEW_SECONDS + SAME_DAY_REVIEWS * REVIEW_SECONDS + REVIEW_SECONDS * len(future)
             if load[d] + extra > cap_sec:
                 continue
-            # 当日：新字本身 + 三次短复习
             load[d] += NEW_SECONDS + SAME_DAY_REVIEWS * REVIEW_SECONDS
             rev_count[d] += SAME_DAY_REVIEWS
-            if k not in rev_of_day[d]:
-                rev_of_day[d].append(k)
+            if (k, bid) not in rev_of_day[d]:
+                rev_of_day[d].append((k, bid))
             for dd in future:                       # 后续曲线复习点
                 load[dd] += REVIEW_SECONDS
                 rev_count[dd] += 1
-                if k not in rev_of_day[dd]:
-                    rev_of_day[dd].append(k)
-            new_of_day[d].append(k)
-            placed = True
-            break
-        if not placed:
-            unplaced.append(k)
+                if (k, bid) not in rev_of_day[dd]:
+                    rev_of_day[dd].append((k, bid))
+            new_of_day[d].append((k, bid))
+            return True
+        return False
+
+    for k, bid in fresh:
+        if try_place(k, bid, limit):
+            continue
+        if not try_place(k, bid, hard_cap):         # 放宽均匀目标（仍受每日容量约束）
+            unplaced.append((k, bid))
     return new_of_day, load, rev_of_day, rev_count, unplaced
 
 
@@ -798,7 +820,7 @@ def load_plan(book_ids=None):
     rows = db.load_book_plan(ids)
     books = [b for b in (db.get_book(i) for i in ids) if b]
     if not rows:
-        return {'ok': True, 'empty': not books, 'per_day': [],
+        return {'ok': True, 'empty': True, 'per_day': [],
                 'books': [{'id': b['id'], 'title': b['title']} for b in books]}
     stages = _srs_stages()
     meta = _meta_map(ids)
