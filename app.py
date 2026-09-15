@@ -14,12 +14,13 @@ import grammar
 import rag
 import ktv
 import structsim
+import textbook
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v10'
+APP_VERSION = 'v11'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],

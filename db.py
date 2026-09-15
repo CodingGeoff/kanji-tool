@@ -570,6 +570,9 @@ def delete_lesson(lesson_id, keep_sentences=True):
             c.execute('UPDATE book_sentences SET lesson_id=NULL WHERE lesson_id=?', (lesson_id,))
         else:
             c.execute('DELETE FROM book_sentences WHERE lesson_id=?', (lesson_id,))
+        c.execute('DELETE FROM book_lessons WHERE id=?', (lesson_id,))
+
+
 # ---------- 课本句子 ----------
 
 def add_book_sentence(book_id, lesson_id, idx, sentence_id):
@@ -615,6 +618,8 @@ def replace_book_index(book_id, kanji_rows, word_rows):
                       'VALUES(?,?,?,?,?,?)', [(book_id,) + tuple(r) for r in kanji_rows])
         c.executemany('INSERT OR REPLACE INTO book_words(book_id,word,reading,kanji,pos,freq,first_idx) '
                       'VALUES(?,?,?,?,?,?,?)', [(book_id,) + tuple(r) for r in word_rows])
+
+
 def list_book_kanji(book_id, filter_='all', q=None, book_ids=None, page=1, per=100):
     """本书（或多本书合集）的汉字表 + 全局 SRS 状态 + 本书进度标记。
     filter_: all | new(未学) | learning(已学未长期) | mature(stage>=7) | due(到期)
@@ -785,4 +790,3 @@ def reset_book_plan_and_progress(book_id):
         c.execute('DELETE FROM book_plan WHERE book_id=?', (book_id,))
         c.execute('DELETE FROM book_progress WHERE book_id=?', (book_id,))
         c.execute('UPDATE books SET updated_at=? WHERE id=?', (time.time(), book_id))
-        c.execute('DELETE FROM book_lessons WHERE id=?', (lesson_id,))
