@@ -128,6 +128,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
   <nav id="nav">
     <button data-tab="review" class="active">今日复习<span class="badge hidden" id="dueBadge"></span></button>
     <button data-tab="learn">学新字</button>
+    <button data-tab="books">我的课本<span class="badge hidden" id="bkBadge"></span></button>
     <button data-tab="corpus">语料库</button>
     <button data-tab="kanji">汉字库</button>
     <button data-tab="favs">收藏夹</button>
@@ -354,6 +355,56 @@ body.ktv-song.showhdr header{display:flex;position:static}
   </div>
 </section>
 
+<!-- ============ 我的课本（v11） ============ -->
+<section id="tab-books" class="hidden">
+  <!-- 书架视图 -->
+  <div id="bkShelf">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>我的课本</b>
+        <div class="row">
+          <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
+          <button class="btn primary" onclick="bkToggleImport()">＋ 制作课本</button>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        把句子、文章、歌词粘贴进来 → 自动拆分课 / 提取「字·词·句」完整学习内容；勾选一本或多本书生成计划，
+        算法按艾宾浩斯记忆曲线排满每一天并保证截止日前走完全部复习；以前学过的字自动识别、自动打勾。
+      </div>
+    </div>
+
+    <div id="bkImport" class="card hidden">
+      <b>制作课本（可一次粘贴多本，用《书名》或 --- 分隔）</b>
+      <textarea id="bkText" style="min-height:200px;margin-top:8px" placeholder="例：&#10;《我的课本》&#10;作者：你自己的名字&#10;第1课&#10;今日は良い天気ですね。東京タワーへ行きました。&#10;&#10;第2课&#10;桜が咲きました。&#10;&#10;---&#10;&#10;《N3阅读》&#10;（自动按段落分课，无需手写课号）"></textarea>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap">
+        <button class="btn" onclick="bkAnalyze()">🔍 预览拆分</button>
+        <button class="btn primary" onclick="bkDoImport()">📥 全部导入</button>
+        <span class="muted">支持标记：《书名》、作者：、难度：、第N课/課/章、--- 分隔；空行分段自动成课</span>
+      </div>
+      <div id="bkPrev" style="margin-top:8px"></div>
+    </div>
+
+    <div id="bkPlanForm" class="card hidden">
+      <b>学习计划（艾宾浩斯 · 截止日排程）</b>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap">
+        <label class="muted">截止日期 <input type="date" id="bkDeadline"></label>
+        <label class="muted">每天 <input type="number" id="bkMinutes" value="30" min="5" max="480" style="width:70px"> 分钟</label>
+        <label class="muted">学到第 <select id="bkTarget" class="mini"></select> 阶段</label>
+        <button class="btn green" onclick="bkPlanBuild()">生成计划</button>
+        <button class="btn danger" onclick="bkPlanClear()" title="清除所选书的计划（不动学习进度）">清空计划</button>
+      </div>
+      <div class="muted" style="margin-top:6px">不勾选书 = 默认对「学习中」的书排程；同一字出现在多本书只学一次。</div>
+      <div id="bkPlanResult" style="margin-top:8px"></div>
+    </div>
+
+    <div id="bkPlanCard" class="card hidden"></div>
+    <div id="bkList" style="margin-top:12px"></div>
+  </div>
+
+  <!-- 单本书详情视图 -->
+  <div id="bkDetail" class="hidden"></div>
+</section>
+
 <!-- ============ 历史 ============ -->
 <section id="tab-history" class="hidden">
   <div class="stat-grid" id="histStats"></div>
@@ -575,7 +626,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.body.classList.remove('ktv-song','showhdr');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  ({review:loadReview,learn:loadNew,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
+  ({review:loadReview,learn:loadNew,books:loadBooks,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ---------- 统计 ---------- */
@@ -1099,6 +1150,277 @@ window.addEventListener('scroll',()=>{
     _ktvLastY=y;
   }
 },{passive:true});
+
+/* ---------- 我的课本（v11）：自制教材 + 截止日学习计划 ---------- */
+let bkSel=new Set(),bkPlanCache=null,bkCur=null,bkUnitsMode='kanji',bkLessonsOpen=new Set();
+function bkToggleImport(){const el=$('#bkImport');el.classList.toggle('hidden');if(!el.classList.contains('hidden'))$('#bkText').focus()}
+function bkTogglePlanForm(){
+  const el=$('#bkPlanForm');el.classList.toggle('hidden');
+  if(!el.classList.contains('hidden')){
+    if(!$('#bkTarget').options.length)
+      $('#bkTarget').innerHTML=[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}"${n===7?' selected':''}>${n}</option>`).join('');
+    if(!$('#bkDeadline').value){const d=new Date(Date.now()+45*864e5);$('#bkDeadline').value=d.toISOString().slice(0,10)}
+    if(bkPlanCache&&bkPlanCache.deadline)$('#bkDeadline').value=bkPlanCache.deadline;
+  }
+}
+async function loadBooks(){
+  $('#bkShelf').classList.remove('hidden');$('#bkDetail').classList.add('hidden');
+  const d=await api('/api/books');
+  bkRenderList(d.rows||[]);
+  const p=await api('/api/books/plan');
+  bkPlanCache=p;bkRenderPlan(p);bkBadge(p);
+}
+function bkBadge(p){
+  const el=$('#bkBadge'),t=p&&p.today_tasks;
+  const n=t?t.new.filter(x=>!x.done).length:0;
+  el.textContent=n||'';el.classList.toggle('hidden',!n);
+}
+function bkRenderList(rows){
+  const box=$('#bkList');
+  if(!rows.length){box.innerHTML='<div class="card muted">还没有课本 —— 点右上角「＋ 制作课本」，把句子或文章粘贴进来即可自动拆分成课并提取字词。</div>';return}
+  box.innerHTML=rows.map(b=>`
+    <div class="card" style="padding:12px 16px">
+      <div class="row" style="justify-content:space-between">
+        <label class="row" style="gap:8px;cursor:pointer" title="勾选后「生成计划」只对这些书排程">
+          <input type="checkbox" ${bkSel.has(b.id)?'checked':''} onchange="bkSelSel(${b.id},this.checked)">
+          <b style="font-size:16px">${esc(b.title)}</b>
+          ${b.level?`<span class="tag">${esc(b.level)}</span>`:''}
+          ${b.author?`<span class="muted">${esc(b.author)}</span>`:''}
+        </label>
+        <div class="row" style="gap:6px">
+          <label class="advtog ${b.active?'on':''}" title="纳入学习：计划与「今日任务」只统计学习中（active）的书">
+            <input type="checkbox" ${b.active?'checked':''} onchange="bkSetActive(${b.id},this.checked)"><span>学习中</span></label>
+          <button class="btn mini" onclick="bkOpen(${b.id})">打开</button>
+          <button class="btn mini danger" onclick="bkDel(${b.id})">删除</button>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:4px;font-size:12.5px">
+        ${b.lessons} 课 · ${b.sentences} 句 · ${b.kanji_total} 字 · ${b.words_total} 词
+        ${b.deadline?` · 🎯 截止 ${b.deadline}`:''}${b.minutes_per_day?` · 每天${b.minutes_per_day}分钟`:''}
+        ${b.due?` · ⏰ 今日到期复习 ${b.due}`:''}
+      </div>
+    </div>`).join('');
+}
+function bkSelSel(id,on){if(on)bkSel.add(id);else bkSel.delete(id)}
+async function bkSetActive(id,on){
+  await api('/api/books/active',{method:'POST',body:JSON.stringify({book_ids:[id],active:on})});
+  toast(on?'已纳入学习':'已暂停该书的计划');loadBooks();
+}
+async function bkDel(id){
+  if(!confirm('删除这本书？（句子语料本体保留在语料库中）'))return;
+  await api('/api/books/'+id,{method:'DELETE'});
+  bkSel.delete(id);toast('已删除');loadBooks();
+}
+async function bkAnalyze(){
+  const text=$('#bkText').value;
+  if(!text.trim())return toast('先粘贴文本');
+  $('#bkPrev').innerHTML='<span class="muted">拆分中…</span>';
+  const d=await api('/api/books/analyze',{method:'POST',body:JSON.stringify({text})});
+  if(d.error)return toast(d.error);
+  $('#bkPrev').innerHTML=`<div class="muted">识别到 <b>${d.book_count}</b> 本书 · <b>${d.lessons}</b> 课 / <b>${d.sentences}</b> 句（与库内重复 ${d.duplicated}），覆盖 <b>${d.kanji}</b> 字 / <b>${d.words}</b> 词${d.sampled?`（长文本已抽样 ${d.sample_size} 句统计）`:''}</div>`+
+    d.books.map(b=>`<div style="margin-top:6px">📘 <b>${esc(b.title)}</b>：${b.lessons} 课 · ${b.sentences} 句 <span class="muted">${esc((b.excerpt||[]).join('／').slice(0,60))}…</span></div>`).join('');
+}
+async function bkDoImport(){
+  const text=$('#bkText').value;
+  if(!text.trim())return toast('先粘贴文本');
+  const d=await api('/api/books/import',{method:'POST',body:JSON.stringify({text})});
+  if(d.error)return toast(d.error);
+  const n=d.books.reduce((a,b)=>a+b.sentences,0),k=d.books.reduce((a,b)=>a+b.kanji,0);
+  toast(`已导入 ${d.books.length} 本书 · ${n} 句 · ${k} 字`);
+  $('#bkText').value='';$('#bkPrev').innerHTML='';$('#bkImport').classList.add('hidden');
+  loadBooks();
+}
+async function bkPlanBuild(){
+  const body={book_ids:[...bkSel],deadline:$('#bkDeadline').value||null,
+    minutes_per_day:parseInt($('#bkMinutes').value)||null,target_stage:parseInt($('#bkTarget').value)||null};
+  $('#bkPlanResult').innerHTML='<span class="muted">排程中…</span>';
+  const d=await api('/api/books/plan',{method:'POST',body:JSON.stringify(body)});
+  bkRenderPlanResult(d);
+  const p=await api('/api/books/plan');bkPlanCache=p;bkRenderPlan(p);
+  const dd=await api('/api/books');bkRenderList(dd.rows||[]);
+}
+function bkRenderPlanResult(d){
+  const box=$('#bkPlanResult');
+  if(d.error)return box.innerHTML=`<div class="verwarn">${esc(d.error)}</div>`;
+  if(!d.ok){
+    let sug='';
+    if(d.suggestion){
+      if(d.suggestion.earliest_finish)sug=`最早能全部学完：<b>${d.suggestion.earliest_finish}</b>（需 ${d.suggestion.need_days} 天）`;
+      if(d.suggestion.min_minutes_per_day)sug+=`${sug?'；':''}维持当前截止日每天至少需 <b>${d.suggestion.min_minutes_per_day}</b> 分钟`;
+    }
+    box.innerHTML=`<div class="verwarn">⚠ ${esc(d.reason||'排程失败')}${d.need_days?`：走完记忆曲线本身就需要 ${d.need_days} 天`:''}<br><span class="muted">${sug}</span>
+      ${d.suggestion&&d.suggestion.earliest_finish?`<div style="margin-top:6px"><button class="btn mini primary" onclick="bkApplyDeadline('${d.suggestion.earliest_finish}')">改用 ${d.suggestion.earliest_finish} 重新排</button></div>`:''}</div>`;
+    return;
+  }
+  box.innerHTML=`<div class="muted">✅ 已排好：<b>${d.start}</b> → <b>${d.deadline}</b> 共 ${d.days} 天，新字 ${d.new_total} 个，每天 ≤ ${d.minutes_per_day} 分钟；新字最晚 <b>${d.last_intro_day}</b> 前引入（保证第 ${d.target_stage} 阶段曲线 ${d.curve_days} 天在截止日前走完）${d.existing_review_total?`，已学字的既有复习约 ${d.existing_review_total} 次已计入每日负载`:''}。</div>`;
+}
+function bkApplyDeadline(v){$('#bkDeadline').value=v;bkPlanBuild()}
+async function bkPlanClear(){
+  if(!confirm('清除所选书的计划？（学习进度不受影响）'))return;
+  await api('/api/books/plan?ids='+[...bkSel].join(','),{method:'DELETE'});
+  toast('已清除计划');loadBooks();
+}
+function bkRenderPlan(p){
+  const box=$('#bkPlanCard');
+  if(!p||p.empty||!p.per_day||!p.per_day.length){box.classList.add('hidden');return}
+  box.classList.remove('hidden');
+  const today=p.today_tasks,up=p.per_day.filter(d=>d.day>p.today).slice(0,6),pct=p.progress||0;
+  box.innerHTML=`
+    <div class="row" style="justify-content:space-between">
+      <b>今日任务 <span class="muted" style="font-weight:400">${p.today}${p.deadline?` · 截止 ${p.deadline}`:''}</span></b>
+      <span class="muted">新字进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
+    </div>
+    <div class="progressbar"><i style="width:${pct}%"></i></div>
+    ${today&&today.new.length?`
+      <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:6px">
+        ${today.new.map(it=>`<span class="wordchip" style="${it.done?'opacity:.45;text-decoration:line-through':''}"><input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onchange="bkTaskDone('${it.kanji}',this.checked)">${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`).join('')}
+      </div>`:''}
+    <div class="muted" style="margin-top:6px">${today?`今天 ${today.new.length} 个新字 · ${today.review.length} 项复习${today.total?` · 完成 ${Math.round(100*today.done_n/today.total)}%`:''}`:'今天没有排程任务 🎉'}</div>
+    ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学字到期复习）</summary><div style="margin-top:4px">${today.review.map(it=>`<span class="wordchip" style="${it.done?'opacity:.45':''}">${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`).join('')}</div></details>`:''}
+    <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">随后几天（共 ${p.per_day.length} 天）</summary>
+      ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
+    </details>`;
+}
+async function bkTaskDone(k,done){
+  await api('/api/books/plan/done',{method:'POST',body:JSON.stringify({kanji:k,done})});
+  const p=await api('/api/books/plan');bkPlanCache=p;bkRenderPlan(p);bkBadge(p);
+}
+async function bkOpen(id){
+  const d=await api('/api/books/'+id);
+  if(d.error)return toast(d.error);
+  bkCur=d;bkLessonsOpen=new Set();bkUnitsMode='kanji';
+  $('#bkShelf').classList.add('hidden');$('#bkDetail').classList.remove('hidden');
+  bkRenderDetail();
+}
+function bkBack(){$('#bkDetail').classList.add('hidden');$('#bkShelf').classList.remove('hidden');loadBooks()}
+function bkRenderDetail(){
+  const b=bkCur;
+  $('#bkDetail').innerHTML=`
+   <div class="card">
+     <div class="row" style="justify-content:space-between">
+       <div class="row" style="gap:8px">
+         <button class="btn" onclick="bkBack()">‹ 书架</button>
+         <b style="font-size:17px">${esc(b.title)}</b>
+         ${b.level?`<span class="tag">${esc(b.level)}</span>`:''}
+         ${b.author?`<span class="muted">${esc(b.author)}</span>`:''}
+       </div>
+       <div class="row" style="gap:6px">
+         <button class="btn mini" onclick="bkEditMeta()">编辑</button>
+         <button class="btn mini" onclick="bkReindex()" title="句子变动后重建字/词索引">重建索引</button>
+         <button class="btn mini danger" onclick="bkReset()" title="清空本书计划与标记（不影响全局记忆）">重置进度</button>
+       </div>
+     </div>
+     <div class="muted" style="margin-top:6px">
+       ${b.lessons} 课 · ${b.sentences} 句 · ${b.kanji_total} 字 · ${b.words_total} 词
+       ${b.deadline?` · 🎯 截止 ${b.deadline}`:''}${b.minutes_per_day?` · 每天 ${b.minutes_per_day} 分钟`:''}
+       ${b.target_stage?` · 学到第 ${b.target_stage} 阶段（曲线 ${b.curve_target_days} 天）`:''}
+     </div>
+     ${b.curve&&b.curve.length?`<div class="muted" style="margin-top:3px;font-size:12px">记忆曲线：${b.curve.map(c=>`S${c.stage}·${c.same_day?'当日':'第'+c.day+'天'}`).join(' → ')}</div>`:''}
+     <div class="row" style="margin-top:10px;gap:6px">
+       <button class="btn mini green" id="bkTabKanji" onclick="bkUnitsTab('kanji')">汉字 ${b.kanji_total}</button>
+       <button class="btn mini" id="bkTabWords" onclick="bkUnitsTab('words')">词汇 ${b.words_total}</button>
+     </div>
+     <div id="bkUnits" style="margin-top:10px"></div>
+   </div>
+   <div class="card" id="bkLessonsBox"></div>`;
+  bkUnitsTab('kanji');
+  bkRenderLessons();
+}
+async function bkRenderLessons(){
+  const ls=bkCur.lessons_list||[];
+  $('#bkLessonsBox').innerHTML=`<div class="row" style="justify-content:space-between"><b>课程目录</b><span class="muted">点开一课查看原文与注音</span></div>
+    ${ls.length?ls.map(l=>`
+    <div style="border-bottom:1px solid var(--line);padding:9px 2px">
+      <div class="row" style="justify-content:space-between;cursor:pointer" onclick="bkToggleLesson(${l.id})">
+        <b>${esc(l.title)}</b>
+        <span class="muted" style="font-size:12.5px">${l.n_sentences} 句 · 汉字 ${l.learned}/${l.kanji}（${l.progress}%） ${bkLessonsOpen.has(l.id)?'▲':'▼'}</span>
+      </div>
+      <div class="progressbar" style="margin:4px 0"><i style="width:${l.progress||0}%"></i></div>
+      <div id="bkLes-${l.id}" class="${bkLessonsOpen.has(l.id)?'':'hidden'}">${bkLessonsOpen.has(l.id)?'<span class="muted">加载中…</span>':''}</div>
+    </div>`).join(''):'<div class="muted" style="margin-top:8px">本书还没有句子</div>'}`;
+  for(const id of bkLessonsOpen)bkLoadLesson(id);
+}
+function bkToggleLesson(id){bkLessonsOpen.has(id)?bkLessonsOpen.delete(id):bkLessonsOpen.add(id);bkRenderLessons()}
+async function bkLoadLesson(lid){
+  const d=await api(`/api/books/${bkCur.id}/sentences?lesson_id=${lid}&per=100`);
+  const box=document.getElementById('bkLes-'+lid);if(!box)return;
+  box.innerHTML=(d.rows||[]).map(r=>`
+    <div class="sent-item"><div class="jp noruby" data-raw="${esc(r.text)}">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+      ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
+      <div class="meta"><button onclick="bkSentDel(${r.id})">从本书移除</button></div></div>`).join('')||'<span class="muted">本课暂无句子</span>';
+}
+async function bkSentDel(sid){
+  if(!confirm('从本书移除该句？（语料本体保留）'))return;
+  await api(`/api/books/${bkCur.id}/sentences/${sid}`,{method:'DELETE'});
+  bkOpen(bkCur.id);
+}
+async function bkReindex(){
+  const d=await api(`/api/books/${bkCur.id}/reindex`,{method:'POST'});
+  toast(`已重建索引：${d.kanji} 字 / ${d.words} 词`);bkOpen(bkCur.id);
+}
+async function bkReset(){
+  if(!confirm('清空本书的学习计划与单字标记？（全局记忆数据不受影响）'))return;
+  await api(`/api/books/${bkCur.id}/reset`,{method:'POST'});
+  toast('已重置');bkBack();
+}
+async function bkEditMeta(){
+  const b=bkCur,title=prompt('书名',b.title);if(title===null)return;
+  const deadline=prompt('截止日期（YYYY-MM-DD，留空表示无）',b.deadline||'');
+  const minutes=prompt('每天学习分钟数',b.minutes_per_day||30);
+  const target=prompt('学到第几阶段（1-10，越大越牢固）',b.target_stage||7);
+  const body={title};
+  if(deadline!==null)body.deadline=deadline;
+  if(minutes!==null)body.minutes_per_day=parseInt(minutes)||null;
+  if(target!==null)body.target_stage=parseInt(target)||null;
+  await api('/api/books/'+b.id,{method:'PUT',body:JSON.stringify(body)});
+  toast('已保存');bkOpen(b.id);
+}
+async function bkUnitsTab(mode){
+  bkUnitsMode=mode;
+  const k=document.getElementById('bkTabKanji'),w=document.getElementById('bkTabWords');
+  if(k&&w){k.classList.toggle('green',mode==='kanji');w.classList.toggle('green',mode==='words')}
+  const box=$('#bkUnits');if(!box)return;
+  box.innerHTML='<span class="muted">加载中…</span>';
+  const d=await api(`/api/books/units?type=${mode}&ids=${bkCur.id}&per=500`);
+  if(mode==='kanji'){
+    box.innerHTML=d.rows.map(r=>{
+      const st=r.srs_stage,pb=r.progress;
+      const cls=pb==='done'||(st||0)>=7?'background:#e7f2ec;border-color:var(--accent2)':(pb==='learning'||(st!=null&&!pb)?'background:#fdf3e7':'');
+      const op=pb==='skip'?'opacity:.35;text-decoration:line-through':'';
+      return `<span class="wordchip" style="cursor:pointer;${cls}${op}" title="全局阶段 ${st??'未学'}${pb?' · 标记:'+pb:''} · 点击设置" onclick="bkKanjiMenu('${r.kanji}')">${esc(r.kanji)}${st!=null?`<small>${st}</small>`:''}</span>`;
+    }).join('')||'<span class="muted">本书还没有索引字</span>';
+  }else{
+    box.innerHTML=d.rows.map(r=>`<span class="wordchip">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`).join('')||'<span class="muted">本书还没有词汇</span>';
+  }
+}
+function bkKanjiMenu(k){
+  const old=document.getElementById('bkMenu');if(old)old.remove();
+  const m=document.createElement('div');m.id='bkMenu';
+  m.style.cssText='position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px';
+  m.onclick=e=>{if(e.target===m)m.remove()};
+  m.innerHTML=`<div class="card" style="max-width:340px;width:100%">
+    <div class="row" style="justify-content:space-between"><b style="font-size:24px">${k}</b><button class="btn mini" onclick="document.getElementById('bkMenu').remove()">✕</button></div>
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="bkProgress('${k}','learning')">📖 在学</button>
+      <button class="btn green" onclick="bkProgress('${k}','done')">✅ 已掌握</button>
+      <button class="btn warn" onclick="bkProgress('${k}','skip')">⏭ 跳过</button>
+      <button class="btn danger" onclick="bkProgress('${k}','')">✖ 清除标记</button>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="btn primary" onclick="bkAddGlobal('${k}')">加入全局艾宾浩斯复习</button>${spkBtn(k)}
+    </div>
+  </div>`;
+  document.body.appendChild(m);
+}
+async function bkProgress(k,state){
+  await api('/api/books/progress',{method:'POST',body:JSON.stringify({book_id:bkCur.id,kanji:k,state})});
+  const m=document.getElementById('bkMenu');if(m)m.remove();
+  bkUnitsTab('kanji');
+}
+async function bkAddGlobal(k){
+  await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:[k]})});
+  toast('已加入全局学习，可在「今日复习」中看到');
+}
 
 /* ---------- 启动 ---------- */
 initVoices();

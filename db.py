@@ -670,7 +670,7 @@ def list_book_words(book_id, q=None, has_kanji=None, page=1, per=100):
     w = 'WHERE ' + ' AND '.join(where)
     with get_conn() as c:
         total = c.execute(f'SELECT COUNT(*) n FROM book_words {w}', args).fetchone()['n']
-        rows = c.execute(f'SELECT * FROM book_words {w} ORDER BY first_idx, id LIMIT ? OFFSET ?',
+        rows = c.execute(f'SELECT * FROM book_words {w} ORDER BY first_idx, word LIMIT ? OFFSET ?',
                          args + [per, (page - 1) * per]).fetchall()
         return total, [dict(r) for r in rows]
 

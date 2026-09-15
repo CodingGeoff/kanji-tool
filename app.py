@@ -578,6 +578,246 @@ def api_song_delete(sid):
     return jsonify({'ok': True})
 
 
+# ---------- 自建课本（v11）：自制教材 / 自动拆分字词句 / 截止日学习计划 ----------
+@app.route('/api/books')
+def api_books():
+    return jsonify({'rows': db.list_books(q=request.args.get('q') or '')})
+
+
+@app.route('/api/books/analyze', methods=['POST'])
+def api_books_analyze():
+    """导入前预览：拆出几本书 / 多少课 / 多少句 / 字词规模 / 与既有语料的重复度"""
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 6:
+        return jsonify({'error': '文本太短，请粘贴句子或文章'}), 400
+    lesson_size = int(d.get('lesson_size') or textbook.AUTO_LESSON_SIZE)
+    res = textbook.analyze(text, lesson_size=lesson_size)
+    res['curve_days'] = textbook.curve_days(int(d.get('target_stage') or 7))
+    return jsonify(res)
+
+
+@app.route('/api/books/import', methods=['POST'])
+def api_books_import():
+    """正式导入：自动拆分 → 建书/课 → 句子入库（注音/索引全走主引擎）→ 建字/词索引"""
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 6:
+        return jsonify({'error': '文本太短，请粘贴句子或文章'}), 400
+    lesson_size = int(d.get('lesson_size') or textbook.AUTO_LESSON_SIZE)
+    deadline = (d.get('deadline') or '').strip() or None
+    minutes = int(d.get('minutes_per_day') or textbook.DEFAULT_MINUTES)
+    target = int(d.get('target_stage') or 7)
+    note = (d.get('note') or '').strip()
+    books = textbook.parse_books(text, lesson_size)
+    out = [textbook.import_book(b, deadline=deadline, minutes_per_day=minutes,
+                                target_stage=target, note=note) for b in books]
+    return jsonify({'ok': True, 'books': out})
+
+
+@app.route('/api/books/<int:bid>', methods=['GET'])
+def api_book_get(bid):
+    info = textbook.book_detail(bid)
+    if not info:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(info)
+
+
+@app.route('/api/books/<int:bid>', methods=['PUT'])
+def api_book_update(bid):
+    d = request.json or {}
+    kw = {}
+    if 'title' in d:
+        kw['title'] = (d.get('title') or '').strip() or None
+    for f in ('author', 'level', 'note', 'deadline'):
+        if f in d:
+            kw[f] = (d.get(f) or '').strip() or None
+    for f in ('minutes_per_day', 'target_stage', 'sort_order'):
+        if f in d and d.get(f) is not None:
+            kw[f] = int(d[f])
+    if 'active' in d:
+        kw['active'] = 1 if d.get('active') else 0
+    if not kw:
+        return jsonify({'error': '没有可更新字段'}), 400
+    db.update_book(bid, **kw)
+    db.log('book', f'更新课本 #{bid}: {", ".join(kw)}')
+    return jsonify({'ok': True, 'book': db.get_book(bid)})
+
+
+@app.route('/api/books/<int:bid>', methods=['DELETE'])
+def api_book_delete(bid):
+    book = db.get_book(bid)
+    if not book:
+        return jsonify({'error': 'not found'}), 404
+    db.delete_book(bid)
+    db.log('book', f'删除课本《{book["title"]}》（语料本体保留）')
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/<int:bid>/sentences')
+def api_book_sentences(bid):
+    total, rows = db.list_book_sentences(
+        bid, lesson_id=int(request.args.get('lesson_id')) if request.args.get('lesson_id') else None,
+        q=request.args.get('q') or None,
+        page=int(request.args.get('page', 1)), per=int(request.args.get('per', 30)))
+    with db.get_conn() as c:
+        fav_ids = {x['sentence_id'] for x in c.execute('SELECT sentence_id FROM fav_sentences')}
+    for r in rows:
+        r['tokens'] = json.loads(r['tokens']) if r['tokens'] else []
+        r['fav'] = r['id'] in fav_ids
+    return jsonify({'total': total, 'rows': rows})
+
+
+@app.route('/api/books/<int:bid>/sentences/<int:sid>', methods=['DELETE'])
+def api_book_sentence_del(bid, sid):
+    db.delete_book_sentence(bid, sid)
+    textbook.rebuild_book_index(bid)
+    db.log('book', f'课本 #{bid} 移除句子 #{sid}')
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/<int:bid>/lessons/<int:lid>', methods=['PUT'])
+def api_book_lesson_put(bid, lid):
+    d = request.json or {}
+    db.update_lesson(lid, title=(d.get('title') or '').strip() or None,
+                     idx=d.get('idx') if d.get('idx') is not None else None)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/<int:bid>/lessons/<int:lid>', methods=['DELETE'])
+def api_book_lesson_del(bid, lid):
+    keep = request.args.get('keep_sentences', '1') != '0'
+    db.delete_lesson(lid, keep_sentences=keep)
+    if not keep:
+        textbook.rebuild_book_index(bid)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/<int:bid>/reindex', methods=['POST'])
+def api_book_reindex(bid):
+    """编辑句子后重建本书的字/词索引（教学顺序 = 首次出现顺序）"""
+    stat = textbook.rebuild_book_index(bid)
+    return jsonify({'ok': True, **stat})
+
+
+@app.route('/api/books/units')
+def api_book_units():
+    """选中的一本/多本书的「字」或「词」总表（学习界面数据源；含 SRS 进度）"""
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    if not ids:
+        ids = [b['id'] for b in db.list_books() if b.get('active')]
+    type_ = request.args.get('type', 'kanji')
+    page = int(request.args.get('page', 1))
+    per = min(int(request.args.get('per', 100)), 500)
+    q = request.args.get('q') or None
+    if type_ == 'words':
+        if len(ids) == 1:
+            total, rows = db.list_book_words(ids[0], q=q, page=page, per=per)
+        else:
+            agg, order = {}, []
+            for bid in ids:
+                _t, ws = db.list_book_words(bid, q=q, page=1, per=500)
+                for w in ws:
+                    a = agg.get(w['word'])
+                    if a is None:
+                        agg[w['word']] = dict(w)
+                        order.append(w['word'])
+                    else:
+                        a['freq'] += w['freq']
+            total = len(order)
+            rows = [agg[w] for w in order[(page - 1) * per: page * per]]
+        return jsonify({'total': total, 'rows': rows, 'ids': ids})
+    filter_ = request.args.get('filter', 'all')
+    total, rows = db.list_book_kanji(None, filter_=filter_, q=q, book_ids=ids, page=page, per=per)
+    return jsonify({'total': total, 'rows': rows, 'ids': ids})
+
+
+@app.route('/api/books/plan', methods=['GET'])
+def api_book_plan_get():
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    if not ids:
+        ids = [b['id'] for b in db.list_books() if b.get('active')]
+    return jsonify(textbook.load_plan(ids))
+
+
+@app.route('/api/books/plan', methods=['POST'])
+def api_book_plan_build():
+    """生成（并保存）截止日学习计划：保证记忆曲线在截止日前走完 + 每日负载不超时"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    res = textbook.build_plan(
+        ids or None, start=d.get('start') or None, deadline=d.get('deadline') or None,
+        minutes_per_day=d.get('minutes_per_day'), target_stage=d.get('target_stage'),
+        max_new_per_day=d.get('max_new_per_day'))
+    return jsonify(res)
+
+
+@app.route('/api/books/plan/done', methods=['POST'])
+def api_book_plan_done():
+    """勾选/取消某天（或某个字）的计划完成状态"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    n = db.set_plan_done(ids or None, day=d.get('day') or None,
+                         kanji=d.get('kanji') or None, done=1 if d.get('done', True) else 0)
+    return jsonify({'ok': True, 'updated': n})
+
+
+@app.route('/api/books/plan', methods=['DELETE'])
+def api_book_plan_clear():
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    n = db.clear_book_plan(ids or None)
+    db.log('book', f'清除学习计划（{len(ids or [])} 本书，{n} 行）')
+    return jsonify({'ok': True, 'cleared': n})
+
+
+@app.route('/api/books/progress', methods=['POST'])
+def api_book_progress_set():
+    """本书内单字标记（增/改）：learning 在学 | done 已掌握 | skip 跳过"""
+    d = request.json or {}
+    kanji = (d.get('kanji') or '').strip()
+    book_id = int(d.get('book_id') or 0)
+    if not kanji or not book_id:
+        return jsonify({'error': '需要 book_id 与 kanji'}), 400
+    state = d.get('state') or ''
+    if state not in ('learning', 'done', 'skip'):
+        db.delete_book_progress(book_id, kanji)     # 空 state = 清除标记
+    else:
+        db.set_book_progress(book_id, kanji, state, d.get('note') or '')
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/progress', methods=['DELETE'])
+def api_book_progress_del():
+    """本书内单字标记（删）：kanji 为空则清空本书全部标记"""
+    try:
+        bid = int(request.args.get('book_id') or 0)
+    except ValueError:
+        bid = 0
+    if not bid:
+        return jsonify({'error': '需要 book_id'}), 400
+    n = db.delete_book_progress(bid, kanji=request.args.get('kanji') or None)
+    return jsonify({'ok': True, 'deleted': n})
+
+
+@app.route('/api/books/<int:bid>/reset', methods=['POST'])
+def api_book_reset(bid):
+    """一键重置本书计划与标记（不动全局 SRS 记忆数据）"""
+    db.reset_book_plan_and_progress(bid)
+    db.log('book', f'重置课本 #{bid} 的计划与标记')
+    return jsonify({'ok': True})
+
+
+@app.route('/api/books/active', methods=['POST'])
+def api_books_active():
+    """选择纳入学习的书（一本或多本）：计划与「今天学什么」只统计 active 的书"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    if not ids:
+        return jsonify({'error': '至少选择一本'}), 400
+    db.set_books_active(ids, 1 if d.get('active', True) else 0)
+    return jsonify({'ok': True, 'ids': ids})
+
+
 # ---------- 数据备份：完整导出 / 导入（JSON，跨库合并） ----------
 @app.route('/api/backup')
 def api_backup():
