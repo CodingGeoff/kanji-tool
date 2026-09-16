@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""临时诊断：全库歌词分词标记问题扫描
-A. 库内标记「词内断开」：sp 出现在同一个 MeCab 词的内部（如 見る → 見|る）
-B. 库内标记与当前算法不一致（陈旧标记，打开歌曲时 ensure_seg 可自愈）
-C. 当前算法的形式名詞误断（用言连体形 + 事/物/ため… 应与前句同群）
+"""临时诊断 v2：库内 sp 标记 vs 当前算法 精确集合比较
+  A. 库内标记「词内断开」：sp 出现在同一个 furigana 词（w）内部（如 続|く）
+  B. 库内标记与 chunk_starts 不一致（真正陈旧；_seg_mark pop+re-add 恒 True，不能用）
+  C. 当前算法的形式名詞误断（用言 + 事/時/ため… 应与前句同群）
 """
 import json
 import sqlite3
@@ -34,32 +34,35 @@ for s in songs:
         if not (tv and isinstance(tv, list) and tv and 'k' not in tv[0] and 's' in tv[0]):
             continue
         n_lines += 1
-        # —— A. 库内词内断开（同一 w 内部出现 sp）——
-        prev = None
+        # —— 库内 sp 的字符偏移集合 ——
+        off, stored = 0, set()
+        prev_dict = None
         for t in tv:
-            if not isinstance(t, dict):
-                prev = t
-                continue
-            w = t.get('w')
-            if t.get('sp') and prev is not None and isinstance(prev, dict) \
-                    and w and prev.get('w') == w and (prev.get('s') or ''):
-                n_a += 1
-                changed_song = True
-                if len(samples_a) < 12:
-                    samples_a.append((s['title'][:14], ln[:26], (prev.get('s') or '') + '｜' + (t.get('s') or ''), w))
-            prev = t
-        # —— B. 陈旧标记（当前算法重算会变化）——
-        if ktv._seg_mark(json.loads(json.dumps(tv)), ln):
+            if isinstance(t, dict):
+                if t.get('sp'):
+                    stored.add(off)
+                    # A. 词内断开：sp token 与前一 token 同属一个 furigana 词
+                    if prev_dict is not None and t.get('w') and prev_dict.get('w') == t['w'] \
+                            and (prev_dict.get('s') or ''):
+                        n_a += 1
+                        changed_song = True
+                        if len(samples_a) < 12:
+                            samples_a.append((s['title'][:14], ln[:26],
+                                              (prev_dict.get('s') or '') + '｜' + (t.get('s') or ''), t['w']))
+                prev_dict = t
+            off += len(t.get('s') or '') if isinstance(t, dict) else 0
+        # —— B. 与当前算法精确比较 ——
+        starts = ktv.chunk_starts(ln)
+        if stored != starts:
             n_b += 1
             changed_song = True
             if len(samples_b) < 8:
-                samples_b.append((s['title'][:14], ln[:30]))
-        # —— C. 当前算法的形式名詞误断 ——
+                samples_b.append((s['title'][:14], ln[:30], sorted(stored), sorted(starts)))
+        # —— C. 当前算法形式名詞误断 ——
         ms = [(o, w.surface, w.feature.pos1 or '') for o, w in ktv._offset_words(ln)]
-        starts = ktv.chunk_starts(ln)
         for k in range(len(ms)):
-            off, surf, p1 = ms[k]
-            if off in starts and surf in FORMAL and k > 0 and ms[k - 1][2] in (
+            o_, surf, p1 = ms[k]
+            if o_ in starts and surf in FORMAL and k > 0 and ms[k - 1][2] in (
                     '動詞', '形容詞', '形状詞', '助動詞'):
                 n_c += 1
                 changed_song = True
@@ -69,13 +72,14 @@ for s in songs:
         songs_affected.add(s['id'])
 
 print(f'歌曲 {len(songs)} 首 / 有效歌词行 {n_lines} 行')
-print(f'A 库内词内断开（見る→見|る 类）: {n_a} 处，样例:')
+print(f'A 库内词内断开（続く→続|く 类）: {n_a} 处，样例:')
 for x in samples_a:
     print('   ', x)
-print(f'B 陈旧标记（重算后即变化的行）: {n_b} 行，样例:')
+print(f'B 库内标记 ≠ 当前算法（陈旧/缺失）: {n_b} 行，样例:')
 for x in samples_b:
     print('   ', x)
 print(f'C 当前算法形式名詞误断: {n_c} 处，样例:')
 for x in samples_c:
     print('   ', x)
 print(f'受影响歌曲: {len(songs_affected)} 首')
+
