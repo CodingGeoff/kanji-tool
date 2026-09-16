@@ -513,7 +513,6 @@ class MultiIndex:
                                                 'translation': '', 'score': sc, 'title_match': True}})
         # 歌名/书名命中置顶：歌名先出现在歌词列表首位（点击 = 直接打开整首歌），
         # 再跟上逐行歌词命中；同一首歌只保留一条「整首」入口。
-        # 统一列表（results）同样把标题命中排在最前 —— 这是最强的意图信号。
         seen_title, top_songs, top_books = set(), [], []
         for t in titles['songs']:
             if t['title'] in seen_title:
@@ -530,20 +529,23 @@ class MultiIndex:
         groups['lyric'] = top_songs + groups['lyric']
         groups['textbook'] = top_books + groups['textbook']
         merged = top_songs + [r for r in lyrics if r.get('text')]
-        # 统一排名列表：标题命中 →（用户指定的来源优先级为第一排序键）。
-        # sort='priority'（默认）：① 来源的结果整体排在 ② 之前，匹配用户「优先匹配指定内容」的意图；
-        # 同来源内按分数降序（助词/词元覆盖等精排分）。命中为空则自然落到下一来源。
-        # sort='score'：纯相关性优先，仅用优先级做轻微加权（跨来源混排）。
+        # 统一列表（results）：标题命中参与同一套排序 —— 既尊重用户指定的来源优先级，
+        # 又保留「最强意图信号」：在 sort='score'（纯相关性）下高分自然置顶；
+        # 在 sort='priority'（默认）下作为其所属通道的成员参与来源分档，
+        # 同来源内凭高分排在该来源最前，不会被排到用户指定来源之前。
         _pri_idx = {c: pri.index(c) for c in pri}
         _thr = lambda r: (max(min_affinity, 0.0) if r['channel'] == 'lyric' else min_score)
         kept = [r for r in unified if r['score'] >= _thr(r)]
+        for t in top_songs + top_books:
+            t.setdefault('rank', t['score'])
+        pool_all = kept + top_songs + top_books
         if sort == 'score':
-            ordered = sorted(kept, key=lambda r: (-r['rank'], _pri_idx.get(r['channel'], len(pri)),
-                                                  -len(r.get('text') or '')))
+            ordered = sorted(pool_all, key=lambda r: (-r['rank'], _pri_idx.get(r['channel'], len(pri)),
+                                                      -len(r.get('text') or '')))
         else:
-            ordered = sorted(kept, key=lambda r: (_pri_idx.get(r['channel'], len(pri)),
-                                                  -r['score'], -len(r.get('text') or '')))
-        results = top_songs + top_books + ordered
+            ordered = sorted(pool_all, key=lambda r: (_pri_idx.get(r['channel'], len(pri)),
+                                                      -r['score'], -len(r.get('text') or '')))
+        results = ordered
         meta = {'counts': counts, 'terms': key_terms(q), 'qvars': qv,
                 'prior': pri, 'qnorm': qn, 'sort': sort, 'ms': round((time.time() - t0) * 1000),
                 'book_ids': sorted(selected_books),

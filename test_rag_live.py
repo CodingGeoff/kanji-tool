@@ -92,7 +92,9 @@ if len(shared) >= 1 and any(shared_word in t for t in (lyric_text, web_text)):
     for first in ('lyric', 'web'):
         rests = [c for c in ('lyric', 'textbook', 'web') if c != first]
         st, r = rag(shared_word, limit=10, sources=[first] + rests)
-        got = [x['channel'] for x in (r['groups']['lyric'] + r['rows'])]
+        # results = 跨通道统一排名列表（优先级的第一排序键）；旧字段兜底
+        uni = r.get('results') or (r['rows'] + r['groups']['lyric'])
+        got = [x['channel'] for x in uni]
         check(f'首位 {first} 时该通道置顶', got and got[0] == first, got[:6])
         check(f'prior 回传 {first}', r['meta']['prior'][0] == first, r['meta']['prior'])
 else:
