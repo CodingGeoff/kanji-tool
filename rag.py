@@ -474,7 +474,7 @@ class MultiIndex:
                 break
         rows = [r for r in rows if r['score'] >= min_score]
         lyrics = [r for r in lyrics if r['score'] >= max(min_affinity, 0.0)]
-        # 5) 歌名/书名命中（强意图信号，置顶对应组）
+                # 5) 歌名/书名命中（强意图信号，置顶对应组 + 置顶歌词列表）
         titles = {'songs': [], 'books': []}
         with self._lock:
             tbm = self._tbm
@@ -488,32 +488,53 @@ class MultiIndex:
                 bid = m.get('id') if m.get('kind') == 'book' else m.get('book_id')
                 if bid not in selected_books:
                     continue
+            sc = round(0.85 + 0.1 * s, 3)
             if m['kind'] == 'song':
-                titles['songs'].append({'id': m['id'], 'title': m['title'],
-                                        'artist': m['artist'], 'score': round(s, 3)})
-            elif m['kind'] == 'book':
+                trow = {'type': 'lyric', 'channel': 'lyric', 'kind': 'song',
+                        'id': m['id'], 'title': m['title'], 'artist': m['artist'],
+                        'text': '', 'line_no': None, 'score': sc,
+                        'affinity': sc, 'title_match': True}
+                titles['songs'].append(trow)
+            else:
                 titles['books'].append({'id': m['id'], 'title': m['title'],
                                         'author': m['author'], 'level': m['level'],
-                                        'score': round(s, 3)})
+                                        'score': round(s, 3),
+                                        'row': {'type': 'textbook', 'channel': 'textbook',
+                                                'kind': 'book', 'id': m['id'], 'book_id': m['id'],
+                                                'title': m['title'], 'lesson': '', 'text': '',
+                                                'translation': '', 'score': sc, 'title_match': True}})
         for t in titles['songs'][:2]:
-            groups['lyric'].insert(0, {'type': 'lyric', 'channel': 'lyric', 'kind': 'song',
-                                       'id': t['id'], 'title': t['title'], 'artist': t['artist'],
-                                       'text': '', 'line_no': None,
-                                       'score': round(0.85 + 0.1 * t['score'], 3),
-                                       'affinity': round(0.85 + 0.1 * t['score'], 3),
-                                       'title_match': True})
+            groups['lyric'].insert(0, t)
         for t in titles['books'][:2]:
-            groups['textbook'].insert(0, {'type': 'textbook', 'channel': 'textbook', 'kind': 'book',
-                                          'id': t['id'], 'book_id': t['id'], 'title': t['title'],
-                                          'lesson': '', 'text': '', 'translation': '',
-                                          'score': round(0.85 + 0.1 * t['score'], 3),
-                                          'title_match': True})
+            groups['textbook'].insert(0, t['row'])
+        # 歌名精确命中置顶：出现在歌词列表首位，便于点击直接跳转整首歌
+        title_lyrics = [t for t in titles['songs'] if not t.get('_dup')]
+        # 去重（同一首歌只出现一次）
+        seen_titles = set()
+        dedup_title = []
+        for t in title_lyrics:
+            if t['title'] in seen_titles:
+                continue
+            seen_titles.add(t['title'])
+            dedup_title.append(t)
+        top_lyrics = dedup_title[:2]
+        # 将 title 命中行与行级歌词合并，不重复
+        line_ids = {r.get('id') for r in lyrics}
+        merged = []
+        for t in top_lyrics:
+            t = dict(t)
+            t['_title_only'] = True
+            merged.append(t)
+        for r in lyrics:
+            if r.get('text'):
+                merged.append(r)
         meta = {'counts': counts, 'terms': key_terms(q), 'qvars': qv,
                 'prior': pri, 'qnorm': qn, 'ms': round((time.time() - t0) * 1000),
                 'book_ids': sorted(selected_books)}
         return {'rows': rows[:max(limit, 1)],
-                'lyrics': lyrics[:max(8, limit)],
+                'lyrics': merged[:max(8, limit)],
                 'groups': groups, 'titles': titles, 'meta': meta}
+
 
 
 # ---------------- 全库兼容索引（/api/rag/similar 用） ----------------

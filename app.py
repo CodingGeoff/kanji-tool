@@ -66,6 +66,10 @@ def _auto_loop():
 threading.Thread(target=_auto_loop, daemon=True).start()
 # 句子结构索引后台预热（首次约10秒，之后增量）
 structsim.INDEX.warmup_async()
+# 多源 RAG 联邦索引：首次检索时 ensure() 自动构建（签名不一致时增量重建），
+# 避免后台线程与数据就绪/测试时的临时库抢占建立索引，保证检索结果始终与当前数据一致。
+
+
 
 
 @app.route('/')
@@ -859,7 +863,7 @@ def api_book_examples():
         kanji=request.args.get('kanji') or None,
         word=request.args.get('word') or None,
         book_ids=ids,
-        source=request.args.get('source') or None,
+                source=request.args.get('source') or 'all',
         limit=int(request.args.get('limit', 0) or 0) or None)})
 
 
