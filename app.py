@@ -20,7 +20,7 @@ app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v11'
+APP_VERSION = 'v12'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
@@ -381,22 +381,51 @@ def api_rag_search():
     q = (d.get('q') or '').strip()
     if not q:
         return jsonify({'error': 'empty'}), 400
-    hits = rag.INDEX.query(q, limit=int(d.get('limit', 10)))
+    def _ids(value):
+        out = []
+        for x in value or []:
+            try:
+                n = int(x)
+            except Exception:
+                continue
+            if n not in out:
+                out.append(n)
+        return out
+
+    sources = d.get('sources') or []
+    if isinstance(sources, str):
+        sources = [x.strip() for x in sources.split(',') if x.strip()]
+    book_ids = _ids(d.get('book_ids') or d.get('books') or [])
+    multi = rag.MULTI.search(
+        q,
+        limit=int(d.get('limit', 10)),
+        sources=sources,
+        per_song=int(d.get('per_song', 3)),
+        per_book=int(d.get('per_book', 4)),
+        min_score=float(d.get('min_score', 0)),
+        min_affinity=float(d.get('min_affinity', 0.18)),
+        book_ids=book_ids,
+    )
     out = []
-    with db.get_conn() as c:
-        for sid, score in hits:
-            r = c.execute('SELECT * FROM sentences WHERE id=?', (sid,)).fetchone()
-            if r:
-                item = dict(r)
-                item['tokens'] = json.loads(item['tokens'])
-                item['score'] = score
-                out.append(item)
+    for row in multi['rows']:
+        item = dict(row)
+        txt = item.get('text') or item.get('title') or ''
+        item['tokens'] = furigana.annotate(txt) if txt else []
+        out.append(item)
+    lyric_hits = []
+    for row in multi['lyrics']:
+        item = dict(row)
+        txt = item.get('text') or item.get('title') or ''
+        item['tokens'] = furigana.annotate(txt) if txt else []
+        lyric_hits.append(item)
     # 句子结构相似检索：输入是整句时，分析成分并匹配结构相似的句子（歌词优先）
     struct = None
     if structsim.is_sentence(q):
         sig = structsim.signature(q)
         hits = structsim.INDEX.query(q, limit=8,
-                                     per_song=int(d.get('per_song', 2)))
+                                     per_song=int(d.get('per_song', 2)),
+                                     book_ids=book_ids,
+                                     sources=sources)
         srows = []
         for sc, kind, title, sid, txt, shared in hits:
             if sc < 0.25:
@@ -409,21 +438,10 @@ def api_rag_search():
         comp = structsim.describe(sig, q)
         comp['template'] = structsim.structure_template(sig)
         struct = {'is_sentence': True, 'components': comp, 'rows': srows}
-    db.log('rag', f'语义检索：{q[:24]}（{len(out)}条结果'
+    db.log('rag', f'语义检索：{q[:24]}（{len(out) + len(lyric_hits)}条结果'
                  + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
-    min_score = float(d.get('min_score', 0))
-    if min_score:
-        out = [r for r in out if r.get('score', 0) >= min_score]
-    resp = {'rows': out}
-    # 任意查询（词/句）自动匹配相关歌词行（亲和检索：子串+字符bigram）
-    lyric_hits = structsim.INDEX.lyric_affinity(
-        q, limit=8, per_song=int(d.get('per_song', 3)),
-        min_aff=float(d.get('min_affinity', 0.18)))
-    for h in lyric_hits:
-        if h.get('text'):
-            h['tokens'] = furigana.annotate(h['text'])
-    if lyric_hits:
-        resp['lyrics'] = lyric_hits
+    resp = {'rows': out, 'lyrics': lyric_hits, 'titles': multi.get('titles', {}),
+            'groups': multi.get('groups', {}), 'meta': multi.get('meta', {})}
     if struct:
         resp['struct'] = struct
     return jsonify(resp)

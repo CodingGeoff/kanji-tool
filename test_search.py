@@ -75,6 +75,7 @@ check(r.get_json().get('data_saver') is True, '省流重新开启')
 blob = """《青い空》
 私は歌を歌った
 君と公園を歩いた
+私は学校へ行く
 
 ---
 
@@ -84,6 +85,15 @@ blob = """《青い空》
 僕は絵を描いた"""
 r = client.post('/api/songs/import', json={'text': blob})
 check(len(r.get_json()['created']) == 2, '导入 2 首测试歌')
+
+# 2.3.1 导入一本课本（用于检索优先级 / 指定教材范围）
+book_blob = """《学校の時間》
+私は学校へ行く。
+学校で勉強します。"""
+r = client.post('/api/books/import', json={'text': book_blob})
+book_res = r.get_json()
+check(book_res.get('ok') is True and book_res.get('books'), '导入 1 本测试课本')
+book_id = book_res['books'][0]['id']
 
 # 2.4 歌词行搜索（高级学习模式）
 r = client.get('/api/songs/search?q=歌った')
@@ -101,6 +111,18 @@ check(any(x['title'] == '青い空' for x in d.get('lyrics', [])),
       f"词查询自动匹配歌词={d.get('lyrics')}")
 if d.get('lyrics'):
     check('tokens' in d['lyrics'][0], '歌词命中带注音')
+
+# 2.5.1 来源优先：歌词优先于课本
+r = client.post('/api/rag/search', json={'q': '学校', 'limit': 5, 'sources': ['lyric', 'textbook', 'web']})
+d = r.get_json()
+check(d['meta']['prior'][0] == 'lyric', f"优先级传递={d['meta']['prior']}")
+check(d['lyrics'] and d['lyrics'][0]['title'] == '青い空', f"歌词优先排前={d['lyrics'][:3]}")
+
+# 2.5.2 指定课本范围：只返回选中教材内容
+r = client.post('/api/rag/search', json={'q': '学校', 'limit': 5, 'sources': ['textbook'], 'book_ids': [book_id]})
+d = r.get_json()
+check(all(x['type'] == 'textbook' for x in d['rows']), f"限定课本仅返回教材结果={d['rows']}")
+check(all(x.get('book_id') == book_id for x in d['rows']), f"限定课本命中正确={d['rows']}")
 
 # 2.6 RAG：整句 → 成分分析 + 结构相似（歌词优先）
 r = client.post('/api/rag/search', json={'q': '私は本を読んだ。', 'limit': 8})

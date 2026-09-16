@@ -127,6 +127,7 @@ class StructIndex:
         self._lock = threading.Lock()
         self._sents = {}      # sid -> (text, sig)
         self._song_lines = []  # (song_id, title, line, sig)
+        self._book_map = {}    # sid -> set(book_id)
         self._pdf = {}         # 助词 -> 出现文档数（IDF 用）
         self._n_sent = -1
         self._n_song = -1
@@ -136,11 +137,15 @@ class StructIndex:
         with db.get_conn() as c:
             rows = c.execute('SELECT id, text FROM sentences').fetchall()
             songs = c.execute('SELECT id, title, lyrics FROM songs').fetchall()
-        return rows, songs
+            book_rows = c.execute('SELECT sentence_id, book_id FROM book_sentences').fetchall()
+        return rows, songs, book_rows
 
     def _build(self):
-        rows, songs = self._collect()
+        rows, songs, book_rows = self._collect()
         sents, lines, pdf = {}, [], {}
+        book_map = {}
+        for r in book_rows:
+            book_map.setdefault(r['sentence_id'], set()).add(r['book_id'])
         for r in rows:
             sig = signature(r['text'])
             sents[r['id']] = (r['text'], sig)
@@ -156,6 +161,7 @@ class StructIndex:
         with self._lock:
             self._sents = sents
             self._song_lines = lines
+            self._book_map = book_map
             self._pdf = pdf
             self._n_sent = len(rows)
             self._n_song = len(songs)
@@ -172,9 +178,12 @@ class StructIndex:
         threading.Thread(target=run, daemon=True).start()
 
     def ensure(self):
-        rows, songs = self._collect()
+        rows, songs, book_rows = self._collect()
         with self._lock:
             up2date = len(rows) == self._n_sent and len(songs) == self._n_song
+            if up2date:
+                current_books = sum(len(v) for v in self._book_map.values())
+                up2date = current_books == len(book_rows)
         if not up2date and not self._warming:
             self._build()
 
@@ -221,17 +230,21 @@ class StructIndex:
                 break
         return out[:limit]
 
-    def query(self, text, limit=10, per_song=2):
+    def query(self, text, limit=10, per_song=2, book_ids=None, sources=None):
         """返回 [(score, kind, title, sid, line_text, shared_particles)]。
         高级排序：助词 IDF 加权 + 词性链 LCS + 句尾形态 + 长度接近度 + 歌词加成；
         去重（副歌重复行只留一条）+ 多样性（每首歌最多 per_song 条，0=不限）。"""
         self.ensure()
         sig = signature(text)
         out = []
+        selected_books = {int(b) for b in (book_ids or []) if str(b).strip().isdigit()}
+        allow_lyric = not sources or 'lyric' in sources
+        allow_corpus = not sources or any(s in sources for s in ('web', 'textbook'))
         with self._lock:
             sents = list(self._sents.items())
             lines = list(self._song_lines)
             pdf = dict(self._pdf)
+            book_map = {sid: set(bids) for sid, bids in self._book_map.items()}
 
         def pw(p):                      # 助词信息量权重（越罕见越重）
             return 1.0 / (pdf.get(p, 0) + 1)
@@ -253,9 +266,15 @@ class StructIndex:
             return 0.25 * seq + 0.15 * end + 0.15 * ln
 
         for sid, (t, s) in sents:
+            if not allow_corpus:
+                continue
+            if selected_books and not (book_map.get(sid) or set()) & selected_books:
+                continue
             sc = 0.45 * psim(s) + rest(s, len(t))
             out.append((sc, 'corpus', None, sid, t, set(sig['p']) & set(s['p'])))
         for sid, title, ln, s in lines:
+            if not allow_lyric:
+                continue
             sc = 0.45 * psim(s) + rest(s, len(ln)) + 0.05   # 歌词优先
             out.append((sc, 'lyric', title, sid, ln, set(sig['p']) & set(s['p'])))
         out.sort(key=lambda x: -x[0])

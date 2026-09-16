@@ -71,6 +71,28 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .jp rt{user-select:none;-webkit-user-select:none}
 .jp .unk{border-bottom:2px dotted #c77f38}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.rag-shell{background:linear-gradient(180deg,#fff,#fbf8f1);border:1px solid var(--line);border-radius:16px;padding:16px}
+.rag-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.rag-meta{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.rag-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}
+.rag-filters label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--sub)}
+.rag-filters select,.rag-filters input{width:100%}
+.rag-pills{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.rag-pill{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+.rag-pill:hover{border-color:var(--accent);color:var(--accent)}
+.rag-pill.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.rag-group{border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px 14px;margin-top:12px}
+.rag-group h4{font-size:14px;margin-bottom:8px}
+.rag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.rag-card{border:1px solid var(--line);border-radius:14px;padding:12px;background:#fff}
+.rag-card .head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.rag-card .title{font-weight:700;overflow-wrap:anywhere}
+.rag-card .body{margin-top:8px;line-height:1.9;overflow-wrap:anywhere}
+.rag-card .sub{margin-top:6px;font-size:12px;color:var(--sub);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.rag-card.lyric{border-left:4px solid var(--accent2)}
+.rag-card.textbook{border-left:4px solid var(--gold)}
+.rag-card.web{border-left:4px solid var(--accent)}
+.rag-empty{padding:14px 0;color:var(--sub)}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;text-align:center}
 .stat b{font-size:28px;display:block;color:var(--accent)}
 .stat.g b{color:var(--accent2)}
@@ -242,13 +264,47 @@ body.ktv-song.showhdr header{display:flex;position:static}
 <!-- ============ 收藏夹 ============ -->
 <section id="tab-favs" class="hidden">
   <div class="card">
-    <b>🔍 RAG 语义检索 / Web 搜索</b>
-    <div class="muted" style="margin:6px 0 10px">输入<b>关键词</b>→语义相似例句；输入<b>整句</b>→自动分析句子成分（助词链/词性链/句尾形态），从语料库+歌词中匹配<b>结构相似</b>的句子（歌词优先）。</div>
-    <div class="row">
-      <input id="ragQ" placeholder="词：勉強 / 食べ物…　　整句：私は毎日電車で学校に行く。" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
-      <button class="btn primary" onclick="ragSearch()">检索</button>
+    <div class="rag-shell">
+      <div class="rag-head">
+        <div>
+          <b>🔍 RAG 语义检索 / Web 搜索</b>
+          <div class="muted" style="margin-top:6px">关键词走语义召回；整句额外做结构匹配。可按来源优先级锁定歌词 / 课本 / 语料，也能指定某一本或多本课本。</div>
+        </div>
+        <div class="rag-meta" id="ragMeta"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <input id="ragQ" placeholder="词：勉強 / 食べ物…　　整句：私は毎日電車で学校に行く。" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ragSearch()">
+        <button class="btn primary" onclick="ragSearch()">检索</button>
+      </div>
+      <div class="rag-filters">
+        <label>来源优先
+          <select id="ragPriority" onchange="ragSyncMeta()">
+            <option value="all">综合：歌词 → 课本 → 语料</option>
+            <option value="textbook,lyric,web">课本优先</option>
+            <option value="lyric,textbook,web">歌词优先</option>
+            <option value="web,textbook,lyric">语料优先</option>
+            <option value="lyric">只看歌词</option>
+            <option value="textbook">只看课本</option>
+            <option value="web">只看语料</option>
+          </select>
+        </label>
+        <label>结果数
+          <input id="ragLimit" type="number" min="3" max="20" value="10" onchange="ragSyncMeta()">
+        </label>
+      </div>
+      <div style="margin-top:12px">
+        <div class="row" style="justify-content:space-between;margin-bottom:6px">
+          <b style="font-size:14px">限定课本</b>
+          <div class="row" style="gap:6px">
+            <button class="btn mini" onclick="ragPickActiveBooks()">学习中</button>
+            <button class="btn mini" onclick="ragClearBooks()">清空</button>
+          </div>
+        </div>
+        <div id="ragBookChips" class="rag-pills"></div>
+      </div>
+      <div class="muted" style="margin-top:10px">不选课本 = 搜索全部课本；选择后会优先匹配对应教材内容。整句会继续显示句子成分分析与歌词优先结果。</div>
+      <div id="ragOut" style="margin-top:10px"></div>
     </div>
-    <div id="ragOut" style="margin-top:8px"></div>
   </div>
   <div class="card">
     <div class="row" style="justify-content:space-between"><b>⭐ 收藏的句子</b><span class="muted" id="favSentCount"></span></div>
@@ -899,36 +955,168 @@ async function showSimilar(sid,btn){
       <span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span> ${spkBtn(r.text)}
     </div>`).join(''):'<div class="muted" style="margin-top:8px">暂无相似句</div>';
 }
+
+let ragBooks=[];
+function ragPriorityText(v){
+  const m={
+    'all':'综合：歌词 → 课本 → 语料',
+    'textbook,lyric,web':'课本优先',
+    'lyric,textbook,web':'歌词优先',
+    'web,textbook,lyric':'语料优先',
+    'lyric':'只看歌词',
+    'textbook':'只看课本',
+    'web':'只看语料'
+  };
+  return m[v]||v;
+}
+function ragSelectedBooks(){
+  return [...$('#ragBookChips').querySelectorAll('.rag-pill.on')].map(el=>+el.dataset.id).filter(n=>Number.isFinite(n));
+}
+function ragClearBooks(){
+  $('#ragBookChips').querySelectorAll('.rag-pill').forEach(el=>el.classList.remove('on'));
+  localStorage.ragBooks='[]';
+  ragSyncMeta();
+}
+function ragPickActiveBooks(){
+  const active=new Set(ragBooks.filter(b=>b.active).map(b=>b.id));
+  $('#ragBookChips').querySelectorAll('.rag-pill').forEach(el=>{
+    el.classList.toggle('on',active.has(+el.dataset.id));
+  });
+  localStorage.ragBooks=JSON.stringify(ragSelectedBooks());
+  ragSyncMeta();
+}
+function ragSyncMeta(){
+  const pri=$('#ragPriority').value;
+  const labels=ragSelectedBooks().map(id=>{
+    const b=ragBooks.find(x=>x.id===id);
+    return b ? b.title : id;
+  });
+  $('#ragMeta').innerHTML = `
+    <span class="tag">优先 ${esc(ragPriorityText(pri))}</span>
+    <span class="tag">${labels.length?`课本 ${labels.length} 本`:'全部课本'}</span>
+    <span class="tag">最多 ${$('#ragLimit').value || 10} 条</span>`;
+  localStorage.ragPriority=pri;
+  localStorage.ragLimit=$('#ragLimit').value;
+  localStorage.ragBooks=JSON.stringify(ragSelectedBooks());
+}
+function renderRagBooks(){
+  const box=$('#ragBookChips');
+  if(!ragBooks.length){
+    box.innerHTML='<span class="muted">暂无已导入课本，先去「我的课本」制作一本。</span>';
+    ragSyncMeta();
+    return;
+  }
+  let saved=[];
+  try{ saved=JSON.parse(localStorage.ragBooks||'[]')||[]; }catch(e){ saved=[]; }
+  const savedSet=new Set(saved.map(x=>+x));
+  box.innerHTML=ragBooks.map(b=>`
+    <button class="rag-pill ${savedSet.has(+b.id)?'on':''}" data-id="${b.id}" title="${esc(b.title)}${b.active?' · 学习中':''}">
+      ${esc(b.title)}${b.active?' ★':''}
+    </button>`).join('');
+  box.querySelectorAll('.rag-pill').forEach(btn=>{
+    btn.onclick=()=>{
+      btn.classList.toggle('on');
+      localStorage.ragBooks=JSON.stringify(ragSelectedBooks());
+      ragSyncMeta();
+    };
+  });
+  if(!saved.length && ragBooks.some(b=>b.active) && !savedSet.size){
+    // 不强制自动勾选，保留「默认全库」语义；仅同步状态即可。
+    localStorage.ragBooks='[]';
+  }
+  ragSyncMeta();
+}
+async function initRag(){
+  if(localStorage.ragPriority && $('#ragPriority')){
+    const pri=localStorage.ragPriority;
+    if([...$('#ragPriority').options].some(o=>o.value===pri)) $('#ragPriority').value=pri;
+  }
+  if(localStorage.ragLimit && $('#ragLimit')) $('#ragLimit').value=localStorage.ragLimit;
+  try{
+    const d=await api('/api/books');
+    ragBooks=d.rows||[];
+    renderRagBooks();
+  }catch(e){
+    $('#ragBookChips').innerHTML='<span class="muted">课本列表加载失败</span>';
+    ragSyncMeta();
+  }
+}
 async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
-  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({q,limit:10})});
+  const pri=$('#ragPriority').value;
+  const sources=pri==='all' ? ['lyric','textbook','web'] : pri.split(',').filter(Boolean);
+  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({
+    q,
+    limit:+($('#ragLimit').value||10),
+    sources,
+    book_ids:ragSelectedBooks()
+  })});
+  const meta=d.meta||{};
+  const termTags=(meta.terms||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
+  const qv=(meta.qvars||[]).map(t=>`<span class="tag">变体 ${esc(t)}</span>`).join('');
+  const titleCard=(kind,items,icon)=>items&&items.length?`
+    <div class="rag-group">
+      <h4>${icon} ${kind}</h4>
+      <div class="rag-grid">${items.map(r=>`
+        <div class="rag-card ${icon==='🎵'?'lyric':'textbook'}">
+          <div class="head">
+            <div class="title">${esc(r.title)}</div>
+            <span class="tag">${r.score ? (r.score*100).toFixed(0)+'%' : '命中'}</span>
+          </div>
+          <div class="sub">${r.artist?`<span>${esc(r.artist)}</span>`:''}${r.author?`<span>${esc(r.author)}</span>`:''}${r.level?`<span>${esc(r.level)}</span>`:''}</div>
+        </div>`).join('')}</div>
+    </div>`:'';
+  const renderRow=r=>{
+    const cls=r.type||r.channel||'web';
+    const sourceTag=cls==='lyric'
+      ? `🎵 ${esc(r.title || '歌词')}${r.artist?` · ${esc(r.artist)}`:''}`
+      : (cls==='textbook'
+        ? `📖 ${esc(r.book_title || r.title || '课本')}${r.lesson?` · ${esc(r.lesson)}`:''}`
+        : `🌐 ${esc(r.title || '语料')}`);
+    const text=r.text||r.line||r.title||'';
+    const body=text?`<div class="body jp" data-raw="${esc(text)}">${rubyHTML(r.tokens||[])} ${text===r.title&&r.kind==='song'?'':spkBtn(text)}</div>`:'<div class="body muted">标题命中</div>';
+    const extra=[];
+    if(r.translation) extra.push(`<span>${esc(r.translation)}</span>`);
+    if(r.shared_particles&&r.shared_particles.length) extra.push(`<span>共用助词 ${r.shared_particles.map(esc).join('・')}</span>`);
+    if(r.affinity!=null && r.type==='lyric') extra.push(`<span>亲和 ${(r.affinity*100).toFixed(0)}%</span>`);
+    if(r.score!=null) extra.push(`<span>相似 ${(r.score*100).toFixed(0)}%</span>`);
+    return `
+      <div class="rag-card ${cls}">
+        <div class="head">
+          <div class="title">${sourceTag}</div>
+          ${r.title_match?'<span class="tag">标题命中</span>':''}
+        </div>
+        ${body}
+        <div class="sub">${extra.join(' ') || '<span>—</span>'}${r.type==='textbook'&&r.book_id?`<span>书籍 #${r.book_id}</span>`:''}</div>
+      </div>`;
+  };
   let html='';
+  html+=`<div class="rag-group">
+    <h4>🧭 检索概览</h4>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${termTags||'<span class="muted">无关键词解析</span>'}${qv}</div>
+    <div class="muted" style="margin-top:8px">通道：${esc((meta.prior||[]).join(' → ')||'默认')}
+      ${meta.book_ids&&meta.book_ids.length?` · 限定课本 ${meta.book_ids.map(id=>esc((ragBooks.find(b=>b.id===id)||{}).title||('#'+id))).join(' / ')}`:''}
+      ${meta.ms!=null?` · ${meta.ms} ms`:''}</div>
+  </div>`;
   if(d.struct){
     const c=d.struct.components;
-    html+=`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;margin:6px 0;background:linear-gradient(135deg,#fdf7ee,#f0f7ff)">
-      <b>📐 句子成分分析</b> <span class="muted">（识别为整句）</span>
-      <div class="meta" style="margin-top:6px">${c.particles.map(p=>`<span class="tag">${esc(p)}</span>`).join(' ')}
-        <span class="muted">← 助词链</span></div>
-      <div style="margin-top:5px;font-size:14px">${esc(c.pos_chain)}　<span class="muted">句尾：</span><b>${esc(c.ending)}</b></div>
-      <div class="muted" style="margin:10px 0 2px"><b>结构相似句（歌词优先）</b></div>
-      ${(d.struct.rows||[]).map(r=>`
-        <div class="sent-item" style="margin-top:6px;${r.type==='lyric'?'border-left:3px solid var(--accent2)':''}">
-          <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
-          <div class="meta"><span class="tag">${r.type==='lyric'?'🎵 '+esc(r.title):'📚 语料'}</span>
-            <span class="tag">结构 ${(r.score*100).toFixed(0)}%</span>
-            ${r.shared_particles&&r.shared_particles.length?`<span class="muted">共用助词 ${r.shared_particles.map(esc).join('・')}</span>`:''}</div>
-        </div>`).join('')||'<div class="muted">语料库中暂无结构相似句</div>'}
-    </div>
-    <div class="muted" style="margin:10px 0 4px">语义相似（TF-IDF）：</div>`;
+    html+=`<div class="rag-group">
+      <h4>📐 句子成分分析</h4>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${(c.particles||[]).map(p=>`<span class="tag">${esc(p)}</span>`).join(' ')||'<span class="muted">无助词链</span>'}</div>
+      <div class="muted" style="margin-top:6px">${esc(c.pos_chain)}　句尾：<b>${esc(c.ending)}</b></div>
+      <div class="muted" style="margin:10px 0 6px"><b>结构相似句（歌词优先）</b></div>
+      <div class="rag-grid">${(d.struct.rows||[]).map(renderRow).join('')||'<div class="rag-empty">语料库中暂无结构相似句</div>'}</div>
+    </div>`;
   }
-  html+=(d.rows||[]).map(r=>`
-    <div class="sent-item">
-      <div class="jp" data-raw="${esc(r.text)}" style="font-size:20px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
-      ${r.translation?`<div class="tr muted">${esc(r.translation)}</div>`:''}
-      <div class="meta"><span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span>
-        <button onclick="favToggle(${r.id},this)">☆收藏</button></div>
-    </div>`).join('')||'<div class="muted" style="padding:10px 0">没有找到相关例句</div>';
+  if((d.titles&&((d.titles.songs||[]).length||(d.titles.books||[]).length))){
+    html+=titleCard('标题命中',d.titles.songs||[],'🎵');
+    html+=titleCard('课本命中',d.titles.books||[],'📖');
+  }
+  if(d.lyrics&&d.lyrics.length){
+    html+=`<div class="rag-group"><h4>🎵 歌词命中</h4><div class="rag-grid">${d.lyrics.map(renderRow).join('')}</div></div>`;
+  }
+  html+=`<div class="rag-group"><h4>📝 语义相似结果</h4><div class="rag-grid">${(d.rows||[]).map(renderRow).join('')||'<div class="rag-empty">没有找到相关例句</div>'}</div></div>`;
   $('#ragOut').innerHTML=html;
 }
 async function doCleanup(){
@@ -1560,6 +1748,7 @@ async function bkQuizFinish(){
 initVoices();
 initAdv();
 initSaver();
+initRag();
 if(localStorage.cs==='0')$('#corpusSongs').checked=false;
 if(localStorage.getItem('ktvSeg')==='0')$('#ktvSegTog').checked=false;
 loadReview();
