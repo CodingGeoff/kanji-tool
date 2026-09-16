@@ -18,7 +18,8 @@ PASS, FAIL = 0, 0
 FAILURES = []
 
 
-def check(name, cond, extra=''):
+def check(cond, name, extra=''):
+    """与 test_search.py / test_lyric_search.py 一致：第一个参数是断言结果。"""
     global PASS, FAIL
     if cond:
         PASS += 1
@@ -59,7 +60,7 @@ r = client.post('/api/rag/search', json={'q': 'gakkou', 'limit': 8})
 d = r.get_json()
 checks = [x['text'] for x in d.get('rows', [])] + [x['text'] for x in d.get('lyrics', [])]
 hit = any('学校' in (c or '') for c in checks)
-check(hit, f'罗马音 gakkou ⇒ 命中含「学校」的内容：{checks[:4]}')
+check(hit, f'罗马音 gakkou 命中含「学校」的内容：{checks[:4]}')
 
 # --- 2. 来源优先级加权 ---
 print('== 来源优先级加权 ==')

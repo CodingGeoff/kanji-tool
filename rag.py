@@ -33,13 +33,16 @@ _CH_PRIOR = {'lyric': 0.03, 'textbook': 0.02, 'web': 0.0}   # 歌词优先、课
 _ORIGIN = {'tatoeba': 'Tatoeba', 'wikipedia': '维基百科', 'wikinews': '维基新闻'}
 
 # ---------------- 查询归一化 ----------------
-_FULL2HALF = {
+# 注意：str.translate 需要「码位(int) → 替换串」的映射，故先写字面表再转码位，
+# 否则映射会被静默忽略（全角/半角与长音符归一化会失效）。
+_FULL2HALF_CHARS = {
     **{chr(ord('Ａ') + i): chr(ord('A') + i) for i in range(26)},
     **{chr(ord('ａ') + i): chr(ord('a') + i) for i in range(26)},
     **{chr(ord('０') + i): str(i) for i in range(10)},
     '！': '!', '？': '?', '。': '.', '、': '.', '，': ',', '：': ':', '；': ';',
     '・': '-', '～': '~', '〜': '-', 'ｰ': '', 'ー': '', '－': '', '　': '',
 }
+_FULL2HALF = {ord(k): v for k, v in _FULL2HALF_CHARS.items()}
 _KATA2HIRA = {chr(0x30A1 + i): chr(0x3041 + i) for i in range(0x5A)}
 _KANA_RE = re.compile(r'[぀-ヿ]')
 _ASCII_WORD_RE = re.compile(r'[A-Za-z]{2,}')
@@ -144,9 +147,10 @@ def key_terms(text: str):
 
 
 def query_variants(q: str):
-    """查询变体（透明化展示 + 召回扩展）：罗马音逐词→假名。"""
+    """查询变体（透明化展示 + 召回扩展）：罗马音逐词→假名。
+    先全角→半角再提取拉丁词，故「Ｇａｋｋｏ」与「gakkou」效果一致。"""
     out = []
-    for w in _ASCII_WORD_RE.findall(q or ''):
+    for w in _ASCII_WORD_RE.findall((q or '').translate(_FULL2HALF)):
         if len(w) < 3:
             continue
         k = normalize(ktv.romaji_to_kana(w))
@@ -382,16 +386,18 @@ class MultiIndex:
                 'title': origin, 'text': m.get('_text') or '',
                 'translation': m.get('translation') or '', 'score': sc}
     def search(self, q, limit=12, sources=None, per_song=3, per_book=4,
-               min_score=0.0, min_affinity=0.0, book_ids=None):
+               min_score=0.0, min_affinity=0.0, book_ids=None, sort='priority'):
         """联邦多源检索。
         sources: 优先级列表（CHANNELS 子集，有序）；未指定的通道排在后面。
         per_song: 每首歌最多命中行数（0=不限）；per_book: 每本书最多句数（0=不限）。
-        返回 {'rows': 句子行, 'lyrics': 歌词行, 'groups': 分组, 'titles': 歌名/书名命中,
-              'meta': 统计与查询分析}。"""
+        sort: 'priority'（默认，按用户指定的来源顺序分档排列）| 'score'（相关性优先混排）。
+        返回 {'rows': 句子行, 'lyrics': 歌词行, 'results': 统一排名,
+              'groups': 分组, 'titles': 歌名/书名命中, 'meta': 统计与查询分析}。"""
         t0 = time.time()
         q = (q or '').strip()
         if not q:
-            return {'rows': [], 'lyrics': [], 'groups': {c: [] for c in CHANNELS},
+            return {'rows': [], 'lyrics': [], 'results': [],
+                    'groups': {c: [] for c in CHANNELS},
                     'titles': {'songs': [], 'books': []},
                     'meta': {'counts': {}, 'terms': [], 'qvars': [], 'prior': [], 'qnorm': '', 'ms': 0}}
         self.ensure()
@@ -449,6 +455,7 @@ class MultiIndex:
         pool.sort(key=lambda x: -x[0])
         seen, cnt_song, cnt_book = set(), {}, {}
         rows, lyrics, groups = [], [], {c: [] for c in CHANNELS}
+        unified = []        # 跨通道统一排名（用户指定的来源优先级在这里体现）
         for sc, ch, d in pool:
             m = bm[ch].docs[d]
             key = m.get('_text') or ''
@@ -460,21 +467,22 @@ class MultiIndex:
                     and cnt_book.get(m.get('book_id'), 0) >= per_book):
                 continue
             seen.add(key)
+            row = self._row(m, sc, ch)
+            row['rank'] = round(sc, 3)
             if ch == 'lyric':
                 cnt_song[m['id']] = cnt_song.get(m['id'], 0) + 1
-                row = self._row(m, sc, ch)
                 lyrics.append(row)
             else:
                 if ch == 'textbook' and m.get('kind') == 'sentence':
                     cnt_book[m.get('book_id')] = cnt_book.get(m.get('book_id'), 0) + 1
-                row = self._row(m, sc, ch)
                 rows.append(row)
             groups[ch].append(row)
-            if len(rows) + len(lyrics) >= 60:
+            unified.append(row)
+            if len(unified) >= 60:
                 break
         rows = [r for r in rows if r['score'] >= min_score]
         lyrics = [r for r in lyrics if r['score'] >= max(min_affinity, 0.0)]
-                # 5) 歌名/书名命中（强意图信号，置顶对应组 + 置顶歌词列表）
+        # 5) 歌名/书名命中（强意图信号：置顶对应组 + 置顶歌词列表）
         titles = {'songs': [], 'books': []}
         with self._lock:
             tbm = self._tbm
@@ -503,36 +511,47 @@ class MultiIndex:
                                                 'kind': 'book', 'id': m['id'], 'book_id': m['id'],
                                                 'title': m['title'], 'lesson': '', 'text': '',
                                                 'translation': '', 'score': sc, 'title_match': True}})
-        for t in titles['songs'][:2]:
-            groups['lyric'].insert(0, t)
-        for t in titles['books'][:2]:
-            groups['textbook'].insert(0, t['row'])
-        # 歌名精确命中置顶：出现在歌词列表首位，便于点击直接跳转整首歌
-        title_lyrics = [t for t in titles['songs'] if not t.get('_dup')]
-        # 去重（同一首歌只出现一次）
-        seen_titles = set()
-        dedup_title = []
-        for t in title_lyrics:
-            if t['title'] in seen_titles:
+        # 歌名/书名命中置顶：歌名先出现在歌词列表首位（点击 = 直接打开整首歌），
+        # 再跟上逐行歌词命中；同一首歌只保留一条「整首」入口。
+        # 统一列表（results）同样把标题命中排在最前 —— 这是最强的意图信号。
+        seen_title, top_songs, top_books = set(), [], []
+        for t in titles['songs']:
+            if t['title'] in seen_title:
                 continue
-            seen_titles.add(t['title'])
-            dedup_title.append(t)
-        top_lyrics = dedup_title[:2]
-        # 将 title 命中行与行级歌词合并，不重复
-        line_ids = {r.get('id') for r in lyrics}
-        merged = []
-        for t in top_lyrics:
-            t = dict(t)
+            seen_title.add(t['title'])
             t['_title_only'] = True
-            merged.append(t)
-        for r in lyrics:
-            if r.get('text'):
-                merged.append(r)
+            top_songs.append(t)
+            if len(top_songs) >= 2:
+                break
+        for t in titles['books']:
+            top_books.append(t['row'])
+            if len(top_books) >= 2:
+                break
+        groups['lyric'] = top_songs + groups['lyric']
+        groups['textbook'] = top_books + groups['textbook']
+        merged = top_songs + [r for r in lyrics if r.get('text')]
+        # 统一排名列表：标题命中 →（用户指定的来源优先级为第一排序键）。
+        # sort='priority'（默认）：① 来源的结果整体排在 ② 之前，匹配用户「优先匹配指定内容」的意图；
+        # 同来源内按分数降序（助词/词元覆盖等精排分）。命中为空则自然落到下一来源。
+        # sort='score'：纯相关性优先，仅用优先级做轻微加权（跨来源混排）。
+        _pri_idx = {c: pri.index(c) for c in pri}
+        _thr = lambda r: (max(min_affinity, 0.0) if r['channel'] == 'lyric' else min_score)
+        kept = [r for r in unified if r['score'] >= _thr(r)]
+        if sort == 'score':
+            ordered = sorted(kept, key=lambda r: (-r['rank'], _pri_idx.get(r['channel'], len(pri)),
+                                                  -len(r.get('text') or '')))
+        else:
+            ordered = sorted(kept, key=lambda r: (_pri_idx.get(r['channel'], len(pri)),
+                                                  -r['score'], -len(r.get('text') or '')))
+        results = top_songs + top_books + ordered
         meta = {'counts': counts, 'terms': key_terms(q), 'qvars': qv,
-                'prior': pri, 'qnorm': qn, 'ms': round((time.time() - t0) * 1000),
-                'book_ids': sorted(selected_books)}
+                'prior': pri, 'qnorm': qn, 'sort': sort, 'ms': round((time.time() - t0) * 1000),
+                'book_ids': sorted(selected_books),
+                'hits': {'lyric': len(groups['lyric']), 'textbook': len(groups['textbook']),
+                         'web': len(groups['web'])}}
         return {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
+                'results': results[:max(limit, 1)],
                 'groups': groups, 'titles': titles, 'meta': meta}
 
 

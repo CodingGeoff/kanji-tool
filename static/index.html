@@ -93,6 +93,36 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .rag-card.textbook{border-left:4px solid var(--gold)}
 .rag-card.web{border-left:4px solid var(--accent)}
 .rag-empty{padding:14px 0;color:var(--sub)}
+/* 来源优先级 chips：① ② ③ 标出匹配顺序，✕ 排除来源 */
+.rag-src{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;
+  border-radius:999px;padding:6px 10px 6px 12px;font-size:13px;cursor:pointer;user-select:none}
+.rag-src:hover{border-color:var(--accent)}
+.rag-src .rk{font-size:11px;font-weight:700;background:var(--gold);color:#fff;border-radius:50%;
+  width:17px;height:17px;display:inline-flex;align-items:center;justify-content:center}
+.rag-src.off{opacity:.45;background:#faf8f3}
+.rag-src.off .rk{background:#c9c3b6}
+.rag-src .x{border:none;background:none;color:#c0bab0;cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
+.rag-src .x:hover{color:var(--accent)}
+.rag-src.s-lyric.on{border-color:var(--accent2);box-shadow:inset 0 0 0 1px var(--accent2)}
+.rag-src.s-textbook.on{border-color:var(--gold);box-shadow:inset 0 0 0 1px var(--gold)}
+.rag-src.s-web.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+/* 结果卡：分数条 + 来源徽标 + 可折叠分通道 */
+.rag-card .bar{height:4px;border-radius:3px;background:#efeae0;margin-top:9px;overflow:hidden}
+.rag-card .bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--gold),var(--accent))}
+.rag-card.lyric .bar i{background:linear-gradient(90deg,#8fc7ac,var(--accent2))}
+.rag-card.textbook .bar i{background:linear-gradient(90deg,#e5cf9a,var(--gold))}
+.rag-card.clk{cursor:pointer}
+.rag-card.clk:hover{border-color:var(--accent);box-shadow:0 3px 14px rgba(0,0,0,.07)}
+.rag-card .rank{font-size:11px;color:var(--sub);min-width:20px}
+details.rag-fold{border:1px solid var(--line);background:#fff;border-radius:14px;padding:10px 14px;margin-top:12px}
+details.rag-fold>summary{cursor:pointer;font-size:14px;font-weight:700;list-style:none}
+details.rag-fold>summary::-webkit-details-marker{display:none}
+details.rag-fold>summary::before{content:"▸ ";color:var(--sub)}
+details.rag-fold[open]>summary::before{content:"▾ "}
+details.rag-fold .rag-grid{margin-top:10px}
+.rag-hint{font-size:12px;color:var(--sub);margin-top:6px}
+.rag-terms .tag{cursor:pointer}
+.rag-term-hi{background:linear-gradient(transparent 62%,#f3d98b 62%);padding:0 1px;font-weight:600}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;text-align:center}
 .stat b{font-size:28px;display:block;color:var(--accent)}
 .stat.g b{color:var(--accent2)}
@@ -277,20 +307,24 @@ body.ktv-song.showhdr header{display:flex;position:static}
         <button class="btn primary" onclick="ragSearch()">检索</button>
       </div>
       <div class="rag-filters">
-        <label>来源优先
-          <select id="ragPriority" onchange="ragSyncMeta()">
-            <option value="all">综合：歌词 → 课本 → 语料</option>
-            <option value="textbook,lyric,web">课本优先</option>
-            <option value="lyric,textbook,web">歌词优先</option>
-            <option value="web,textbook,lyric">语料优先</option>
-            <option value="lyric">只看歌词</option>
-            <option value="textbook">只看课本</option>
-            <option value="web">只看语料</option>
-          </select>
-        </label>
         <label>结果数
-          <input id="ragLimit" type="number" min="3" max="20" value="10" onchange="ragSyncMeta()">
+          <input id="ragLimit" type="number" min="3" max="30" value="10" onchange="ragSyncMeta()">
         </label>
+        <label>每首歌上限
+          <input id="ragPerSong" type="number" min="0" max="20" value="3" onchange="ragSyncMeta()" title="0 = 不限；副歌重复行始终去重">
+        </label>
+        <label>每本课本上限
+          <input id="ragPerBook" type="number" min="0" max="20" value="4" onchange="ragSyncMeta()" title="0 = 不限">
+        </label>
+      </div>
+      <div style="margin-top:12px">
+        <div class="row" style="justify-content:space-between;margin-bottom:6px">
+          <b style="font-size:14px">来源优先级
+            <span class="muted" style="font-weight:400">　点来源 = 设为最优先；点 ✕ = 排除该来源</span>
+          </b>
+          <button class="btn mini" onclick="ragResetSources()">重置</button>
+        </div>
+        <div id="ragSources" class="rag-pills"></div>
       </div>
       <div style="margin-top:12px">
         <div class="row" style="justify-content:space-between;margin-bottom:6px">
@@ -302,7 +336,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
         </div>
         <div id="ragBookChips" class="rag-pills"></div>
       </div>
-      <div class="muted" style="margin-top:10px">不选课本 = 搜索全部课本；选择后会优先匹配对应教材内容。整句会继续显示句子成分分析与歌词优先结果。</div>
+      <div class="muted" style="margin-top:10px">不选课本 = 搜索全部课本；选择后会优先匹配对应教材内容。支持罗马音（gakkou）、假名与汉字互查；整句会额外做句子成分分析。</div>
+      <div id="ragRecent" class="rag-pills" style="margin-top:10px"></div>
       <div id="ragOut" style="margin-top:10px"></div>
     </div>
   </div>
@@ -546,10 +581,16 @@ const $=s=>document.querySelector(s);
 const api=(u,opt)=>fetch(u,opt?Object.assign({headers:{'Content-Type':'application/json'}},opt):undefined).then(r=>r.json());
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
 function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function rubyHTML(tokens,hi){
+function rubyHTML(tokens,hi,terms){
+  // hi：单个高亮词（旧接口）；terms：关键词数组（RAG 结果高亮，匹配表记/词形/读音）
+  const keys=(Array.isArray(terms)?terms:(terms?[terms]:[])).filter(Boolean);
+  const hit=t=>{
+    if(keys.length&&keys.some(k=>t.s.includes(k)||(t.w&&t.w.includes(k))||(t.r&&t.r.includes(k))))return true;
+    return !!(hi&&(t.s.includes(hi)||(t.w&&t.w.includes(hi))));
+  };
   return tokens.map(t=>{
     const s=esc(t.s);
-    const cls=(hi&&(t.s.includes(hi)||(t.w&&t.w.includes(hi))))?' style="color:var(--accent);font-weight:600"':'';
+    const cls=hit(t)?' style="color:var(--accent);font-weight:600"':'';
     if(t.unk) return `<span class="unk" title="词典未收录，读音未知（不猜测）">${s}</span>`;
     if(t.r){
       const low=t.c==='low', alt=(t.alt&&t.alt.length)?`其他读法候选: ${t.alt.join(' / ')}`:'';
@@ -827,6 +868,8 @@ async function loadCorpus(page){
     <button class="btn" ${page>=pages?'disabled':''} onclick="loadCorpus(${page+1})">下一页</button>`;
 }
 function ktvJump(sid){document.querySelector('[data-tab=ktv]').click();ktvOpen(sid);}
+/* RAG 结果卡跳转：课本命中行 → 切到「我的课本」并打开该课本详情（对应 ktvJump） */
+function bkJump(bid){document.querySelector('[data-tab=books]').click();bkOpen(bid);}
 async function editSentence(id){
   const el=$(`#sent-${id}`);
   const text=prompt('修改句子（将重新注音）：',el.querySelector('.jp').dataset.raw||el.querySelector('.jp').textContent.replace(/\s+/g,''));
@@ -957,18 +1000,69 @@ async function showSimilar(sid,btn){
 }
 
 let ragBooks=[];
-function ragPriorityText(v){
-  const m={
-    'all':'综合：歌词 → 课本 → 语料',
-    'textbook,lyric,web':'课本优先',
-    'lyric,textbook,web':'歌词优先',
-    'web,textbook,lyric':'语料优先',
-    'lyric':'只看歌词',
-    'textbook':'只看课本',
-    'web':'只看语料'
-  };
-  return m[v]||v;
+/* ---------- 多源检索：用户指定来源优先级（① ② ③，点来源 = 提到最前，✕ = 排除） ---------- */
+const RAG_SRC={
+  lyric:{icon:'🎵',label:'歌词',cls:'s-lyric'},
+  textbook:{icon:'📖',label:'课本',cls:'s-textbook'},
+  web:{icon:'🌐',label:'网络语料',cls:'s-web'}
+};
+const RAG_RANK=['①','②','③','④'];
+let ragSrcOrder=ragSrcLoad();
+function ragSrcLoad(){
+  try{
+    const a=JSON.parse(localStorage.ragSrc||'null');
+    if(Array.isArray(a)&&a.length) return a.filter(c=>RAG_SRC[c]).slice(0,3);
+  }catch(e){}
+  return ['lyric','textbook','web'];
 }
+function ragSrcSave(){ localStorage.ragSrc=JSON.stringify(ragSrcOrder); }
+function ragResetSources(){ ragSrcOrder=['lyric','textbook','web']; ragSrcSave(); renderRagSources(); ragSyncMeta(); }
+function ragSrcMove(ch){                       // 点来源 → 提到最优先
+  ragSrcOrder=[ch,...ragSrcOrder.filter(c=>c!==ch)];
+  ragSrcSave(); renderRagSources(); ragSyncMeta();
+}
+function ragSrcToggle(ch){                     // 点 ✕ → 排除 / 再点 → 恢复
+  ragSrcOrder=ragSrcOrder.includes(ch)
+    ? ragSrcOrder.filter(c=>c!==ch)
+    : [...ragSrcOrder,ch];
+  if(!ragSrcOrder.length) ragSrcOrder=[ch];    // 全排除无意义，兜底保留
+  ragSrcSave(); renderRagSources(); ragSyncMeta();
+}
+function renderRagSources(){
+  const order=ragSrcOrder;
+  $('#ragSources').innerHTML=Object.keys(RAG_SRC).map(ch=>{
+    const i=order.indexOf(ch),on=i>=0,m=RAG_SRC[ch];
+    return `<span class="rag-src ${m.cls} ${on?'on':'off'}" onclick="ragSrcMove('${ch}')" title="${on?`当前第 ${i+1} 优先，点击提到最前`:'已排除，点击 ✕ 恢复'}">
+      <span class="rk">${on?RAG_RANK[i]:'—'}</span>${m.icon} ${m.label}
+      <button class="x" onclick="event.stopPropagation();ragSrcToggle('${ch}')" title="${on?'排除该来源':'恢复该来源'}">${on?'✕':'＋'}</button>
+    </span>`;
+  }).join('');
+}
+/* ---------- 最近检索（本地历史，一键复搜） ---------- */
+function ragRecentLoad(){ try{ return JSON.parse(localStorage.ragRecent||'[]')||[]; }catch(e){ return []; } }
+function ragRecentPush(q){
+  const a=ragRecentLoad().filter(x=>x!==q);
+  a.unshift(q);
+  localStorage.ragRecent=JSON.stringify(a.slice(0,8));
+  renderRagRecent();
+}
+function ragRecentClear(){ localStorage.ragRecent='[]'; renderRagRecent(); }
+function renderRagRecent(){
+  const a=ragRecentLoad();
+  const box=$('#ragRecent');
+  if(!box) return;
+  box.innerHTML=a.length?`<span class="muted" style="font-size:12.5px">最近：</span>`+
+    a.map(q=>`<span class="rag-pill" onclick="ragQuick('${esc(q).replace(/'/g,'&#39;')}')" title="点击重新检索">${esc(q)}</span>`).join('')+
+    `<button class="btn mini" onclick="ragRecentClear()">清空</button>`:'';
+}
+function ragQuick(q){ $('#ragQ').value=q; ragSearch(); }
+function ragSort(){
+  const v=localStorage.ragSort==='score'?'score':'priority';
+  localStorage.ragSort=v==='score'?'priority':'score';
+  ragSyncMeta();
+  if($('#ragQ').value.trim()) ragSearch();
+}
+function ragSortText(){ return localStorage.ragSort==='score'?'相关性优先':'来源优先级'; }
 function ragSelectedBooks(){
   return [...$('#ragBookChips').querySelectorAll('.rag-pill.on')].map(el=>+el.dataset.id).filter(n=>Number.isFinite(n));
 }
@@ -986,17 +1080,19 @@ function ragPickActiveBooks(){
   ragSyncMeta();
 }
 function ragSyncMeta(){
-  const pri=$('#ragPriority').value;
   const labels=ragSelectedBooks().map(id=>{
     const b=ragBooks.find(x=>x.id===id);
     return b ? b.title : id;
   });
+  const priTxt=ragSrcOrder.map((c,i)=>`${RAG_RANK[i]}${RAG_SRC[c].icon}`).join(' → ')||'默认';
   $('#ragMeta').innerHTML = `
-    <span class="tag">优先 ${esc(ragPriorityText(pri))}</span>
+    <span class="tag" style="cursor:pointer" onclick="ragSort()" title="点击切换：来源优先级（① 来源整体排在前）⇄ 相关性优先（跨来源按分数混排）">${ragSortText()} ⇄</span>
+    <span class="tag">优先 ${priTxt}</span>
     <span class="tag">${labels.length?`课本 ${labels.length} 本`:'全部课本'}</span>
     <span class="tag">最多 ${$('#ragLimit').value || 10} 条</span>`;
-  localStorage.ragPriority=pri;
   localStorage.ragLimit=$('#ragLimit').value;
+  localStorage.ragPerSong=$('#ragPerSong').value;
+  localStorage.ragPerBook=$('#ragPerBook').value;
   localStorage.ragBooks=JSON.stringify(ragSelectedBooks());
 }
 function renderRagBooks(){
@@ -1027,11 +1123,11 @@ function renderRagBooks(){
   ragSyncMeta();
 }
 async function initRag(){
-  if(localStorage.ragPriority && $('#ragPriority')){
-    const pri=localStorage.ragPriority;
-    if([...$('#ragPriority').options].some(o=>o.value===pri)) $('#ragPriority').value=pri;
-  }
   if(localStorage.ragLimit && $('#ragLimit')) $('#ragLimit').value=localStorage.ragLimit;
+  if(localStorage.ragPerSong!=null && $('#ragPerSong')) $('#ragPerSong').value=localStorage.ragPerSong;
+  if(localStorage.ragPerBook!=null && $('#ragPerBook')) $('#ragPerBook').value=localStorage.ragPerBook;
+  renderRagSources();
+  renderRagRecent();
   try{
     const d=await api('/api/books');
     ragBooks=d.rows||[];
@@ -1041,82 +1137,98 @@ async function initRag(){
     ragSyncMeta();
   }
 }
+/* 结果卡：来源徽标 + 关键词高亮 + 分数条 + 可跳转（歌词→KTV / 课本→课本详情） */
+function ragRowHTML(r,i,terms){
+  const cls=r.type||r.channel||'web';
+  const srcTag=cls==='lyric'
+    ? `🎵 ${esc(r.title||'歌词')}${r.artist?` · ${esc(r.artist)}`:''}`
+    : (cls==='textbook'
+      ? `📖 ${esc(r.title||'课本')}${r.lesson?` · ${esc(r.lesson)}`:''}`
+      : `🌐 ${esc(r.title||'语料')}`);
+  const text=r.text||'';
+  const jump=cls==='lyric'&&r.id?`ktvJump(${r.id})`:((cls==='textbook'&&r.book_id)?`bkJump(${r.book_id})`:'');
+  const body=text
+    ? `<div class="body jp" data-raw="${esc(text)}">${rubyHTML(r.tokens||[],null,terms)} ${spkBtn(text)}</div>`
+    : `<div class="body muted">${r.title_match?'整首/整本入口 · 点击查看':'标题命中'}</div>`;
+  const extra=[];
+  if(r.translation) extra.push(`<span>${esc(r.translation)}</span>`);
+  if(r.shared_particles&&r.shared_particles.length) extra.push(`<span>共用助词 ${r.shared_particles.map(esc).join('・')}</span>`);
+  if(r.line_no!=null) extra.push(`<span>第 ${r.line_no+1} 行</span>`);
+  const pct=Math.round((r.score||0)*100);
+  return `
+    <div class="rag-card ${cls} ${jump?'clk':''}" ${jump?`onclick="if(!event.target.closest('button'))${jump}"`:''}>
+      <div class="head">
+        <span class="rank">${i+1}</span>
+        <div class="title">${srcTag}</div>
+        ${r.title_match?'<span class="tag">整首命中</span>':''}
+        <span class="tag" title="综合分：BM25 + 字符亲和 + 词元覆盖 + 短语包含">${pct}%</span>
+      </div>
+      ${body}
+      <div class="sub">${extra.join(' ')||'<span>—</span>'}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+    </div>`;
+}
 async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
+  ragRecentPush(q);
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
-  const pri=$('#ragPriority').value;
-  const sources=pri==='all' ? ['lyric','textbook','web'] : pri.split(',').filter(Boolean);
-  const d=await api('/api/rag/search',{method:'POST',body:JSON.stringify({
+  const body={
     q,
     limit:+($('#ragLimit').value||10),
-    sources,
+    sources:ragSrcOrder,
+    sort:localStorage.ragSort==='score'?'score':'priority',
+    per_song:+($('#ragPerSong').value||0),
+    per_book:+($('#ragPerBook').value||0),
     book_ids:ragSelectedBooks()
-  })});
-  const meta=d.meta||{};
-  const termTags=(meta.terms||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
-  const qv=(meta.qvars||[]).map(t=>`<span class="tag">变体 ${esc(t)}</span>`).join('');
-  const titleCard=(kind,items,icon)=>items&&items.length?`
-    <div class="rag-group">
-      <h4>${icon} ${kind}</h4>
-      <div class="rag-grid">${items.map(r=>`
-        <div class="rag-card ${icon==='🎵'?'lyric':'textbook'}">
-          <div class="head">
-            <div class="title">${esc(r.title)}</div>
-            <span class="tag">${r.score ? (r.score*100).toFixed(0)+'%' : '命中'}</span>
-          </div>
-          <div class="sub">${r.artist?`<span>${esc(r.artist)}</span>`:''}${r.author?`<span>${esc(r.author)}</span>`:''}${r.level?`<span>${esc(r.level)}</span>`:''}</div>
-        </div>`).join('')}</div>
-    </div>`:'';
-  const renderRow=r=>{
-    const cls=r.type||r.channel||'web';
-    const sourceTag=cls==='lyric'
-      ? `🎵 ${esc(r.title || '歌词')}${r.artist?` · ${esc(r.artist)}`:''}`
-      : (cls==='textbook'
-        ? `📖 ${esc(r.book_title || r.title || '课本')}${r.lesson?` · ${esc(r.lesson)}`:''}`
-        : `🌐 ${esc(r.title || '语料')}`);
-    const text=r.text||r.line||r.title||'';
-    const body=text?`<div class="body jp" data-raw="${esc(text)}">${rubyHTML(r.tokens||[])} ${text===r.title&&r.kind==='song'?'':spkBtn(text)}</div>`:'<div class="body muted">标题命中</div>';
-    const extra=[];
-    if(r.translation) extra.push(`<span>${esc(r.translation)}</span>`);
-    if(r.shared_particles&&r.shared_particles.length) extra.push(`<span>共用助词 ${r.shared_particles.map(esc).join('・')}</span>`);
-    if(r.affinity!=null && r.type==='lyric') extra.push(`<span>亲和 ${(r.affinity*100).toFixed(0)}%</span>`);
-    if(r.score!=null) extra.push(`<span>相似 ${(r.score*100).toFixed(0)}%</span>`);
-    return `
-      <div class="rag-card ${cls}">
-        <div class="head">
-          <div class="title">${sourceTag}</div>
-          ${r.title_match?'<span class="tag">标题命中</span>':''}
-        </div>
-        ${body}
-        <div class="sub">${extra.join(' ') || '<span>—</span>'}${r.type==='textbook'&&r.book_id?`<span>书籍 #${r.book_id}</span>`:''}</div>
-      </div>`;
   };
+  let d;
+  try{ d=await api('/api/rag/search',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
+  const meta=d.meta||{};
+  const terms=meta.terms||[];
+  const hits=meta.hits||{};
+  const chLabel=c=>`${RAG_SRC[c]?RAG_SRC[c].icon+' '+RAG_SRC[c].label:c}`;
+  const termTags=terms.map(t=>`<span class="tag rag-term-hi" onclick="ragQuick('${esc(t).replace(/'/g,'&#39;')}')" title="用该关键词重新检索">${esc(t)}</span>`).join('');
+  const qv=(meta.qvars||[]).map(t=>`<span class="tag" title="罗马音自动转假名，跨书写系统召回">变体 ${esc(t)}</span>`).join('');
   let html='';
+  // 概览
   html+=`<div class="rag-group">
     <h4>🧭 检索概览</h4>
     <div class="row" style="gap:6px;flex-wrap:wrap">${termTags||'<span class="muted">无关键词解析</span>'}${qv}</div>
-    <div class="muted" style="margin-top:8px">通道：${esc((meta.prior||[]).join(' → ')||'默认')}
-      ${meta.book_ids&&meta.book_ids.length?` · 限定课本 ${meta.book_ids.map(id=>esc((ragBooks.find(b=>b.id===id)||{}).title||('#'+id))).join(' / ')}`:''}
+    <div class="muted" style="margin-top:8px">来源优先级：${esc(meta.prior||[]).includes('[')?'' : (meta.prior||[]).map((c,i)=>`${RAG_RANK[i]}${chLabel(c)}`).join(' → ')||'默认'}
+      · 排序：<b>${esc(meta.sort==='score'?'相关性优先（来源加权）':'按来源优先级分档')}</b>
+      · 命中 歌词 ${hits.lyric||0} / 课本 ${hits.textbook||0} / 语料 ${hits.web||0}
+      ${meta.book_ids&&meta.book_ids.length?` · 限定 ${meta.book_ids.map(id=>esc((ragBooks.find(b=>b.id===id)||{}).title||('#'+id))).join(' / ')}`:''}
       ${meta.ms!=null?` · ${meta.ms} ms`:''}</div>
   </div>`;
+  // 句子成分分析（整句输入时）
   if(d.struct){
     const c=d.struct.components;
     html+=`<div class="rag-group">
       <h4>📐 句子成分分析</h4>
       <div class="row" style="gap:6px;flex-wrap:wrap">${(c.particles||[]).map(p=>`<span class="tag">${esc(p)}</span>`).join(' ')||'<span class="muted">无助词链</span>'}</div>
-      <div class="muted" style="margin-top:6px">${esc(c.pos_chain)}　句尾：<b>${esc(c.ending)}</b></div>
+      <div class="muted" style="margin-top:6px">${esc(c.pos_chain)}　句尾：<b>${esc(c.ending)}</b>　结构模板：<b>${esc(c.template||'—')}</b></div>
       <div class="muted" style="margin:10px 0 6px"><b>结构相似句（歌词优先）</b></div>
-      <div class="rag-grid">${(d.struct.rows||[]).map(renderRow).join('')||'<div class="rag-empty">语料库中暂无结构相似句</div>'}</div>
+      <div class="rag-grid">${(d.struct.rows||[]).map((r,i)=>ragRowHTML(r,i,terms)).join('')||'<div class="rag-empty">语料库中暂无结构相似句</div>'}</div>
     </div>`;
   }
-  if((d.titles&&((d.titles.songs||[]).length||(d.titles.books||[]).length))){
-    html+=titleCard('标题命中',d.titles.songs||[],'🎵');
-    html+=titleCard('课本命中',d.titles.books||[],'📖');
+  // 统一排名（原标题命中置顶 → 按来源优先级分档）
+  const results=d.results||[];
+  if(results.length){
+    html+=`<div class="rag-group"><h4>🎯 最佳匹配（${results.length}）</h4>
+      <div class="rag-grid">${results.map((r,i)=>ragRowHTML(r,i,terms)).join('')}</div></div>`;
   }
-  if(d.lyrics&&d.lyrics.length){
-    html+=`<div class="rag-group"><h4>🎵 歌词命中</h4><div class="rag-grid">${d.lyrics.map(renderRow).join('')}</div></div>`;
+  // 分来源折叠明细（点开看该来源全部命中）
+  const groups=d.groups||{};
+  ['lyric','textbook','web'].forEach(c=>{
+    const rows=groups[c]||[];
+    if(!rows.length) return;
+    html+=`<details class="rag-fold"><summary>${chLabel(c)} 命中 ${rows.length} 条</summary>
+      <div class="rag-grid">${rows.slice(0,20).map((r,i)=>ragRowHTML(r,i,terms)).join('')}</div></details>`;
+  });
+  if(!results.length && !Object.values(groups).some(v=>v.length)){
+    html+=`<div class="rag-empty">没有找到相关内容：试试更短的关键词、换来源（如「网络语料」）、或去掉课本限定。</div>`;
   }
-  html+=`<div class="rag-group"><h4>📝 语义相似结果</h4><div class="rag-grid">${(d.rows||[]).map(renderRow).join('')||'<div class="rag-empty">没有找到相关例句</div>'}</div></div>`;
   $('#ragOut').innerHTML=html;
 }
 async function doCleanup(){

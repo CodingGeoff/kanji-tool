@@ -66,8 +66,9 @@ def _auto_loop():
 threading.Thread(target=_auto_loop, daemon=True).start()
 # 句子结构索引后台预热（首次约10秒，之后增量）
 structsim.INDEX.warmup_async()
-# 多源 RAG 联邦索引：首次检索时 ensure() 自动构建（签名不一致时增量重建），
-# 避免后台线程与数据就绪/测试时的临时库抢占建立索引，保证检索结果始终与当前数据一致。
+# 多源 RAG 联邦索引（rag.MULTI）采用「按需构建」：首次检索时 ensure() 建好索引，
+# 数据签名（句子/歌词/课本）变化时自动重建 —— 不另开后台线程，避免与数据写入/测试
+# 临时库抢建索引，保证检索结果始终对应最新数据。
 
 
 
@@ -409,19 +410,22 @@ def api_rag_search():
         min_score=float(d.get('min_score', 0)),
         min_affinity=float(d.get('min_affinity', 0.18)),
         book_ids=book_ids,
+        sort=d.get('sort') or 'priority',
     )
-    out = []
-    for row in multi['rows']:
-        item = dict(row)
-        txt = item.get('text') or item.get('title') or ''
-        item['tokens'] = furigana.annotate(txt) if txt else []
-        out.append(item)
-    lyric_hits = []
-    for row in multi['lyrics']:
-        item = dict(row)
-        txt = item.get('text') or item.get('title') or ''
-        item['tokens'] = furigana.annotate(txt) if txt else []
-        lyric_hits.append(item)
+    def _annotate(seq):
+        """补注音（前端 ruby 渲染用）；标题命中行无正文，保持空 token。"""
+        out = []
+        for row in seq:
+            item = dict(row)
+            txt = item.get('text') or (item.get('title') if item.get('kind') in ('song', 'book') else '') or ''
+            item['tokens'] = furigana.annotate(txt) if txt else []
+            out.append(item)
+        return out
+
+    out = _annotate(multi['rows'])
+    lyric_hits = _annotate(multi['lyrics'])
+    results = _annotate(multi.get('results') or [])
+    groups = {c: _annotate(v) for c, v in (multi.get('groups') or {}).items()}
     # 句子结构相似检索：输入是整句时，分析成分并匹配结构相似的句子（歌词优先）
     struct = None
     if structsim.is_sentence(q):
@@ -444,8 +448,9 @@ def api_rag_search():
         struct = {'is_sentence': True, 'components': comp, 'rows': srows}
     db.log('rag', f'语义检索：{q[:24]}（{len(out) + len(lyric_hits)}条结果'
                  + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
-    resp = {'rows': out, 'lyrics': lyric_hits, 'titles': multi.get('titles', {}),
-            'groups': multi.get('groups', {}), 'meta': multi.get('meta', {})}
+    resp = {'rows': out, 'lyrics': lyric_hits, 'results': results,
+            'titles': multi.get('titles', {}),
+            'groups': groups, 'meta': multi.get('meta', {})}
     if struct:
         resp['struct'] = struct
     return jsonify(resp)
@@ -863,7 +868,7 @@ def api_book_examples():
         kanji=request.args.get('kanji') or None,
         word=request.args.get('word') or None,
         book_ids=ids,
-                source=request.args.get('source') or 'all',
+        source=request.args.get('source') or 'all',
         limit=int(request.args.get('limit', 0) or 0) or None)})
 
 

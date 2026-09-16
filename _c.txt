@@ -1,0 +1,4 @@
+  File "D:\10_Workspace\kanji-tool\_contract.py", line 127
+    finally:
+    ^^^^^^^
+SyntaxError: invalid syntax

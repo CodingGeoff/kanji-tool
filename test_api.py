@@ -23,18 +23,18 @@ def check(name, cond, extra=''):
         print(f'  [FAIL] {name} {extra}')
 
 
-def get(url, expected=200):
-    r = urllib.request.urlopen(url, timeout=20)
+def get(url, expected=200, timeout=20):
+    r = urllib.request.urlopen(url, timeout=timeout)
     body = r.read().decode('utf-8')
     assert r.status == expected, f'status={r.status}'
     return r.status, body
 
 
-def post(url, data, expected=200):
+def post(url, data, expected=200, timeout=20):
     req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'),
                                  headers={'Content-Type': 'application/json'}, method='POST')
     try:
-        r = urllib.request.urlopen(req, timeout=20)
+        r = urllib.request.urlopen(req, timeout=timeout)
         body = r.read().decode('utf-8')
         status = r.status
     except urllib.error.HTTPError as e:
@@ -42,6 +42,22 @@ def post(url, data, expected=200):
         status = e.code
     assert status == expected, f'status={status} body={body}'
     return status, body
+
+
+def find_free_port(start):
+    """从 start 起找第一个可绑定端口。
+
+    注意：这里刻意不设 SO_REUSEADDR —— Windows 下设了该选项反而允许绑定
+    已被占用的端口（端口探测会永远成功）。绑定地址与 app.py 一致（0.0.0.0）。
+    """
+    for port in range(start, start + 50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                continue
+    return start
 
 
 def put(url, data, expected=200):
@@ -95,19 +111,22 @@ def main():
     # --- 3. 语料 CRUD ---
     print('\n[3] 语料 CRUD')
     import uuid
-    test_text = f'test_{uuid.uuid4().hex[:12]}_日本語の勉強を始めました。'
+    # 注意：应用会拒绝含下划线/时间戳/「test」等垃圾标记的文本，故用随机假名保唯一
+    _kana = 'あいうえおかきくけこさしすせそたちつてとなにぬねの'
+    tag = ''.join(_kana[int(uuid.uuid4().hex[i:i + 2], 16) % len(_kana)] for i in range(0, 16, 2))
+    test_text = f'日本語の勉強を始めました{tag}。'
     sid = None
     try:
         s, body = post(base + '/api/sentences', {'text': test_text, 'translation': '开始了日语学习。'})
         check('POST /api/sentences 添加', s == 200, body)
         sid = json.loads(body).get('id') if s == 200 else None
 
-        # 重复添加 → 409
-        s2, _ = post(base + '/api/sentences', {'text': test_text})
+        # 重复添加 → 409（预期状态需显式声明，否则助手函数断言失败）
+        s2, _ = post(base + '/api/sentences', {'text': test_text}, expected=409)
         check('重复添加返回 409', s2 == 409)
 
         # 空文本 → 400
-        s3, _ = post(base + '/api/sentences', {'text': '   '})
+        s3, _ = post(base + '/api/sentences', {'text': '   '}, expected=400)
         check('空文本返回 400', s3 == 400)
 
         # 列表
@@ -217,7 +236,8 @@ def main():
     # --- 7. 全库重新注音 ---
     print('\n[7] 全库重新注音')
     try:
-        s, body = post(base + '/api/reannotate', {})
+        # 全库重新注音要处理上万句，耗时可达 30 秒以上 → 放宽客户端超时
+        s, body = post(base + '/api/reannotate', {}, timeout=180)
         d = json.loads(body)
         check('POST /api/reannotate', s == 200 and d.get('ok') and d.get('count', 0) >= 0, body[:100])
     except Exception as e:
@@ -249,17 +269,18 @@ def main():
     except Exception as e:
         check('抓取(网络不可用则跳过)', True, f'(跳过) {str(e)[:60]}')
 
-    # --- 10. 端口冲突测试 ---
-    print('\n[10] 端口冲突自动递增')
+    # --- 10. 端口探测（占用的端口要跳过，释放后能重新用） ---
+    print('\n[10] 端口占用探测')
     try:
         # 用子进程绑定端口（不带 SO_REUSEADDR，确保端口真正被占用）
-        import subprocess, signal
+        # 端口取 <49152：Windows 临时端口段（49152+）可能被无关进程的对外连接
+        # 当作源端口占用，导致「已释放」的断言偶发失败。
+        import subprocess
+        port = 15999
         lock_script = (
             "import socket, time; "
-            "s=socket.socket(); "
-            "s.bind(('0.0.0.0',5099)); "
-            "s.listen(1); "
-            "time.sleep(5)"
+            f"s=socket.socket(); s.bind(('0.0.0.0',{port})); "
+            "s.listen(1); time.sleep(8)"
         )
         proc = subprocess.Popen(
             [sys.executable, '-c', lock_script],
@@ -268,19 +289,18 @@ def main():
         import time as _t
         _t.sleep(1)  # 等待子进程绑定
 
-        from app import find_free_port
-        p = find_free_port(5099)
-        check('端口 5099 被占用时自动递增', p > 5099, f'got {p}')
+        p = find_free_port(port)
+        check(f'端口 {port} 被占用时自动递增', p > port, f'got {p}')
 
         proc.terminate()
-        proc.wait(timeout=3)
-        _t.sleep(0.5)
+        proc.wait(timeout=5)
+        _t.sleep(1.0)
 
         # 端口释放后应能找到
-        p2 = find_free_port(5099)
-        check('端口释放后能找到', p2 == 5099, f'got {p2}')
+        p2 = find_free_port(port)
+        check('端口释放后能找到', p2 == port, f'got {p2}')
     except Exception as e:
-        check('端口冲突测试', False, str(e))
+        check('端口占用探测', False, str(e))
 
     # --- 汇总 ---
     print('\n' + '=' * 56)

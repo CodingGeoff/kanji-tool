@@ -249,7 +249,8 @@ check(len(r.get_json()['rows']) == 1, '剩 1 本')
 print('== 13. 版本标注 ==')
 r = client.get('/')
 html = r.get_data(as_text=True)
-check('__APP_VERSION__' not in html and 'v11' in html, '版本号 v11 已注入页面')
+check('__APP_VERSION__' not in html and appmod.APP_VERSION in html,
+      f'版本号 {appmod.APP_VERSION} 已注入页面')
 check('id="tab-books"' in html and 'loadBooks' in html, '我的课本标签页存在')
 
 # ============ 14. 学习配置 / 例句全库检索 / 语法抽取 / 挖空测验 ============
