@@ -818,6 +818,58 @@ def api_books_active():
     return jsonify({'ok': True, 'ids': ids})
 
 
+@app.route('/api/books/study-cfg', methods=['GET'])
+def api_study_cfg_get():
+    """学习配置 + 最近挖空统计（配置界面 / 学习曲线页数据源）"""
+    cfg = textbook.study_cfg()
+    cfg['cloze_stats'] = textbook.cloze_stats()
+    return jsonify(cfg)
+
+
+@app.route('/api/books/study-cfg', methods=['POST'])
+def api_study_cfg_set():
+    """保存学习配置：例句来源/数量、语法难度下限、挖空开关/范围/题数/难度等"""
+    cfg = textbook.save_study_cfg(request.json or {})
+    return jsonify({'ok': True, 'cfg': cfg})
+
+
+@app.route('/api/books/examples')
+def api_book_examples():
+    """例句检索：选中的书 + 完整语料库（来源与数量由配置或参数指定）"""
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    return jsonify({'rows': textbook.unit_examples(
+        kanji=request.args.get('kanji') or None,
+        word=request.args.get('word') or None,
+        book_ids=ids,
+        source=request.args.get('source') or None,
+        limit=int(request.args.get('limit', 0) or 0) or None)})
+
+
+@app.route('/api/books/grammar')
+def api_book_grammar():
+    """本书语法点抽取（默认排除 N5/N4 等太简单的级别，可配）"""
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    return jsonify({'rows': textbook.book_grammar(
+        ids, min_level=request.args.get('min_level') or None,
+        per=int(request.args.get('per', 40)))})
+
+
+@app.route('/api/books/cloze', methods=['POST'])
+def api_book_cloze():
+    """生成挖空测验（范围/难度/题数取配置，可用参数覆盖）"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    return jsonify(textbook.make_cloze(ids or None, scope=d.get('scope'),
+                                       min_level=d.get('min_level'), count=d.get('count')))
+
+
+@app.route('/api/books/cloze/answer', methods=['POST'])
+def api_book_cloze_answer():
+    """提交挖空练习结果（计入当日统计与历史）"""
+    d = request.json or {}
+    return jsonify(textbook.record_cloze(d.get('results') or []))
+
+
 # ---------- 数据备份：完整导出 / 导入（JSON，跨库合并） ----------
 @app.route('/api/backup')
 def api_backup():

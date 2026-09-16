@@ -252,6 +252,85 @@ html = r.get_data(as_text=True)
 check('__APP_VERSION__' not in html and 'v11' in html, '版本号 v11 已注入页面')
 check('id="tab-books"' in html and 'loadBooks' in html, '我的课本标签页存在')
 
+# ============ 14. 学习配置 / 例句全库检索 / 语法抽取 / 挖空测验 ============
+print('== 14. 学习配置与高级学习 ==')
+r = client.get('/api/books/study-cfg')
+cfg = r.get_json()
+check(cfg['example_source'] == 'all' and cfg['grammar_min_level'] == 'N3'
+      and cfg['cloze_min_level'] == 'N4' and cfg['cloze_enabled'] is True,
+      f'默认配置（语法下限 N3 / 挖空下限 N4）{cfg}')
+check(cfg['cloze_stats'] == [], f'初始挖空统计为空 {cfg["cloze_stats"]}')
+r = client.post('/api/books/study-cfg', json={'example_limit': 3, 'cloze_scope': 'book',
+                                              'cloze_per_day': 4, 'grammar_min_level': 'N3'})
+cfg = r.get_json()
+check(cfg['ok'] and cfg['cfg']['example_limit'] == 3 and cfg['cfg']['cloze_scope'] == 'book', f'保存配置 {cfg}')
+r = client.get('/api/books/study-cfg')
+cfg = r.get_json()
+check(cfg['example_limit'] == 3 and cfg['cloze_scope'] == 'book', '配置持久化（settings JSON）')
+
+# --- 例句：本书 / 全库 / 混合（本书优先 + 全库补足） ---
+r = client.get(f'/api/books/examples?ids={idA}&kanji=今&source=book')
+d = r.get_json()
+check(d['rows'] and all(x['src'] == 'book' for x in d['rows']), f'本书例句 {len(d["rows"])} 条')
+check(all('今' in x['text'] for x in d['rows']), '本书例句都含该字')
+check(d['rows'][0]['tokens'], '例句带注音')
+r = client.get(f'/api/books/examples?ids={idA}&kanji=今&source=corpus')
+d2 = r.get_json()
+check(d2['rows'] and all(x['src'] == 'corpus' for x in d2['rows']), f'全库例句 {len(d2["rows"])} 条')
+r = client.get(f'/api/books/examples?ids={idA}&kanji=今&limit=1')
+d3 = r.get_json()
+check(len(d3['rows']) <= 1 and d3['rows'][0]['src'] == 'book', '混合模式本书优先 + limit 生效')
+
+# --- 语法抽取：难度下限过滤（默认不抽 N5/N4 太简单的） ---
+gbook = textbook.import_book({'title': '语法书', 'author': '', 'level': '', 'note': '',
+                              'lessons': [{'title': '第1課', 'sentences': [
+                                  '水を飲んでください。',
+                                  '一緒に行きましょう。',
+                                  'それは私の本ではない。',
+                              ]}]})
+gid = gbook['id']
+r = client.get(f'/api/books/grammar?ids={gid}&min_level=N5')
+gsb = r.get_json()['rows']
+check(len(gsb) >= 2 and any(g['level'] == 'N5' for g in gsb), f'语法书抽到 {len(gsb)} 个语法点（含 N5）')
+check(any(g['level'] == 'N4' for g in gsb), 'N4 句型（ではない）也被抽出')
+check(all(g['example']['text'] and g['explain'] and g['structure'] for g in gsb), '语法点带书中例句/讲解/结构')
+r = client.get(f'/api/books/grammar?ids={gid}&min_level=N3')
+gs3 = r.get_json()['rows']
+check(all(textbook._lv(g['level']) >= 2 for g in gs3), f'N3 下限只留 N3+ {[g["level"] for g in gs3]}')
+r = client.get(f'/api/books/grammar?ids={gid}&min_level=N1')
+check(all(textbook._lv(g['level']) == 4 for g in r.get_json()['rows']), 'N1 下限只留最高难度')
+
+# --- 挖空测验：本书/全库题源 + 难度下限 + 4 选 1 ---
+r = client.post('/api/books/cloze', json={'book_ids': [gid], 'scope': 'book', 'min_level': 'N4', 'count': 3})
+qz = r.get_json()
+check(qz['ok'] and qz['scope'] == 'book' and qz['count'] >= 1, f'本书题源出 {qz.get("count")} 题')
+check(all(textbook._lv(q['level']) >= 1 for q in qz['questions']),
+      f'挖空难度≥N4（不考 N5）{[q["level"] for q in qz["questions"]]}')
+for q in qz['questions']:
+    check(len(q['options']) == 4 and q['answer'] in q['options'] and len(set(q['options'])) == 4,
+          f'选项 4 个、含答案、不重复 {q["options"]}')
+    check(q['before'] is not None and q['after'] is not None and q['explain'], '挖空上下文与讲解齐全')
+r = client.post('/api/books/cloze', json={'scope': 'corpus', 'min_level': 'N5', 'count': 5})
+qz2 = r.get_json()
+check(qz2['ok'] and qz2['scope'] == 'corpus' and qz2['count'] <= 5, f'全库题源 {qz2["count"]} 题')
+
+# --- 计分 + 当日统计 ---
+r = client.post('/api/books/cloze/answer', json={'results': [{'ok': True}, {'ok': False}, {'ok': True}]})
+d = r.get_json()
+check(d['ok'] and d['asked'] == 3 and d['correct'] == 2, f'计分 {d}')
+r = client.get('/api/books/study-cfg')
+st = r.get_json()['cloze_stats']
+check(st and st[-1]['asked'] == 3 and st[-1]['correct'] == 2, f'当日统计落库 {st}')
+
+# --- 配置开关：关闭挖空 → 服务端拒绝出题 ---
+client.post('/api/books/study-cfg', json={'cloze_enabled': False})
+r = client.post('/api/books/cloze', json={})
+qz3 = r.get_json()
+check(qz3.get('ok') is False and '关闭' in (qz3.get('reason') or ''), f'挖空关闭生效 {qz3}')
+client.post('/api/books/study-cfg', json={'cloze_enabled': True})
+r = client.post('/api/books/cloze', json={'scope': 'corpus', 'min_level': 'N5', 'count': 2})
+check(r.get_json()['ok'] is True, '重新开启后可出题')
+
 shutil.rmtree(tmp, ignore_errors=True)
 print()
 if FAILS:

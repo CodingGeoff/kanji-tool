@@ -22,6 +22,7 @@
 """
 import json
 import math
+import random
 import re
 import time
 from datetime import date, timedelta
@@ -29,6 +30,7 @@ from datetime import date, timedelta
 import corpus
 import db
 import furigana
+import grammar
 import srs
 
 # ================================================================
@@ -851,3 +853,211 @@ def load_plan(book_ids=None):
             'deadline': max(deadlines) if deadlines else None,
             'total_new': total_new, 'done_new': done_new,
             'progress': round(100.0 * done_new / total_new, 1) if total_new else 0.0}
+
+
+# ================================================================
+# 6. 学习配置 / 例句全库检索 / 语法抽取 / 挖空测验
+# ================================================================
+DEFAULT_CFG = {
+    'example_source': 'all',      # book=仅本书 | corpus=仅全库语料 | all=本书优先+全库补足
+    'example_limit': 6,           # 每个字/词展示的例句数
+    'grammar_min_level': 'N3',    # 语法抽取难度下限：低于此（更简单的 N5/N4）不抽
+    'cloze_enabled': True,        # 学习曲线中穿插挖空测验
+    'cloze_scope': 'corpus',      # 挖空题源：book=仅本书 | corpus=全库语料
+    'cloze_per_day': 5,           # 每次练习题数
+    'cloze_min_level': 'N4',      # 挖空考的语法难度下限（默认不考 N5 太简单的）
+}
+
+
+def study_cfg():
+    """学习配置（settings 表 JSON，所有环节的用户自定义项）"""
+    cfg = dict(DEFAULT_CFG)
+    try:
+        raw = db.get_setting('book_study_cfg', '')
+        if raw:
+            cfg.update({k: v for k, v in json.loads(raw).items() if k in DEFAULT_CFG})
+    except Exception:
+        pass
+    return cfg
+
+
+def save_study_cfg(patch):
+    """增量保存配置（只接受白名单键），返回合并后的完整配置"""
+    patch = {k: v for k, v in (patch or {}).items() if k in DEFAULT_CFG}
+    cfg = study_cfg()
+    cfg.update(patch)
+    db.set_setting('book_study_cfg', json.dumps(cfg, ensure_ascii=False))
+    db.log('book', '更新学习配置：' + ', '.join(f'{k}={v}' for k, v in patch.items()))
+    return cfg
+
+
+def unit_examples(kanji=None, word=None, book_ids=None, source='all', limit=6):
+    """例句检索：本书句子优先，全库语料补足（可配置只查其一）。
+    kanji 用子串匹配（书中）+ kanji_index（全库）；word 用子串 + LIKE 检索。"""
+    limit = max(1, min(int(limit or 6), 30))
+    ids = [int(b) for b in (book_ids or [])]
+    out, seen = [], set()
+    if source in ('book', 'all') and ids and (kanji or word):
+        ph = ','.join('?' * len(ids))
+        with db.get_conn() as c:
+            rows = c.execute(
+                f'SELECT s.id id, s.text text, s.translation translation, s.tokens tokens '
+                f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+                f'WHERE bs.book_id IN ({ph}) ORDER BY bs.id LIMIT 800', ids).fetchall()
+        for r in rows:
+            hit = (kanji and kanji in r['text']) or (word and word in r['text'])
+            if not hit or r['id'] in seen:
+                continue
+            seen.add(r['id'])
+            out.append({'id': r['id'], 'text': r['text'], 'translation': r['translation'],
+                        'tokens': json.loads(r['tokens']) if r['tokens'] else [], 'src': 'book'})
+            if len(out) >= limit:
+                return out
+    if source in ('corpus', 'all') and (kanji or word):
+        if kanji:
+            rows = db.sentences_for_kanji(kanji, limit * 4)
+        else:
+            _, rows = db.query_sentences(q=word, per=limit * 4)
+        for r in rows:
+            if r['id'] in seen:
+                continue
+            seen.add(r['id'])
+            out.append({'id': r['id'], 'text': r['text'], 'translation': r.get('translation'),
+                        'tokens': json.loads(r['tokens']) if r.get('tokens') else [], 'src': 'corpus'})
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _lv(level):
+    return grammar.LEVEL_ORDER.get(level, 0)
+
+
+def book_grammar(book_ids=None, min_level='N3', per=40, sample=120):
+    """抽取选中书的语法点（复用 grammar.analyze 全库引擎）。
+    默认排除太简单的级别（min_level 以下，如 N5/N4）；按难度高→低、出现次数排序；
+    每个语法点附带一条书中原句作例句。"""
+    ids = [int(b) for b in (book_ids or [])]
+    if not ids:
+        return []
+    min_o = _lv(min_level or 'N3')
+    ph = ','.join('?' * len(ids))
+    with db.get_conn() as c:
+        rows = c.execute(
+            f'SELECT s.id sid, s.text text FROM book_sentences bs '
+            f'JOIN sentences s ON s.id=bs.sentence_id '
+            f'WHERE bs.book_id IN ({ph}) ORDER BY bs.id LIMIT ?',
+            ids + [max(1, min(int(sample), 400))]).fetchall()
+    agg = {}
+    for r in rows:
+        try:
+            pts = grammar.analyze(r['text'])
+        except Exception:
+            continue
+        for g in pts:
+            if g.get('kind') != 'pattern' or _lv(g.get('level')) < min_o:
+                continue
+            a = agg.get(g['name'])
+            if a is None:
+                agg[g['name']] = {
+                    'name': g['name'], 'level': g['level'], 'structure': g['structure'],
+                    'explain': g['explain'], 'count': 1,
+                    'example': {'sid': r['sid'], 'text': r['text'], 'surface': g['surface'],
+                                'before': g['before'], 'after': g['after']}}
+            else:
+                a['count'] += 1
+    items = sorted(agg.values(), key=lambda x: (-_lv(x['level']), -x['count']))
+    return items[:max(1, min(int(per or 40), 100))]
+
+
+_CLOZE_FILLERS = ('ている', 'について', 'ことにする', 'わけではない', 'ばかり', 'そうだ')
+
+
+def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
+    """挖空测验生成：从本书或全库随机取句 → 语法分析 → 只保留 min_level 及以上的
+    语法点 → 将语法点核心挖空，4 选 1（干扰项取同级其他语法点核心，保证区分度）。
+    这是「学习曲线中考察语法」的实现：界面在每日任务旁直接开练。"""
+    cfg = study_cfg()
+    if not cfg.get('cloze_enabled', True):
+        return {'ok': False, 'reason': '挖空测验已在学习配置中关闭', 'scope': cfg.get('cloze_scope'),
+                'count': 0, 'questions': []}
+    scope = scope or cfg.get('cloze_scope', 'corpus')
+    min_level = min_level or cfg.get('cloze_min_level', 'N4')
+    count = max(1, min(int(count or cfg.get('cloze_per_day', 5)), 20))
+    min_o = _lv(min_level)
+    ids = [int(b) for b in (book_ids or [])]
+
+    if scope == 'book' and ids:
+        ph = ','.join('?' * len(ids))
+        with db.get_conn() as c:
+            rows = c.execute(
+                f'SELECT s.id sid, s.text text FROM book_sentences bs '
+                f'JOIN sentences s ON s.id=bs.sentence_id '
+                f'WHERE bs.book_id IN ({ph}) ORDER BY RANDOM() LIMIT ?',
+                ids + [count * 8]).fetchall()
+    else:
+        with db.get_conn() as c:
+            rows = c.execute('SELECT id sid, text text FROM sentences '
+                             'ORDER BY RANDOM() LIMIT ?', (count * 8,)).fetchall()
+
+    pool = []
+    for r in rows:
+        try:
+            pts = [g for g in grammar.analyze(r['text'])
+                   if g.get('kind') == 'pattern' and _lv(g.get('level')) >= min_o]
+        except Exception:
+            pts = []
+        for g in pts:
+            pool.append({'sid': r['sid'], 'text': r['text'], **g})
+    random.shuffle(pool)
+
+    questions, chosen = [], set()
+    for p in pool:
+        key = (p['name'], p['sid'])
+        if key in chosen or not p['surface']:
+            continue
+        chosen.add(key)
+        distract = [s for s in dict.fromkeys(x['surface'] for x in pool)
+                    if s != p['surface']]
+        random.shuffle(distract)
+        opts = [p['surface']] + distract[:3]
+        for f in _CLOZE_FILLERS:                 # 题库太小时的兜底干扰项
+            if len(opts) >= 4:
+                break
+            if f not in opts:
+                opts.append(f)
+        random.shuffle(opts)
+        questions.append({'sid': p['sid'], 'text': p['text'], 'name': p['name'],
+                          'level': p['level'], 'structure': p['structure'],
+                          'explain': p['explain'], 'answer': p['surface'],
+                          'before': p['before'], 'after': p['after'], 'options': opts})
+        if len(questions) >= count:
+            break
+    return {'ok': True, 'scope': scope, 'min_level': min_level,
+            'count': len(questions), 'questions': questions}
+
+
+def record_cloze(results):
+    """记录挖空练习结果：累计到当日统计（历史可查），并写操作日志"""
+    results = [r for r in (results or []) if isinstance(r, dict)]
+    n_ok = sum(1 for r in results if r.get('ok'))
+    today = date.today().isoformat()
+    try:
+        stats = json.loads(db.get_setting('book_cloze_stats', '') or '{}')
+    except Exception:
+        stats = {}
+    d = stats.setdefault(today, {'asked': 0, 'correct': 0})
+    d['asked'] += len(results)
+    d['correct'] += n_ok
+    db.set_setting('book_cloze_stats', json.dumps(stats, ensure_ascii=False))
+    db.log('cloze', f'挖空练习：{n_ok}/{len(results)} 正确（难度≥{study_cfg().get("cloze_min_level")}）')
+    return {'ok': True, 'asked': len(results), 'correct': n_ok}
+
+
+def cloze_stats(days=14):
+    """最近 N 天的挖空练习统计（用于学习曲线页展示）"""
+    try:
+        stats = json.loads(db.get_setting('book_cloze_stats', '') or '{}')
+    except Exception:
+        stats = {}
+    return [{'day': day, **stats[day]} for day in sorted(stats)[-max(1, int(days)):]]

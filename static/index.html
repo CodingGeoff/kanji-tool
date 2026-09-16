@@ -363,6 +363,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" style="justify-content:space-between">
         <b>我的课本</b>
         <div class="row">
+          <button class="btn" onclick="bkQuizOpen()" title="从本书或全库句子挖空，考察语法点（难度可配）">📝 挖空练习</button>
+          <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
           <button class="btn primary" onclick="bkToggleImport()">＋ 制作课本</button>
         </div>
@@ -1167,6 +1169,7 @@ async function loadBooks(){
   $('#bkShelf').classList.remove('hidden');$('#bkDetail').classList.add('hidden');
   const d=await api('/api/books');
   bkRenderList(d.rows||[]);
+  bkCfg=await api('/api/books/study-cfg');
   const p=await api('/api/books/plan');
   bkPlanCache=p;bkRenderPlan(p);bkBadge(p);
 }
@@ -1268,7 +1271,10 @@ function bkRenderPlan(p){
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
       <b>今日任务 <span class="muted" style="font-weight:400">${p.today}${p.deadline?` · 截止 ${p.deadline}`:''}</span></b>
-      <span class="muted">新字进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
+      <div class="row" style="gap:6px">
+        <span class="muted">新字进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
+        ${(!bkCfg||bkCfg.cloze_enabled!==false)?`<button class="btn mini" onclick="bkQuizOpen()" title="按配置的难度从本书/全库句子挖空考察语法">📝 挖空练习</button>`:''}
+      </div>
     </div>
     <div class="progressbar"><i style="width:${pct}%"></i></div>
     ${today&&today.new.length?`
@@ -1305,6 +1311,7 @@ function bkRenderDetail(){
          ${b.author?`<span class="muted">${esc(b.author)}</span>`:''}
        </div>
        <div class="row" style="gap:6px">
+         <button class="btn mini" onclick="bkGrammarOpen(bkCur.id)" title="抽取本书句型（按配置过滤太简单的级别）">语法点</button>
          <button class="btn mini" onclick="bkEditMeta()">编辑</button>
          <button class="btn mini" onclick="bkReindex()" title="句子变动后重建字/词索引">重建索引</button>
          <button class="btn mini danger" onclick="bkReset()" title="清空本书计划与标记（不影响全局记忆）">重置进度</button>
@@ -1409,6 +1416,9 @@ function bkKanjiMenu(k){
     <div class="row" style="margin-top:10px;gap:8px">
       <button class="btn primary" onclick="bkAddGlobal('${k}')">加入全局艾宾浩斯复习</button>${spkBtn(k)}
     </div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <button class="btn" onclick="bkExamples('${k}')">🔍 例句（本书＋全库）</button>
+    </div>
   </div>`;
   document.body.appendChild(m);
 }
@@ -1420,6 +1430,130 @@ async function bkProgress(k,state){
 async function bkAddGlobal(k){
   await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:[k]})});
   toast('已加入全局学习，可在「今日复习」中看到');
+}
+
+/* ---------- 学习配置 / 例句全库检索 / 语法点 / 挖空测验 ---------- */
+let bkCfg=null,bkQuiz=null;
+const _LV=['N5','N4','N3','N2','N1'];
+function bkModal(html,width){
+  const old=document.getElementById('bkModal');if(old)old.remove();
+  const m=document.createElement('div');m.id='bkModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:85;display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto';
+  m.onclick=e=>{if(e.target===m)m.remove()};
+  m.innerHTML=`<div class="card" style="max-width:${width||560}px;width:100%;margin:0">${html}</div>`;
+  document.body.appendChild(m);return m;
+}
+function bkModalClose(){const m=document.getElementById('bkModal');if(m)m.remove()}
+function bkCfgOpen(){
+  const c=bkCfg||{};
+  bkModal(`
+    <div class="row" style="justify-content:space-between"><b>⚙ 学习配置（每个环节都可自定义）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+      <span class="muted">例句来源</span><select id="cfgSrc">
+        <option value="book" ${c.example_source==='book'?'selected':''}>仅本书句子</option>
+        <option value="corpus" ${c.example_source==='corpus'?'selected':''}>仅全库语料</option>
+        <option value="all" ${(!c.example_source||c.example_source==='all')?'selected':''}>本书优先＋全库补足</option></select>
+      <span class="muted">例句数量</span><input id="cfgExN" type="number" min="1" max="30" value="${c.example_limit||6}" style="width:90px">
+      <span class="muted">语法抽取难度下限</span><select id="cfgGmin">${_LV.map(l=>`<option value="${l}" ${((!c.grammar_min_level&&l==='N3')||c.grammar_min_level===l)?'selected':''}>${l} 及更难</option>`).join('')}</select>
+      <span class="muted">挖空测验</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="cfgClozeOn" ${c.cloze_enabled!==false?'checked':''}><span>在学习曲线中穿插</span></label>
+      <span class="muted">挖空题源</span><select id="cfgClozeScope">
+        <option value="book" ${c.cloze_scope==='book'?'selected':''}>仅本书句子</option>
+        <option value="corpus" ${(!c.cloze_scope||c.cloze_scope==='corpus')?'selected':''}>全库语料</option></select>
+      <span class="muted">每次题数</span><input id="cfgClozeN" type="number" min="1" max="20" value="${c.cloze_per_day||5}" style="width:90px">
+      <span class="muted">挖空难度下限</span><select id="cfgClozeMin">${_LV.map(l=>`<option value="${l}" ${((!c.cloze_min_level&&l==='N4')||c.cloze_min_level===l)?'selected':''}>${l} 及更难</option>`).join('')}</select>
+    </div>
+    <div class="muted" style="margin-top:10px;font-size:12.5px">难度下限 = 只抽取/考察<b>不低于</b>该级别的语法点：默认抽取从 N3 起、挖空从 N4 起，N5 这类太简单的不会出现。</div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="bkCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`);
+}
+async function bkCfgSave(){
+  const body={example_source:$('#cfgSrc').value,example_limit:parseInt($('#cfgExN').value)||6,
+    grammar_min_level:$('#cfgGmin').value,cloze_enabled:$('#cfgClozeOn').checked,
+    cloze_scope:$('#cfgClozeScope').value,cloze_per_day:parseInt($('#cfgClozeN').value)||5,
+    cloze_min_level:$('#cfgClozeMin').value};
+  const r=await api('/api/books/study-cfg',{method:'POST',body:JSON.stringify(body)});
+  bkCfg=r.cfg;bkModalClose();toast('配置已保存');if(bkPlanCache)bkRenderPlan(bkPlanCache);
+}
+async function bkExamples(kanji){
+  const cfg=bkCfg||{},ids=bkCur?bkCur.id:'';
+  const m=bkModal('<b>🔍 例句检索中…</b>');
+  const d=await api(`/api/books/examples?ids=${ids}&kanji=${encodeURIComponent(kanji)}&limit=${cfg.example_limit||6}`);
+  const rows=d.rows||[];
+  const srcTxt=({book:'仅本书',corpus:'仅全库语料',all:'本书优先＋全库补足'})[cfg.example_source||'all'];
+  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>「${kanji}」的例句（${rows.length}）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:4px;font-size:12.5px">来源：${srcTxt} · 可在 ⚙ 学习配置 调整来源与数量</div>
+    ${rows.length?rows.map(r=>`
+      <div class="sent-item"><div class="jp">${rubyHTML(r.tokens||[])} ${spkBtn(r.text)}</div>
+        ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
+        <div class="meta"><span class="tag">${r.src==='book'?'本书':'语料库'}</span></div></div>`).join('')
+      :'<div class="muted" style="margin-top:10px">本书和语料库中暂无含该字的句子</div>'}`;
+}
+async function bkGrammarOpen(bid){
+  const m=bkModal('<b>🧩 语法点抽取中…</b>');
+  const c=bkCfg||{};
+  const d=await api(`/api/books/grammar?ids=${bid||''}&per=30`);
+  const rows=d.rows||[];
+  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>🧩 本书语法点（${rows.length}）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:4px;font-size:12.5px">难度下限 ${c.grammar_min_level||'N3'}：更简单的级别（如 N5/N4）已按配置过滤，不抽取不考察。</div>
+    ${rows.length?rows.map(g=>`
+      <div class="gp-item"><div class="head">
+        <span class="tag" style="border-color:var(--gold);color:var(--gold)">${g.level}</span>
+        <span class="surf">${esc(g.name)}</span>${g.count>1?`<span class="muted">×${g.count}</span>`:''}</div>
+        <div class="expl">${esc(g.explain)}</div>
+        ${g.example?`<div class="muted" style="margin-top:4px;font-size:12.5px">书中例句：${esc(g.example.text)}<br>…${esc(g.example.before)}<b style="color:var(--accent)">${esc(g.example.surface)}</b>${esc(g.example.after)}…</div>`:''}
+      </div>`).join('')
+      :'<div class="muted" style="margin-top:10px">本书句子中未抽取到该难度以上的句型（可在 ⚙ 配置中降低难度下限）</div>'}`;
+}
+/* ---------- 挖空测验：学习曲线中考察本书/全库语法 ---------- */
+async function bkQuizOpen(){
+  const m=bkModal('<b>📝 出题中…</b>');
+  const body=bkSel.size?{book_ids:[...bkSel]}:{};
+  const d=await api('/api/books/cloze',{method:'POST',body:JSON.stringify(body)});
+  if(!d.ok||!d.questions||!d.questions.length){
+    m.innerHTML=`<div class="row" style="justify-content:space-between"><b>📝 挖空测验</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+      <div class="muted" style="margin-top:10px">${d.scope==='book'?'本书句子中暂无该难度以上的句型：可在 ⚙ 配置里降低难度下限，或把题源改成全库语料。':'题库中暂无该难度以上的句型，可在 ⚙ 配置里降低难度下限。'}</div>`;
+    return;
+  }
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,min:d.min_level};
+  bkQuizRender(m);
+}
+function bkQuizRender(m){
+  const q=bkQuiz.qs[bkQuiz.i];
+  m.innerHTML=`<div class="row" style="justify-content:space-between">
+      <b>📝 挖空 ${bkQuiz.i+1}/${bkQuiz.qs.length} <span class="tag" style="border-color:var(--gold);color:var(--gold)">${q.level}</span></b>
+      <button class="btn mini" onclick="bkModalClose()">✕ 退出</button></div>
+    <div class="jp" style="margin-top:14px;font-size:19px;line-height:1.9">${esc(q.before)}<span style="background:#f7e3b8;border-radius:6px;padding:0 12px;color:var(--accent)">▢▢▢</span>${esc(q.after)}</div>
+    <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
+      ${q.options.map((o,i)=>`<button class="btn" id="bkOpt${i}" onclick="bkQuizPick(${i})">${esc(o)}</button>`).join('')}
+    </div>
+    <div id="bkQuizExp" class="muted" style="margin-top:10px;line-height:1.8"></div>
+    <div class="progressbar"><i style="width:${Math.round(100*bkQuiz.i/bkQuiz.qs.length)}%"></i></div>`;
+}
+function bkQuizPick(i){
+  const q=bkQuiz.qs[bkQuiz.i],ok=q.options[i]===q.answer;
+  bkQuiz.ans.push({name:q.name,ok});
+  if(ok)bkQuiz.ok++;
+  for(let j=0;j<q.options.length;j++){
+    const b=document.getElementById('bkOpt'+j);if(!b)continue;
+    b.disabled=true;
+    if(q.options[j]===q.answer)b.classList.add('green');
+    else if(j===i)b.classList.add('danger');
+  }
+  const exp=document.getElementById('bkQuizExp');
+  if(exp)exp.innerHTML=`<b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正确':'❌ 正确答案：'+esc(q.answer)}</b> · ${esc(q.name)}（${q.level}）<br>${esc(q.explain)}`;
+  setTimeout(()=>{
+    bkQuiz.i++;
+    if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
+    else bkQuizRender(document.getElementById('bkModal'));
+  },ok?900:2600);
+}
+async function bkQuizFinish(){
+  const d=await api('/api/books/cloze/answer',{method:'POST',body:JSON.stringify({results:bkQuiz.ans})});
+  const m=document.getElementById('bkModal');
+  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>📝 练习完成</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div style="margin-top:12px;font-size:20px">得分 <b style="color:var(--accent2)">${bkQuiz.ok}</b> / ${bkQuiz.qs.length}
+      <span class="muted" style="font-size:13px">（题源：${bkQuiz.scope==='book'?'本书':'全库'} · 难度≥${bkQuiz.min}）</span></div>
+    ${d&&d.ok?`<div class="muted" style="margin-top:6px">已计入当日统计：今日累计答对 ${d.correct}/${d.asked}</div>`:''}
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="bkQuizOpen()">再来一组</button></div>`;
 }
 
 /* ---------- 启动 ---------- */
