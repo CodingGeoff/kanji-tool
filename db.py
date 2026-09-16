@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS book_plan(
     day TEXT NOT NULL,
     is_new INTEGER DEFAULT 1,
     kanji TEXT NOT NULL,
+    kind TEXT DEFAULT 'kanji',
     done INTEGER DEFAULT 0,
     created_at REAL,
     UNIQUE(book_id, day, kanji, is_new)
@@ -78,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_bp_day ON book_plan(book_id, day);
 CREATE TABLE IF NOT EXISTS book_progress(
     book_id INTEGER NOT NULL,
     kanji TEXT NOT NULL,
+    kind TEXT DEFAULT 'kanji',
     state TEXT DEFAULT 'learning',
     note TEXT DEFAULT '',
     added_at REAL,
@@ -167,6 +169,12 @@ def _migrate():
             c.execute('ALTER TABLE sentences ADD COLUMN orig_text TEXT')
         except sqlite3.OperationalError:
             pass
+        # 字 / 词双轨（v12：计划与进度同时支持汉字与词汇）
+        for tab in ('book_plan', 'book_progress'):
+            try:
+                c.execute(f"ALTER TABLE {tab} ADD COLUMN kind TEXT DEFAULT 'kanji'")
+            except sqlite3.OperationalError:
+                pass
         # KTV 歌词表（旧库升级时补建）
         c.execute('''CREATE TABLE IF NOT EXISTS songs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,

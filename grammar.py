@@ -676,6 +676,20 @@ def _pick(templates, seed):
 _STOP_PUNCT = {'。', '！', '？', '!', '?', '．'}
 
 
+def _char_spans(text, words):
+    """每个形态素在原文中的 (start, end) 字符偏移（find 推进；找不到时回退累计长度，
+    与 textbook._offset_words 同一策略——空格等被 MeCab 跳过的字符不会导致错位）。"""
+    spans, pos = [], 0
+    for w in words:
+        s = w.surface
+        i = text.find(s, pos)
+        if i < 0:
+            i = pos
+        pos = i + len(s)
+        spans.append((i, pos))
+    return spans
+
+
 def _context3(words, s, e, lr=4, rr=3):
     """三段式上下文：核心语法点前后各取若干形态素、不跨句 → (before, core, after)"""
     lo = max(0, s - lr)
@@ -702,6 +716,7 @@ def _context(words, s, e, radius=2):
 def analyze(text: str):
     """返回按 N5→N1 排序的语法点列表"""
     words = [w for w in _tagger(text) if w.surface]
+    spans = _char_spans(text, words)          # 形态素 → 原文字符偏移（挖空定位用）
     found = []
     covered = set()
 
@@ -752,10 +767,12 @@ def analyze(text: str):
             if pat.get('note'):
                 explain += ' ' + pat['note']
             b3, c3, a3 = _context3(words, s_idx, e_idx)
+            blank = [spans[s_idx][0], spans[e_idx - 1][1]]
             found.append({'name': pat['name'], 'level': pat['level'],
                           'structure': pat['structure'], 'surface': surface,
                           'before': b3, 'core': c3, 'after': a3,
-                          'span': [s_idx, e_idx], 'explain': explain, 'kind': 'pattern'})
+                          'span': [s_idx, e_idx], 'blank': blank,
+                          'explain': explain, 'kind': 'pattern'})
             covered.update(range(s_idx, e_idx))
 
     # 同名同span去重

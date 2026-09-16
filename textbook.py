@@ -592,6 +592,7 @@ def _simulate(fresh, existing_days, cap_sec, horizon, last_intro, target_stage, 
     ② 容量顺延：某天装不下（当日成本 > 每日容量）就自动往后找最早有空的一天；
     ③ 放宽重试：均匀目标内放不下时，逐步放宽到硬上限（max_new_per_day）再试；
        全都放不下才进 unplaced（触发不可行报告）。
+    fresh: [(key, book_id, kind)]   —— kind='kanji' 或 'words'
     返回 (new_of_day, load, rev_of_day, rev_count, unplaced)"""
     load = [n * REVIEW_SECONDS for n in existing_days]
     new_of_day = [[] for _ in range(horizon)]
@@ -599,10 +600,11 @@ def _simulate(fresh, existing_days, cap_sec, horizon, last_intro, target_stage, 
     rev_count = list(existing_days)
     unplaced = []
     intro_days = max(0, last_intro) + 1
-    hard_cap = max_new_per_day or 10 ** 9
+    hard_cap = max(1, max_new_per_day or 10 ** 9)   # 每日硬上限 ≥1（防除零）
     limit = min(max(1, -(-len(fresh) // intro_days)), hard_cap)   # 每日目标新字数
 
-    def try_place(k, bid, max_count):
+    def try_place(item, max_count):
+        k, bid, kind = item
         for d in range(0, intro_days):
             if len(new_of_day[d]) >= max_count:
                 continue
@@ -620,15 +622,15 @@ def _simulate(fresh, existing_days, cap_sec, horizon, last_intro, target_stage, 
                 rev_count[dd] += 1
                 if (k, bid) not in rev_of_day[dd]:
                     rev_of_day[dd].append((k, bid))
-            new_of_day[d].append((k, bid))
+            new_of_day[d].append(item)
             return True
         return False
 
-    for k, bid in fresh:
-        if try_place(k, bid, limit):
+    for item in fresh:
+        if try_place(item, limit):
             continue
-        if not try_place(k, bid, hard_cap):         # 放宽均匀目标（仍受每日容量约束）
-            unplaced.append((k, bid))
+        if not try_place(item, hard_cap):         # 放宽均匀目标（仍受每日容量约束）
+            unplaced.append(item)
     return new_of_day, load, rev_of_day, rev_count, unplaced
 
 
@@ -653,9 +655,11 @@ def _iso(d):
 
 
 def _srs_stages():
-    """全局 SRS 记忆状态（自动识别以前学习进度的唯一事实来源）"""
+    """全局 SRS 记忆状态（自动识别以前学习进度的唯一事实来源）
+    返回 {kanji: stage}。词汇项不靠 SRS 自动算学过，只看是否已排进计划且已标记 done/skip。"""
     with db.get_conn() as c:
-        return {r['kanji']: (r['stage'] or 0) for r in c.execute('SELECT kanji, stage FROM srs')}
+        rows = c.execute('SELECT kanji, stage FROM srs_state').fetchall()
+    return {r['kanji']: (r['stage'] or 0) for r in rows}
 
 
 def _fresh_kanji(book_ids, stages):
@@ -668,7 +672,24 @@ def _fresh_kanji(book_ids, stages):
             if k in seen or k in stages:
                 continue
             seen.add(k)
-            out.append((k, bid))
+            out.append((k, bid, 'kanji'))
+    return out
+
+
+def _fresh_words(book_ids, stages):
+    """按书的顺序取「没学过的词」：全局 SRS 里该词首字阶段≥3 且已形成较稳固记忆时，
+    再把该词当作成熟不排新；否则加到新词计划里（词汇学习也是真正的学习项）。"""
+    seen, out = set(), []
+    for bid in book_ids:
+        for r in db.book_words_set([bid]):
+            w = r['word']
+            if w in seen:
+                continue
+            seen.add(w)
+            cjk = r.get('kanji') or ''
+            if cjk and stages.get(cjk, 0) >= 3:
+                continue
+            out.append((w, bid, 'words'))
     return out
 
 
@@ -686,7 +707,7 @@ def _existing_load(horizon, day0_ts):
 
 
 def _meta_map(book_ids):
-    """汉字 → 词/读音/所属书（计划表展示用）"""
+    """汉字 → 词/读音/所属书（计划表展示用）；缓存里没有的实词也补齐映射。"""
     ids = list(book_ids)
     if not ids:
         return {}
@@ -694,15 +715,26 @@ def _meta_map(book_ids):
     with db.get_conn() as c:
         rows = c.execute(
             f'SELECT bk.kanji kanji, MIN(bk.word) word, MIN(bk.reading) reading, '
-            f'MAX(b.title) book_title FROM book_kanji bk JOIN books b ON b.id=bk.book_id '
+            f'MAX(b.title) book_title '
+            f'FROM book_kanji bk JOIN books b ON b.id=bk.book_id '
             f'WHERE bk.book_id IN ({ph}) GROUP BY bk.kanji', ids).fetchall()
-    return {r['kanji']: dict(r) for r in rows}
+    m = {r['kanji']: dict(r) for r in rows}
+    with db.get_conn() as c:
+        rows = c.execute(
+            f'SELECT bw.word word, MIN(bw.reading) reading, MIN(bw.kanji) kanji, '
+            f'MAX(b.title) book_title '
+            f'FROM book_words bw JOIN books b ON b.id=bw.book_id '
+            f'WHERE bw.book_id IN ({ph}) GROUP BY bw.word', ids).fetchall()
+        for r in rows:
+            m[r['word']] = dict(r)
+    return m
 
 
 def build_plan(book_ids=None, start=None, deadline=None, minutes_per_day=None,
                target_stage=None, max_new_per_day=None, save=True):
     """为选中的一本或多本课本排出「截止日前每天学什么、复习什么」。
 
+    对象 = 汉字 + 词（新词也纳入计划，以词汇学习为真实学习项）。
     保证（可行性算法）：
     - 每个新字走完 target_stage 阶段艾宾浩斯曲线的**全部复习**都落在截止日之前
       （新字最晚引入日 = 截止日 − 曲线天数）；
@@ -742,7 +774,9 @@ def build_plan(book_ids=None, start=None, deadline=None, minutes_per_day=None,
                 'need_days': curve_need + 1}
 
     stages = _srs_stages()
-    fresh = _fresh_kanji(book_ids, stages)
+    kanji_fresh = _fresh_kanji(book_ids, stages)
+    words_fresh = _fresh_words(book_ids, stages)
+    fresh = kanji_fresh + words_fresh
     existing = _existing_load(horizon, _day_ts(_iso(start_d)))
     new_of_day, load, rev_of_day, rev_count, unplaced = _simulate(
         fresh, existing, cap_sec, horizon, last_intro, target, max_new_per_day or 0)
@@ -780,13 +814,15 @@ def build_plan(book_ids=None, start=None, deadline=None, minutes_per_day=None,
         })
 
     if save and not unplaced:
-        # 计划落库：新字(is_new=1)与复习(is_new=0)都按书保存，逐字可勾选完成
+        # 计划落库：新字(is_new=1)与复习(is_new=0)、新词(is_new=1, kind='words')都按书保存，逐项可勾选完成
         for bid in book_ids:
             rows = []
             for i in range(horizon):
                 d_iso = per_day[i]['day']
-                rows += [(d_iso, 1, k) for k, b in new_of_day[i] if b == bid]
-                rows += [(d_iso, 0, k) for k, b in rev_of_day[i] if b == bid]
+                for k, b in new_of_day[i]:
+                    rows.append((d_iso, 1, k, ('kanji' if k in meta and meta[k].get('kanji') else 'words'),
+                                 bid))
+                rows += [(d_iso, 0, k, 'kanji', bid) for k, b in rev_of_day[i] if b == bid]
             db.save_book_plan(bid, rows)
         # 排程实际采用的参数回写（界面展示与计划读取保持一致）
         for b in books:
