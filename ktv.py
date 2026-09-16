@@ -396,14 +396,24 @@ def _to_jp(line: str) -> str:
 
 
 def _restore_original_chars(toks, jp_line, orig_line):
-    """把转换掉的简体字还原为用户原文写法（读音保留日文字形查到的结果）。"""
+    """把转换掉的简体字还原为用户原文写法（读音保留日文字形查到的结果）。
+    对齐必须用 jp_line 查找指针：MeCab 可能吞掉空白，token 累计长度 ≠ 原文偏移
+    （如「ねえ もし…」空格被吞后，后续 token 全部错位一位，替换出重复字/丢字）。
+    _to_jp 是逐字等长替换，jp 偏移即原文偏移，故按表面在 jp_line 中真实定位。"""
     if jp_line == orig_line:
         return
     off = 0
     for t in toks:
         s = t.get('s') or ''
         n = len(s)
-        if n and len(orig_line) >= off + n and jp_line[off:off + n] != orig_line[off:off + n]:
+        if not n:
+            continue
+        if not jp_line.startswith(s, off):        # 分词器吞字/并字 → 重新定位真实偏移
+            idx = jp_line.find(s, off)
+            if idx < 0:
+                continue                          # 表面异常：保持原样，交由 _seg_mark 安全网兜底
+            off = idx
+        if jp_line[off:off + n] != orig_line[off:off + n]:
             t['s'] = orig_line[off:off + n]
         off += n
 
@@ -491,10 +501,32 @@ def annotate_lyrics(lyrics: str):
         try:
             jp = _to_jp(ln)                  # 简体字 → 日本汉字（查词典用）
             toks = furigana.annotate(jp)
-            _restore_original_chars(toks, jp, ln)   # 显示还原为原文写法
-            toks = _restore_spaces(toks, ln)        # 补回丢失的空格
-            _protect_ascii(toks)                     # 英文不注音
-            _backfill_ruby(toks)                     # 同字注音一致性
+            if jp != ln:                     # 行含简体字：双路解析择优
+                toks0 = furigana.annotate(ln)
+                # 各自走完整管线（还原/空格/注音回填），谁能逐字重建原文选谁；
+                # 都能时选形素更少的（願い 优于 愿+い，词典覆盖更好）。
+                def _mk(ts):
+                    ts = [dict(x) for x in ts]
+                    _restore_original_chars(ts, jp, ln)
+                    ts = _restore_spaces(ts, ln)
+                    _protect_ascii(ts)
+                    _backfill_ruby(ts)
+                    return ts
+                cand = _mk(toks)
+                cand0 = _mk(toks0)
+                ok = ''.join(x.get('s') or '' for x in cand) == ln
+                ok0 = ''.join(x.get('s') or '' for x in cand0) == ln
+                if ok and ok0:
+                    toks = cand if len(cand) < len(cand0) else cand0
+                elif ok:
+                    toks = cand
+                else:
+                    toks = cand0
+            else:
+                _restore_original_chars(toks, jp, ln)   # 显示还原为原文写法
+                toks = _restore_spaces(toks, ln)        # 补回丢失的空格
+                _protect_ascii(toks)                     # 英文不注音
+                _backfill_ruby(toks)                     # 同字注音一致性
             _seg_mark(toks, ln)                      # 学习模式：意思群标记
             tokens.append(toks)
         except Exception:
@@ -551,15 +583,25 @@ def chunk_starts(line: str):
       - 形式名詞跟随：用言后的 事/物/時/ため… 与前句同群（見る事/ない時 不拆）
       - なさい（為さる命令形）接名词（ごめんなさい）
       - 連体詞与名词性成分合并（あの日の）
+      - 简体字歌词（愿い/辉いて…）MeCab 无法识别 → 与 _to_jp 转换行双路解析，
+        取「記号(未知字)」更少的分词（_to_jp 逐字等长，偏移不变，可直接对齐原文）
     偏移约定：与 _offset_words 一致，为原文的逐字偏移（空白独立成群边界时不位移）。"""
-    ms = [(off, w.surface, w.feature.pos1 or '', w.feature.pos2 or '',
-           w.feature.cForm or '', (w.feature.lemma or '').split('-')[0])
-          for off, w in _offset_words(line)]
+    def _ms(text):
+        return [(off, w.surface, w.feature.pos1 or '', w.feature.pos2 or '',
+                 w.feature.cForm or '', (w.feature.lemma or '').split('-')[0])
+                for off, w in _offset_words(text)]
+    ms = _ms(line)
+    jp = _to_jp(line)
+    if jp != line:                       # 行含简体字：双路解析，形素更少者词典覆盖更好
+        ms_jp = _ms(jp)
+        if len(ms_jp) < len(ms):
+            ms = ms_jp
     starts = set()
     for k in range(1, len(ms)):
         off, surf, p1, p2, cf, lemma = ms[k]
         poff, psurf, pp1, pp2, pcf, plemma = ms[k - 1]
-        prev_ascii = bool(_ASCII_WORD_RE.match(psurf or ''))
+        prev_ascii = bool(_ASCII_WORD_RE.match(psurf or '')
+                          and _ASCII_HAS_LETTER_RE.search(psurf or ''))
         # 英文连续段内部：不断开
         if _ASCII_HAS_LETTER_RE.search(surf) and _ASCII_WORD_RE.match(surf):
             if k + 1 < len(ms) and _ASCII_WORD_RE.match(ms[k + 1][1] or ''):

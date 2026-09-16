@@ -72,6 +72,50 @@ for line, exp in ROMAJI_LINE:
     got = ktv.is_romaji_line(line)
     check(got == exp, f'is_romaji_line({line!r}) = {got}，期望 {exp}')
 
+# ============ 1.5 意思群切分（chunk_starts）回归 ============
+print('== 意思群切分回归 ==')
+
+
+def _groups(ln):
+    starts = ktv.chunk_starts(ln)
+    out, prev = [], 0
+    for off in sorted(starts | {len(ln)}):
+        out.append(ln[prev:off])
+        prev = off
+    return out
+
+
+# 用户报告案例（INNOCENCE｜藍井エイル）：用言+形式名詞（見る事）不拆
+ln = 'ここに いれば 二度と　未来見る事出来ない'
+gs = _groups(ln)
+check(any('見る事' in g for g in gs), f'1.5a 見る事 不拆：{gs}')
+check(not any(g in ('事', 'る事') for g in gs), f'1.5a2 事/る事 不自立成群：{gs}')
+
+# 数字+助数词/接尾辞 不拆（此前 100|回、2|人 被英文词尾判据拆开）
+gs = _groups('100回の後悔を数えて')
+check(any('100回' in g for g in gs), f'1.5b 100回 不拆：{gs}')
+gs = _groups('２人の未来を描いて')
+check(any('２人' in g for g in gs), f'1.5c ２人 不拆：{gs}')
+
+# 形式名詞跟随：用言后的 事 不断开
+gs = _groups('あなたを見る事ができた')
+check(not any(g == '事' for g in gs), f'1.5d 見る事が 事不断：{gs}')
+
+# 简体字行（MeCab 可能吞空格）→ 注音后必须逐字重建原文
+lyr = 'ねえ もし願いが叶うなら'
+toks_l, _nk = ktv.annotate_lyrics(lyr)
+line = toks_l[0] if toks_l else []
+recon = ''.join(t.get('s') or '' for t in line if isinstance(t, dict))
+check(recon == lyr, f'1.5e 简体行逐字重建：{recon!r} != {lyr!r}')
+off, sp_offs = 0, set()
+for t in line:
+    if isinstance(t, dict):
+        if t.get('sp'):
+            sp_offs.add(off)
+        off += len(t.get('s') or '')
+check(sp_offs == ktv.chunk_starts(lyr),
+      f'1.5f sp 标记与算法一致：{sorted(sp_offs)} vs {sorted(ktv.chunk_starts(lyr))}')
+
 # ============ 2. 自动整理 parse_import ============
 print('== 歌词自动整理 ==')
 
