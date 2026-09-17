@@ -482,11 +482,19 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" style="margin-top:8px;flex-wrap:wrap">
         <label class="muted">截止日期 <input type="date" id="bkDeadline"></label>
         <label class="muted">每天 <input type="number" id="bkMinutes" value="30" min="5" max="480" style="width:70px"> 分钟</label>
-        <label class="muted">学到第 <select id="bkTarget" class="mini"></select> 阶段</label>
+        <label class="muted">内容 <select id="bkContent" class="mini" title="汉字=单字；词汇=单词·熟语（汉字词/假名组合，考试重点）">
+          <option value="both" selected>汉字＋词汇</option>
+          <option value="kanji">仅汉字</option>
+          <option value="words">仅词汇</option>
+        </select></label>
+        <label class="muted">学到第 <select id="bkTarget" class="mini" onchange="bkCurveHint()"></select> 阶段</label>
         <button class="btn green" onclick="bkPlanBuild()">生成计划</button>
         <button class="btn danger" onclick="bkPlanClear()" title="清除所选书的计划（不动学习进度）">清空计划</button>
       </div>
-      <div class="muted" style="margin-top:6px">不勾选书 = 默认对「学习中」的书排程；同一字出现在多本书只学一次。</div>
+      <div class="muted" id="bkCurveHint" style="margin-top:6px;font-size:12.5px"></div>
+      <div class="muted" style="margin-top:6px">不勾选书 = 默认对「学习中」的书排程；同一字/词出现在多本书只学一次。
+        <b>阶段说明</b>：第 1→10 阶段 = 艾宾浩斯第 1→10 次复习（5分钟→…→2个月），数字越大记得越牢；
+        到达第 7 阶段即记入「长期记忆」，推荐学到第 7 阶段。</div>
       <div id="bkPlanResult" style="margin-top:8px"></div>
     </div>
 
@@ -496,6 +504,9 @@ body.ktv-song.showhdr header{display:flex;position:static}
 
   <!-- 单本书详情视图 -->
   <div id="bkDetail" class="hidden"></div>
+
+  <!-- 挖空练习独立视图 -->
+  <div id="bkQuizView" class="hidden"></div>
 </section>
 
 <!-- ============ 历史 ============ -->
@@ -573,6 +584,53 @@ async function showAbout(){
   #ktvLyrics{font-size:22px}
   #ktvLyrics ruby rt{font-size:.6em}
   #ktvSongList .ksong{padding:14px}
+}
+
+/* ---------- v13 挖空练习独立界面 ---------- */
+.quiz-wrap{max-width:780px;margin:0 auto}
+.quiz-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.quiz-prog{font-size:15px;font-weight:700}
+.quiz-q{font-size:27px;line-height:2.6;margin:18px 0 6px;overflow-wrap:anywhere}
+.cloze-blank{display:inline-flex;align-items:center;justify-content:center;
+  min-width:118px;height:1.75em;margin:0 8px;padding:0 16px;vertical-align:baseline;
+  background:#fdf6e8;border:2.5px solid var(--gold);border-radius:12px;
+  color:#a08c5a;font-size:21px;font-weight:700;white-space:nowrap;
+  transform:translateY(-3px)}
+.cloze-blank.ok{background:#e7f2ec;border-color:var(--accent2);color:var(--accent2)}
+.cloze-blank.ng{background:#fbe9ea;border-color:var(--accent);color:var(--accent)}
+.cloze-blank ruby rt{font-size:.5em}
+.opt-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
+.opt-btn{font-size:21px;padding:17px 10px;border:2px solid var(--line);border-radius:14px;
+  background:#fff;cursor:pointer;text-align:center;transition:.15s;line-height:1.4}
+.opt-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent);
+  box-shadow:0 3px 14px rgba(0,0,0,.08)}
+.opt-btn:disabled{cursor:default;opacity:.92}
+.opt-btn .ol{display:inline-block;min-width:26px;height:26px;line-height:26px;border-radius:50%;
+  background:#f2efe7;color:var(--sub);font-size:14px;font-weight:700;margin-right:9px;
+  vertical-align:2px}
+.opt-btn.correct{border-color:var(--accent2);background:#e7f2ec;color:var(--accent2)}
+.opt-btn.correct .ol{background:var(--accent2);color:#fff}
+.opt-btn.wrong{border-color:var(--accent);background:#fbe9ea;color:var(--accent)}
+.opt-btn.wrong .ol{background:var(--accent);color:#fff}
+.opt-btn.dim{opacity:.5}
+.quiz-exp{margin-top:18px;border:1px solid var(--line);border-radius:14px;
+  padding:14px 16px;background:#fbf9f4}
+.quiz-exp .tr{font-size:15px;color:var(--sub);margin-top:8px;line-height:1.7}
+.quiz-exp .ex{font-size:15px;margin-top:8px;line-height:1.8}
+.quiz-nav{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.quiz-nav .btn{font-size:16px;padding:11px 26px}
+.kbadge{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;
+  padding:1px 7px;margin-right:5px;vertical-align:2px}
+.kbadge.k{background:#e8f0fe;color:#2b5cb7}
+.kbadge.w{background:#e7f2ec;color:var(--accent2)}
+.quiz-rev{border-bottom:1px dashed var(--line);padding:13px 2px}
+.quiz-rev:last-child{border:none}
+.quiz-rev .qs{font-size:21px;line-height:2.3}
+@media(max-width:600px){
+  .quiz-q{font-size:23px}
+  .opt-grid{grid-template-columns:1fr}
+  .opt-btn{font-size:19px;padding:14px 10px}
+  .cloze-blank{min-width:100px;font-size:18px}
 }
 </style>
 
@@ -754,33 +812,42 @@ async function loadReview(){
   queue=d.rows; qTotal=queue.length; stageNames=d.stage_names;
   showCard();
 }
+const SRC_LABEL={tatoeba:'🌐 Tatoeba',wikipedia:'🌐 维基百科',wikinews:'🌐 维基新闻',manual:'✍️ 手动添加',import:'📥 导入备份',book:'📖 课本'};
+function srcTag(s){return `<span class="tag">${SRC_LABEL[s]||('🌐 '+(s||'语料'))}</span>`}
 function showCard(){
   const box=$('#reviewBox');
   if(!queue.length){
     box.innerHTML=`<div class="review-card"><div style="font-size:44px">🎉</div>
-      <p style="margin-top:10px">当前没有到期的汉字</p>
-      <p class="muted" style="margin-top:6px">艾宾浩斯调度会在 5分钟→30分钟→12小时→1天→2天→4天→7天→15天→1月→2月 的记忆临界点自动推送复习。<br>先去「学新字」添加要学的汉字吧。</p></div>`;
+      <p style="margin-top:10px">当前没有到期的汉字 / 词汇</p>
+      <p class="muted" style="margin-top:6px">艾宾浩斯调度会在 5分钟→30分钟→12小时→1天→2天→4天→7天→15天→1月→2月 的记忆临界点自动推送复习。<br>去「学新字」添加汉字，或在「我的课本」词汇表中点单词加入复习吧。</p></div>`;
     refreshStats();return;
   }
   const it=queue[0];
+  const isW=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
   const done=qTotal-queue.length;
   box.innerHTML=`
     <div class="progressbar"><i style="width:${qTotal?done/qTotal*100:0}%"></i></div>
     <div class="review-card">
-      <div class="big">${esc(it.kanji)}</div>
-      <div class="stage">阶段 ${stageNames[it.stage]||it.stage} ｜ 对${it.ok}次 错${it.ng}次</div>
+      <div><span class="kbadge ${isW?'w':'k'}">${isW?'词':'字'}</span></div>
+      <div class="big" style="${isW?'font-size:56px':''}">${esc(it.kanji)}</div>
+      ${isW?`<div class="stage" id="revReading" style="font-size:17px;color:var(--accent)">读音：？？？</div>`:''}
+      <div class="stage">第 ${(it.stage||0)+1} 阶段（下次复习约 ${stageNames[it.stage]||it.stage}后） ｜ 对${it.ok}次 错${it.ng}次</div>
       <div class="reveal-area" id="reveal" style="margin-top:18px">
         ${it.sentence?`<div class="jp noruby" id="revSent" data-raw="${esc(it.sentence.text)}">${rubyHTML(it.sentence.tokens,it.kanji)} ${spkBtn(it.sentence.text,'big')}<button class="spkbtn big" onclick="favToggle(${it.sentence.id})" title="收藏本句">⭐</button></div>
-          <div class="muted" id="revTr" style="visibility:hidden">${esc(it.sentence.translation||'')}</div>`:'<div class="muted">语料库暂无此字例句，先抓取更多语料</div>'}
+          <div class="muted" style="margin-top:4px">${srcTag(it.sentence.source)}</div>
+          <div class="muted" id="revTr" style="visibility:hidden">${esc(it.sentence.translation||'')}</div>`:`<div class="muted">语料库暂无此${isW?'词':'字'}例句，先抓取更多语料</div>`}
       </div>
       <div class="row" style="justify-content:center;margin-top:22px" id="ansBtns">
-        <button class="btn primary" onclick="reveal()">显示读音</button>
+        <button class="btn primary" onclick="reveal()">显示${isW?'读音与翻译':'读音'}</button>
       </div>
     </div>`;
 }
 function reveal(){
   const s=$('#revSent'); if(s)s.classList.remove('noruby');
   const tr=$('#revTr'); if(tr)tr.style.visibility='visible';
+  const it=queue[0]||{};
+  const rr=$('#revReading');
+  if(rr)rr.textContent='读音：'+(it.reading||it.kanji||'—');
   $('#ansBtns').innerHTML=`
     <button class="btn green" onclick="answer('ok')">😀 认识</button>
     <button class="btn warn" onclick="answer('hard')">🤔 模糊</button>
@@ -916,7 +983,7 @@ async function kanjiDetail(k){
       <div class="muted" style="font-size:13px;margin-bottom:4px">例句 ${d.sentences.length} 句（短句在前）</div>
       ${d.sentences.map((s,i)=>`
       <div class="sent-item${i>=10?' hidden ksent-more':''}"><div class="jp" data-raw="${esc(s.text)}" style="font-size:21px">${rubyHTML(s.tokens,k)} ${spkBtn(s.text)}</div>
-      ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}</div>`).join('')||'<div class="muted">暂无例句</div>'}
+      ${s.translation?`<div class="tr muted">${esc(s.translation)}</div>`:''}<div class="meta">${srcTag(s.source)}</div></div>`).join('')||'<div class="muted">暂无例句</div>'}
       ${d.sentences.length>10?`<button class="btn" id="ksentMoreBtn" onclick="showMoreKsent()">展开全部 ${d.sentences.length} 句 ▼</button>`:''}
     </div>`;
   box.scrollIntoView({behavior:'smooth'});
@@ -1456,14 +1523,36 @@ window.addEventListener('scroll',()=>{
 /* ---------- 我的课本（v11）：自制教材 + 截止日学习计划 ---------- */
 let bkSel=new Set(),bkPlanCache=null,bkCur=null,bkUnitsMode='kanji',bkLessonsOpen=new Set();
 function bkToggleImport(){const el=$('#bkImport');el.classList.toggle('hidden');if(!el.classList.contains('hidden'))$('#bkText').focus()}
+let bkCurve=null;
 function bkTogglePlanForm(){
   const el=$('#bkPlanForm');el.classList.toggle('hidden');
   if(!el.classList.contains('hidden')){
-    if(!$('#bkTarget').options.length)
-      $('#bkTarget').innerHTML=[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}"${n===7?' selected':''}>${n}</option>`).join('');
+    bkCurveLoad();
     if(!$('#bkDeadline').value){const d=new Date(Date.now()+45*864e5);$('#bkDeadline').value=d.toISOString().slice(0,10)}
     if(bkPlanCache&&bkPlanCache.deadline)$('#bkDeadline').value=bkPlanCache.deadline;
   }
+}
+async function bkCurveLoad(){
+  try{
+    if(!bkCurve)bkCurve=await api('/api/books/curve');
+    if(!$('#bkTarget').options.length){
+      $('#bkTarget').innerHTML=bkCurve.stages.map(s=>
+        `<option value="${s.stage}"${s.stage===7?' selected':''}>第${s.stage}阶段 · ${s.days?s.days+'天走完':'当天走完'}${s.mature?' · 长期记忆✓':''}</option>`).join('');
+    }
+  }catch(e){
+    if(!$('#bkTarget').options.length)
+      $('#bkTarget').innerHTML=[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}"${n===7?' selected':''}>第${n}阶段</option>`).join('');
+  }
+  bkCurveHint();
+}
+function bkCurveHint(){
+  const box=$('#bkCurveHint');if(!box)return;
+  const t=parseInt($('#bkTarget').value)||7;
+  if(!bkCurve){box.textContent='';return}
+  const s=bkCurve.stages.find(x=>x.stage===t);
+  if(!s){box.textContent='';return}
+  box.innerHTML=`已选第 <b>${t}</b> 阶段：从零开始约需 <b>${s.days}</b> 天走完${t>=7?'（含长期记忆线 ✓）':''}；`+
+    `新学项最晚须在 <b>截止日 − ${s.days} 天</b>前引入。数字越大、复习跨度越长、记得越牢。`;
 }
 async function loadBooks(){
   $('#bkShelf').classList.remove('hidden');$('#bkDetail').classList.add('hidden');
@@ -1535,7 +1624,8 @@ async function bkDoImport(){
 }
 async function bkPlanBuild(){
   const body={book_ids:[...bkSel],deadline:$('#bkDeadline').value||null,
-    minutes_per_day:parseInt($('#bkMinutes').value)||null,target_stage:parseInt($('#bkTarget').value)||null};
+    minutes_per_day:parseInt($('#bkMinutes').value)||null,target_stage:parseInt($('#bkTarget').value)||null,
+    content:$('#bkContent').value||'both'};
   $('#bkPlanResult').innerHTML='<span class="muted">排程中…</span>';
   const d=await api('/api/books/plan',{method:'POST',body:JSON.stringify(body)});
   bkRenderPlanResult(d);
@@ -1555,7 +1645,8 @@ function bkRenderPlanResult(d){
       ${d.suggestion&&d.suggestion.earliest_finish?`<div style="margin-top:6px"><button class="btn mini primary" onclick="bkApplyDeadline('${d.suggestion.earliest_finish}')">改用 ${d.suggestion.earliest_finish} 重新排</button></div>`:''}</div>`;
     return;
   }
-  box.innerHTML=`<div class="muted">✅ 已排好：<b>${d.start}</b> → <b>${d.deadline}</b> 共 ${d.days} 天，新字 ${d.new_total} 个，每天 ≤ ${d.minutes_per_day} 分钟；新字最晚 <b>${d.last_intro_day}</b> 前引入（保证第 ${d.target_stage} 阶段曲线 ${d.curve_days} 天在截止日前走完）${d.existing_review_total?`，已学字的既有复习约 ${d.existing_review_total} 次已计入每日负载`:''}。</div>`;
+  const nw=d.new_words||0,nk=(d.new_kanji!=null?d.new_kanji:d.new_total);
+  box.innerHTML=`<div class="muted">✅ 已排好：<b>${d.start}</b> → <b>${d.deadline}</b> 共 ${d.days} 天，新学 ${d.new_total} 项（<b>${nk}</b> 字 + <b>${nw}</b> 词），每天 ≤ ${d.minutes_per_day} 分钟；新学项最晚 <b>${d.last_intro_day}</b> 前引入（保证第 ${d.target_stage} 阶段曲线 ${d.curve_days} 天在截止日前走完）${d.existing_review_total?`，已学项的既有复习约 ${d.existing_review_total} 次已计入每日负载`:''}。</div>`;
 }
 function bkApplyDeadline(v){$('#bkDeadline').value=v;bkPlanBuild()}
 async function bkPlanClear(){
@@ -1563,26 +1654,41 @@ async function bkPlanClear(){
   await api('/api/books/plan?ids='+[...bkSel].join(','),{method:'DELETE'});
   toast('已清除计划');loadBooks();
 }
+function bkKindBadge(it){
+  const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
+  return `<span class="kbadge ${w?'w':'k'}">${w?'词':'字'}</span>`;
+}
 function bkRenderPlan(p){
   const box=$('#bkPlanCard');
   if(!p||p.empty||!p.per_day||!p.per_day.length){box.classList.add('hidden');return}
   box.classList.remove('hidden');
   const today=p.today_tasks,up=p.per_day.filter(d=>d.day>p.today).slice(0,6),pct=p.progress||0;
+  const cntNew=today?{k:today.new.filter(x=>!(x.kind==='words'||(x.kanji&&x.kanji.length>1))).length,
+    w:today.new.filter(x=>(x.kind==='words')||(x.kanji&&x.kanji.length>1)).length}:{k:0,w:0};
+  const chip=it=>{
+    const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
+    const q=esc(it.kanji).replace(/'/g,"&#39;");
+    return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}','${q}')">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone('${q}',this.checked)"> ${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;
+  };
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
       <b>今日任务 <span class="muted" style="font-weight:400">${p.today}${p.deadline?` · 截止 ${p.deadline}`:''}</span></b>
       <div class="row" style="gap:6px">
-        <span class="muted">新字进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
+        <span class="muted">新学进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
         ${(!bkCfg||bkCfg.cloze_enabled!==false)?`<button class="btn mini" onclick="bkQuizOpen()" title="按配置的难度从本书/全库句子挖空考察语法">📝 挖空练习</button>`:''}
       </div>
     </div>
     <div class="progressbar"><i style="width:${pct}%"></i></div>
     ${today&&today.new.length?`
+      <div class="muted" style="margin-top:6px;font-size:12.5px">勾选 = 标记完成；点击字/词 = 查看本书＋全库例句</div>
       <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:6px">
-        ${today.new.map(it=>`<span class="wordchip" style="${it.done?'opacity:.45;text-decoration:line-through':''}"><input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onchange="bkTaskDone('${it.kanji}',this.checked)">${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`).join('')}
+        ${today.new.map(chip).join('')}
       </div>`:''}
-    <div class="muted" style="margin-top:6px">${today?`今天 ${today.new.length} 个新字 · ${today.review.length} 项复习${today.total?` · 完成 ${Math.round(100*today.done_n/today.total)}%`:''}`:'今天没有排程任务 🎉'}</div>
-    ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学字到期复习）</summary><div style="margin-top:4px">${today.review.map(it=>`<span class="wordchip" style="${it.done?'opacity:.45':''}">${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`).join('')}</div></details>`:''}
+    <div class="muted" style="margin-top:6px">${today?`今天新学 ${today.new.length} 项（${cntNew.k} 字＋${cntNew.w} 词） · ${today.review.length} 项复习${today.total?` · 完成 ${Math.round(100*today.done_n/today.total)}%`:''}`:'今天没有排程任务 🎉'}</div>
+    ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学项到期复习，点击可查例句）</summary><div style="margin-top:4px">${today.review.map(it=>{
+      const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
+      const q=esc(it.kanji).replace(/'/g,"&#39;");
+      return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}','${q}')">${bkKindBadge(it)}${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;}).join('')}</div></details>`:''}
     <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">随后几天（共 ${p.per_day.length} 天）</summary>
       ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
     </details>`;
@@ -1697,8 +1803,43 @@ async function bkUnitsTab(mode){
       return `<span class="wordchip" style="cursor:pointer;${cls}${op}" title="全局阶段 ${st??'未学'}${pb?' · 标记:'+pb:''} · 点击设置" onclick="bkKanjiMenu('${r.kanji}')">${esc(r.kanji)}${st!=null?`<small>${st}</small>`:''}</span>`;
     }).join('')||'<span class="muted">本书还没有索引字</span>';
   }else{
-    box.innerHTML=d.rows.map(r=>`<span class="wordchip">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`).join('')||'<span class="muted">本书还没有词汇</span>';
+    box.innerHTML=d.rows.map(r=>{
+      const q=esc(r.word).replace(/'/g,"&#39;");
+      const qr=esc(r.reading||'').replace(/'/g,"&#39;");
+      return `<span class="wordchip" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu('${q}','${qr}')">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`;
+    }).join('')||'<span class="muted">本书还没有词汇</span>';
   }
+}
+function bkWordMenu(w,reading){
+  reading=reading||'';
+  const old=document.getElementById('bkMenu');if(old)old.remove();
+  const m=document.createElement('div');m.id='bkMenu';
+  m.style.cssText='position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px';
+  m.onclick=e=>{if(e.target===m)m.remove()};
+  const q=w.replace(/'/g,"&#39;");
+  m.innerHTML=`<div class="card" style="max-width:360px;width:100%">
+    <div class="row" style="justify-content:space-between"><div><span class="kbadge w">词</span><b style="font-size:24px">${esc(w)}</b>
+      <div class="muted" style="margin-top:2px">${esc(reading)} ${spkBtn(w)}</div></div>
+      <button class="btn mini" onclick="document.getElementById('bkMenu').remove()">✕</button></div>
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="bkProgress('${q}','learning','words')">📖 在学</button>
+      <button class="btn green" onclick="bkProgress('${q}','done','words')">✅ 已掌握</button>
+      <button class="btn warn" onclick="bkProgress('${q}','skip','words')">⏭ 跳过</button>
+      <button class="btn danger" onclick="bkProgress('${q}','','words')">✖ 清除标记</button>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="btn primary" onclick="bkAddGlobalWord('${q}','${reading.replace(/'/g,"&#39;")}')">加入全局艾宾浩斯复习</button>
+    </div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <button class="btn" onclick="bkExamplesUnit('word','${q}')">🔍 例句（本书＋全库）</button>
+    </div>
+  </div>`;
+  document.body.appendChild(m);
+}
+async function bkAddGlobalWord(w,reading){
+  await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:[w],kind:'words',readings:{[w]:reading||''}})});
+  const m=document.getElementById('bkMenu');if(m)m.remove();
+  toast('已加入全局学习，可在「今日复习」中看到');
 }
 function bkKanjiMenu(k){
   const old=document.getElementById('bkMenu');if(old)old.remove();
@@ -1717,15 +1858,15 @@ function bkKanjiMenu(k){
       <button class="btn primary" onclick="bkAddGlobal('${k}')">加入全局艾宾浩斯复习</button>${spkBtn(k)}
     </div>
     <div class="row" style="margin-top:8px;gap:8px">
-      <button class="btn" onclick="bkExamples('${k}')">🔍 例句（本书＋全库）</button>
+      <button class="btn" onclick="bkExamplesUnit('kanji','${k}')">🔍 例句（本书＋全库）</button>
     </div>
   </div>`;
   document.body.appendChild(m);
 }
-async function bkProgress(k,state){
-  await api('/api/books/progress',{method:'POST',body:JSON.stringify({book_id:bkCur.id,kanji:k,state})});
+async function bkProgress(k,state,kind){
+  await api('/api/books/progress',{method:'POST',body:JSON.stringify({book_id:bkCur.id,kanji:k,state,kind:kind||(k.length>1?'words':'kanji')})});
   const m=document.getElementById('bkMenu');if(m)m.remove();
-  bkUnitsTab('kanji');
+  bkUnitsTab(kind==='words'?'words':'kanji');
 }
 async function bkAddGlobal(k){
   await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:[k]})});
@@ -1773,26 +1914,32 @@ async function bkCfgSave(){
   const r=await api('/api/books/study-cfg',{method:'POST',body:JSON.stringify(body)});
   bkCfg=r.cfg;bkModalClose();toast('配置已保存');if(bkPlanCache)bkRenderPlan(bkPlanCache);
 }
-async function bkExamples(kanji){
-  const cfg=bkCfg||{},ids=bkCur?bkCur.id:'';
-  const m=bkModal('<b>🔍 例句检索中…</b>');
-  const d=await api(`/api/books/examples?ids=${ids}&kanji=${encodeURIComponent(kanji)}&limit=${cfg.example_limit||6}`);
+async function bkExamples(kanji){return bkExamplesUnit('kanji',kanji)}
+async function bkExamplesUnit(type,value){
+  const cfg=bkCfg||{};
+  const ids=bkCur?bkCur.id:(bkPlanCache&&bkPlanCache.books||[]).map(b=>b.id).join(',');
+  const m=bkModal('<b>🔍 例句检索中…</b>',720);
+  const param=type==='word'?`word=${encodeURIComponent(value)}`:`kanji=${encodeURIComponent(value)}`;
+  const d=await api(`/api/books/examples?ids=${ids}&${param}`);
   const rows=d.rows||[];
   const srcTxt=({book:'仅本书',corpus:'仅全库语料',all:'本书优先＋全库补足'})[cfg.example_source||'all'];
-  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>「${kanji}」的例句（${rows.length}）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:4px;font-size:12.5px">来源：${srcTxt} · 可在 ⚙ 学习配置 调整来源与数量</div>
+  const kw=value;
+  m.querySelector('.card').innerHTML=`<div class="row" style="justify-content:space-between"><b>「${esc(value)}」的例句（${rows.length}） ${spkBtn(value)}</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:4px;font-size:12.5px">来源：${srcTxt} · 可在 ⚙ 学习配置 调整来源与数量 · 开启高级模式后点击句子可解析语法</div>
     ${rows.length?rows.map(r=>`
-      <div class="sent-item"><div class="jp">${rubyHTML(r.tokens||[])} ${spkBtn(r.text)}</div>
+      <div class="sent-item"><div class="jp" data-raw="${esc(r.text)}" style="font-size:22px">${rubyHTML(r.tokens||[],kw)} ${spkBtn(r.text)}</div>
         ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
-        <div class="meta"><span class="tag">${r.src==='book'?'本书':'语料库'}</span></div></div>`).join('')
-      :'<div class="muted" style="margin-top:10px">本书和语料库中暂无含该字的句子</div>'}`;
+        <div class="meta"><span class="tag">${esc(r.origin||(r.src==='book'?'本书':'语料库'))}</span>
+          ${r.book_id?`<button onclick="bkModalClose();bkJump(${r.book_id})">在课本中打开</button>`:''}
+          <button onclick="favToggle(${r.id},this)">☆收藏</button></div></div>`).join('')
+      :'<div class="muted" style="margin-top:10px">本书和语料库中暂无相关句子，可放宽 ⚙ 学习配置中的来源，或去语料库抓取更多语料</div>'}`;
 }
 async function bkGrammarOpen(bid){
-  const m=bkModal('<b>🧩 语法点抽取中…</b>');
+  const m=bkModal('<b>🧩 语法点抽取中…</b>',640);
   const c=bkCfg||{};
   const d=await api(`/api/books/grammar?ids=${bid||''}&per=30`);
   const rows=d.rows||[];
-  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>🧩 本书语法点（${rows.length}）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+  m.querySelector('.card').innerHTML=`<div class="row" style="justify-content:space-between"><b>🧩 本书语法点（${rows.length}）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
     <div class="muted" style="margin-top:4px;font-size:12.5px">难度下限 ${c.grammar_min_level||'N3'}：更简单的级别（如 N5/N4）已按配置过滤，不抽取不考察。</div>
     ${rows.length?rows.map(g=>`
       <div class="gp-item"><div class="head">
@@ -1803,57 +1950,150 @@ async function bkGrammarOpen(bid){
       </div>`).join('')
       :'<div class="muted" style="margin-top:10px">本书句子中未抽取到该难度以上的句型（可在 ⚙ 配置中降低难度下限）</div>'}`;
 }
-/* ---------- 挖空测验：学习曲线中考察本书/全库语法 ---------- */
+/* ---------- 挖空测验：独立练习界面（完整题干＋注音＋同类混淆选项） ---------- */
+function bkQuizShow(){
+  $('#bkShelf').classList.add('hidden');$('#bkDetail').classList.add('hidden');
+  $('#bkQuizView').classList.remove('hidden');
+  window.scrollTo(0,0);
+}
+function bkQuizQuit(){
+  $('#bkQuizView').classList.add('hidden');
+  $('#bkShelf').classList.remove('hidden');
+  loadBooks();
+}
 async function bkQuizOpen(){
-  const m=bkModal('<b>📝 出题中…</b>');
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">📝 出题中（完整题干质检＋语法定位＋混淆项匹配…）</div></div>';
   const body=bkSel.size?{book_ids:[...bkSel]}:{};
-  const d=await api('/api/books/cloze',{method:'POST',body:JSON.stringify(body)});
+  let d;
+  try{ d=await api('/api/books/cloze',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ d={ok:false}; }
   if(!d.ok||!d.questions||!d.questions.length){
-    m.innerHTML=`<div class="row" style="justify-content:space-between"><b>📝 挖空测验</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-      <div class="muted" style="margin-top:10px">${d.scope==='book'?'本书句子中暂无该难度以上的句型：可在 ⚙ 配置里降低难度下限，或把题源改成全库语料。':'题库中暂无该难度以上的句型，可在 ⚙ 配置里降低难度下限。'}</div>`;
+    const noCfg=(d&&d.reason&&d.reason.indexOf('关闭')>=0);
+    v.innerHTML=`<div class="card quiz-wrap">
+      <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>📝 挖空练习</b></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${noCfg?esc(d.reason||'挖空已关闭'):
+        ((d&&d.scope)==='book'?'本书句子中暂无符合质检（完整单句＋该难度以上句型）的题目：可在 ⚙ 学习配置里降低难度下限，或把题源改成全库语料。':'题库中暂无符合质检的题目，可在 ⚙ 配置里降低难度下限，或去语料库抓取更多语料。')}</div>
+      <div class="quiz-nav"><button class="btn" onclick="bkCfgOpen()">⚙ 学习配置</button></div>
+    </div>`;
     return;
   }
-  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,min:d.min_level};
-  bkQuizRender(m);
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,min:d.min_level,short:!!d.short,picked:null};
+  bkQuizRender();
 }
-function bkQuizRender(m){
-  const q=bkQuiz.qs[bkQuiz.i];
-  m.innerHTML=`<div class="row" style="justify-content:space-between">
-      <b>📝 挖空 ${bkQuiz.i+1}/${bkQuiz.qs.length} <span class="tag" style="border-color:var(--gold);color:var(--gold)">${q.level}</span></b>
-      <button class="btn mini" onclick="bkModalClose()">✕ 退出</button></div>
-    <div class="jp" style="margin-top:14px;font-size:19px;line-height:1.9">${esc(q.before)}<span style="background:#f7e3b8;border-radius:6px;padding:0 12px;color:var(--accent)">▢▢▢</span>${esc(q.after)}</div>
-    <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-      ${q.options.map((o,i)=>`<button class="btn" id="bkOpt${i}" onclick="bkQuizPick(${i})">${esc(o)}</button>`).join('')}
+function bkBlankHTML(q,state){
+  // 空位固定宽度、不暗示答案字数；作答后填入答案（带注音）
+  if(state==null)return '<span class="cloze-blank" id="bkBlank">？</span>';
+  const a=q.atokens&&q.atokens.length?rubyHTML(q.atokens):esc(q.answer);
+  return `<span class="cloze-blank ${state?'ok':'ng'}" id="bkBlank">${a}</span>`;
+}
+function bkQuizRender(){
+  const v=$('#bkQuizView'),q=bkQuiz.qs[bkQuiz.i],n=bkQuiz.qs.length;
+  const B=q.tokens_b&&q.tokens_b.length?rubyHTML(q.tokens_b):esc(q.before);
+  const A=q.tokens_a&&q.tokens_a.length?rubyHTML(q.tokens_a):esc(q.after);
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top">
+      <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
+      <span class="quiz-prog">📝 挖空 ${bkQuiz.i+1} / ${n}</span>
+      <span class="lv lv-${q.level}">${q.level}</span>
+      <span class="tag">${esc(q.origin||'')}</span>
+      <span style="flex:1"></span>
+      <span class="muted" style="font-size:12.5px">得分 ${bkQuiz.ok}</span>
     </div>
-    <div id="bkQuizExp" class="muted" style="margin-top:10px;line-height:1.8"></div>
-    <div class="progressbar"><i style="width:${Math.round(100*bkQuiz.i/bkQuiz.qs.length)}%"></i></div>`;
+    ${bkQuiz.short&&bkQuiz.i===0?'<div class="muted" style="margin-top:8px;font-size:12.5px">题库较小，仅生成 '+n+' 题（可在 ⚙ 配置中降低难度下限或切换全库题源）</div>':''}
+    <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*bkQuiz.i/n)}%"></i></div>
+    <div class="quiz-q jp" id="bkQuizQ">${B}${bkBlankHTML(q,null)}${A}</div>
+    ${q.translation?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`:''}
+    <div class="opt-grid" id="bkOpts">
+      ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPick(${i})"><span class="ol">${'ABCD'[i]}</span>${esc(o)}</button>`).join('')}
+    </div>
+    <div id="bkQuizExp"></div>
+  </div>`;
 }
 function bkQuizPick(i){
+  if(bkQuiz.picked!=null)return;
+  bkQuiz.picked=i;
   const q=bkQuiz.qs[bkQuiz.i],ok=q.options[i]===q.answer;
-  bkQuiz.ans.push({name:q.name,ok});
+  bkQuiz.ans.push({name:q.name,ok,pick:q.options[i]});
   if(ok)bkQuiz.ok++;
   for(let j=0;j<q.options.length;j++){
     const b=document.getElementById('bkOpt'+j);if(!b)continue;
     b.disabled=true;
-    if(q.options[j]===q.answer)b.classList.add('green');
-    else if(j===i)b.classList.add('danger');
+    if(q.options[j]===q.answer)b.classList.add('correct');
+    else if(j===i)b.classList.add('wrong');
+    else b.classList.add('dim');
   }
-  const exp=document.getElementById('bkQuizExp');
-  if(exp)exp.innerHTML=`<b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正确':'❌ 正确答案：'+esc(q.answer)}</b> · ${esc(q.name)}（${q.level}）<br>${esc(q.explain)}`;
-  setTimeout(()=>{
-    bkQuiz.i++;
-    if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
-    else bkQuizRender(document.getElementById('bkModal'));
-  },ok?900:2600);
+  const bl=document.getElementById('bkBlank');
+  if(bl)bl.outerHTML=bkBlankHTML(q,ok);
+  const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+  document.getElementById('bkQuizExp').innerHTML=`<div class="quiz-exp">
+    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 回答正确':'❌ 答错了'}</b>
+      ${!ok?`<span style="font-size:15px">　你的选择：${esc(q.options[i])}　→　正确答案：<b style="color:var(--accent2)">${esc(q.answer)}</b></span>`:''}</div>
+    <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:23px">${full} ${spkBtn(q.text)}</div>
+    ${q.translation?`<div class="tr">译：${esc(q.translation)}</div>`:''}
+    <div class="ex"><span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b><br>${esc(q.explain)}
+      ${q.structure&&q.structure!=='—'?`<br><span class="muted">接续：${esc(q.structure)}</span>`:''}</div>
+    <div class="quiz-nav">
+      <button class="btn primary" onclick="bkQuizNext()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
+      <button class="btn danger" onclick="bkQuizDrop()" title="句子有误/截断/答案不对：从题库中移除，以后不再出现">⚠ 题目有误，不再出</button>
+    </div>
+  </div>`;
+  document.getElementById('bkQuizExp').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function bkQuizNext(){
+  bkQuiz.picked=null;
+  bkQuiz.i++;
+  if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
+  else{bkQuizRender();window.scrollTo(0,0);}
+}
+async function bkQuizDrop(){
+  const q=bkQuiz.qs[bkQuiz.i];
+  if(!confirm('确认这道题有问题？将从题库移除，以后不再出现。'))return;
+  try{
+    if(bkQuiz.scope==='book'&&q.book_id)
+      await api(`/api/books/${q.book_id}/sentences/${q.sid}`,{method:'DELETE'});
+    else
+      await api(`/api/sentences/${q.sid}`,{method:'DELETE'});
+    toast('已移除该题');
+  }catch(e){toast('移除失败')}
+  bkQuiz.qs.splice(bkQuiz.i,1);
+  bkQuiz.ans.pop();
+  bkQuiz.picked=null;
+  if(!bkQuiz.qs.length){bkQuizQuit();return}
+  if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
+  else bkQuizRender();
 }
 async function bkQuizFinish(){
-  const d=await api('/api/books/cloze/answer',{method:'POST',body:JSON.stringify({results:bkQuiz.ans})});
-  const m=document.getElementById('bkModal');
-  m.innerHTML=`<div class="row" style="justify-content:space-between"><b>📝 练习完成</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div style="margin-top:12px;font-size:20px">得分 <b style="color:var(--accent2)">${bkQuiz.ok}</b> / ${bkQuiz.qs.length}
-      <span class="muted" style="font-size:13px">（题源：${bkQuiz.scope==='book'?'本书':'全库'} · 难度≥${bkQuiz.min}）</span></div>
-    ${d&&d.ok?`<div class="muted" style="margin-top:6px">已计入当日统计：今日累计答对 ${d.correct}/${d.asked}</div>`:''}
-    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="bkQuizOpen()">再来一组</button></div>`;
+  let d=null;
+  try{ d=await api('/api/books/cloze/answer',{method:'POST',body:JSON.stringify({results:bkQuiz.ans})}); }catch(e){}
+  const v=$('#bkQuizView'),n=bkQuiz.qs.length,pct=n?Math.round(100*bkQuiz.ok/n):0;
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>📝 练习完成</b></div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${bkQuiz.ok}</b> / ${n}（${pct}%）
+      <div class="muted" style="font-size:13px;margin-top:4px">题源：${bkQuiz.scope==='book'?'本书':'全库'} · 难度≥${bkQuiz.min}${d&&d.ok?` · 已计入当日统计`:''}</div></div>
+    <div class="quiz-nav" style="justify-content:center">
+      <button class="btn primary" onclick="bkQuizOpen()">再来一组</button>
+      <button class="btn" onclick="bkQuizQuit()">返回书架</button>
+    </div>
+    <div style="margin-top:14px"><b>答题回顾</b><span class="muted">（点击句子可解析语法）</span></div>
+    ${bkQuiz.qs.map((q,i)=>{
+      const a=bkQuiz.ans[i]||{ok:false,pick:''};
+      const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+      return `<div class="quiz-rev">
+        <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b>
+          ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
+        <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
+        <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
+      </div>`;}).join('')}
+    <div class="quiz-nav" style="justify-content:center;margin-top:16px">
+      <button class="btn primary" onclick="bkQuizOpen()">再来一组</button>
+      <button class="btn" onclick="bkQuizQuit()">返回书架</button>
+    </div>
+  </div>`;
+  window.scrollTo(0,0);
 }
 
 /* ---------- 启动 ---------- */
