@@ -172,6 +172,36 @@ body.ktv-song.showhdr header{display:flex;position:static}
 #aboutWrap{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px}
 .verline{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:14px}
 .verwarn{margin-top:10px;padding:8px 12px;border-radius:9px;background:#fdf3e7;color:#c77f38;font-size:13px;line-height:1.5}
+
+/* ---------- v16 教育心理学深度模块 ---------- */
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.psy-card h4{margin:0 0 8px 0;font-size:15px}
+.psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
+.psy-card .sub{font-size:12.5px;color:var(--sub);margin-top:4px}
+.zpd-bar{height:14px;background:linear-gradient(90deg,#e8e8e8 0%,#e8e8e8 100%);border-radius:7px;position:relative;overflow:hidden;margin:8px 0}
+.zpd-bar .cur{position:absolute;top:0;bottom:0;width:3px;background:var(--accent);z-index:2}
+.zpd-bar .zpd{position:absolute;top:0;bottom:0;background:rgba(255,215,0,.35);border:1px dashed var(--gold);z-index:1}
+.zpd-bar .opt{position:absolute;top:0;bottom:0;width:3px;background:var(--gold);z-index:3}
+.flow-dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px}
+.flow-flow{background:var(--accent2)} .flow-anxiety{background:var(--accent)} .flow-boredom{background:#aaa} .flow-control{background:var(--gold)}
+.bloom-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;margin:2px;border:1px solid var(--line)}
+.bloom-remember{background:#e3f2fd;border-color:#90caf9} .bloom-understand{background:#f3e5f5;border-color:#ce93d8}
+.bloom-apply{background:#e8f5e9;border-color:#a5d6a7} .bloom-analyze{background:#fff3e0;border-color:#ffcc80}
+.bloom-evaluate{background:#fce4ec;border-color:#f48fb1} .bloom-create{background:#fffde7;border-color:#fff59d}
+.scaffold-tag{font-size:11px;padding:2px 6px;border-radius:8px;background:var(--line);margin-left:6px}
+.conf-slider{width:100%;margin:8px 0}
+.mastery-bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
+.mastery-bar i{display:block;height:100%;background:var(--accent2);transition:.3s}
+.cog-load{font-size:12px;padding:3px 8px;border-radius:10px}
+.cog-low{background:#e8f5e9;color:#2e7d32} .cog-medium{background:#fff3e0;color:#ef6c00} .cog-high{background:#ffebee;color:#c62828}
+.rec-card{border-left:3px solid var(--gold);padding:8px 10px;margin:8px 0;background:#fdfbf3;border-radius:0 8px 8px 0}
+.rec-card.high{border-left-color:var(--accent)} .rec-card.medium{border-left-color:var(--gold)} .rec-card.low{border-left-color:var(--accent2)}
+.psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
+.psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.psy-section{margin-top:14px}
+
 </style>
 </head>
 <body>
@@ -464,7 +494,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" style="justify-content:space-between">
         <b>我的课本</b>
         <div class="row">
-          <button class="btn primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比、出题数量，支持一键自动调节">🎛 出题配置</button>
+          <button class="btn primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比、出题数量，支持一键自动调节">🎛 出题配置</button><button class="btn" style="background:var(--gold);color:#fff;border-color:var(--gold)" onclick="eduDashboardOpen()" title="教育心理学仪表盘：能力、ZPD、认知负荷、布鲁姆、心流、错误分析">🧠 仪表盘</button>
           <button class="btn" onclick="bkQuizOpen()" title="从本书或全库句子挖空，考察语法点（难度可配）">📝 挖空练习</button>
           <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
@@ -657,6 +687,36 @@ async function showAbout(){
 .qcfg-diff{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
 .qcfg-prev{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:12px;background:#fbf9f4;max-height:240px;overflow:auto}
 .qcfg-prev .s{font-size:18px;line-height:1.9}
+
+/* ---------- v16 教育心理学深度模块 ---------- */
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.psy-card h4{margin:0 0 8px 0;font-size:15px}
+.psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
+.psy-card .sub{font-size:12.5px;color:var(--sub);margin-top:4px}
+.zpd-bar{height:14px;background:linear-gradient(90deg,#e8e8e8 0%,#e8e8e8 100%);border-radius:7px;position:relative;overflow:hidden;margin:8px 0}
+.zpd-bar .cur{position:absolute;top:0;bottom:0;width:3px;background:var(--accent);z-index:2}
+.zpd-bar .zpd{position:absolute;top:0;bottom:0;background:rgba(255,215,0,.35);border:1px dashed var(--gold);z-index:1}
+.zpd-bar .opt{position:absolute;top:0;bottom:0;width:3px;background:var(--gold);z-index:3}
+.flow-dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px}
+.flow-flow{background:var(--accent2)} .flow-anxiety{background:var(--accent)} .flow-boredom{background:#aaa} .flow-control{background:var(--gold)}
+.bloom-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;margin:2px;border:1px solid var(--line)}
+.bloom-remember{background:#e3f2fd;border-color:#90caf9} .bloom-understand{background:#f3e5f5;border-color:#ce93d8}
+.bloom-apply{background:#e8f5e9;border-color:#a5d6a7} .bloom-analyze{background:#fff3e0;border-color:#ffcc80}
+.bloom-evaluate{background:#fce4ec;border-color:#f48fb1} .bloom-create{background:#fffde7;border-color:#fff59d}
+.scaffold-tag{font-size:11px;padding:2px 6px;border-radius:8px;background:var(--line);margin-left:6px}
+.conf-slider{width:100%;margin:8px 0}
+.mastery-bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
+.mastery-bar i{display:block;height:100%;background:var(--accent2);transition:.3s}
+.cog-load{font-size:12px;padding:3px 8px;border-radius:10px}
+.cog-low{background:#e8f5e9;color:#2e7d32} .cog-medium{background:#fff3e0;color:#ef6c00} .cog-high{background:#ffebee;color:#c62828}
+.rec-card{border-left:3px solid var(--gold);padding:8px 10px;margin:8px 0;background:#fdfbf3;border-radius:0 8px 8px 0}
+.rec-card.high{border-left-color:var(--accent)} .rec-card.medium{border-left-color:var(--gold)} .rec-card.low{border-left-color:var(--accent2)}
+.psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
+.psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.psy-section{margin-top:14px}
+
 </style>
 
 <script>
@@ -1861,7 +1921,7 @@ function bkRenderDetail(){
          ${b.author?`<span class="muted">${esc(b.author)}</span>`:''}
        </div>
        <div class="row" style="gap:6px">
-         <button class="btn mini primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比与数量，支持一键自动调节">🎛 出题配置</button>
+         <button class="btn mini primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比与数量，支持一键自动调节">🎛 出题配置</button><button class="btn mini" style="background:var(--gold);color:#fff;border-color:var(--gold)" onclick="eduDashboardOpen()" title="教育心理学仪表盘">🧠 仪表盘</button>
          <button class="btn mini ${rubyOn?'green':''}" id="bkRubyBtn" onclick="bkToggleRubyAll()" title="一键显示/隐藏全部汉字读音">🔤 ${rubyOn?'隐藏读音':'显示读音'}</button>
          <button class="btn mini" onclick="bkGrammarOpen(bkCur.id)" title="抽取本书句型（按配置过滤太简单的级别）">语法点</button>
          <button class="btn mini" onclick="bkEditMeta()">编辑</button>
@@ -2305,7 +2365,7 @@ function bkQuizCfgOpen(){
       <div class="row" style="justify-content:space-between"><b>2.2 出题数量配置</b><span class="muted" id="qcfgRecommendHint"></span></div>
       <div class="row" style="margin-top:8px">
         <label class="muted">总量 <input type="number" id="qcfgTotal" min="1" max="50" value="${_qcfg.total}" style="width:80px"></label>
-        <button class="btn mini green" onclick="qcfgAuto()">✨ 一键自动调节</button>
+        <button class="btn mini green" onclick="qcfgAuto()">✨ 一键自动调节</button><button class="btn mini" style="background:var(--gold);color:#fff;border-color:var(--gold)" onclick="qcfgAutoPsy()">🧠 心理学自动调节</button>
         <span class="muted" style="font-size:12px">算法：课文句总量 + 正确率 + 难度分级 → 推荐题量与占比</span>
       </div>
       <div class="qcfg-diff">
@@ -2318,10 +2378,10 @@ function bkQuizCfgOpen(){
       </div>
     </div>
 
-    <div class="qcfg-prev hidden" id="qcfgPreviewBox"></div>
+    <div class="qcfg-prev hidden" id="qcfgPreviewBox"></div><div class="qcfg-prev hidden" id="qcfgPsyBox" style="background:#fdf6e3;border-color:var(--gold)"></div>
 
     <div class="row" style="margin-top:14px;flex-wrap:wrap;gap:8px">
-      <button class="btn primary" onclick="qcfgSaveAndStart()">💾 保存并开始出题</button>
+      <button class="btn primary" onclick="qcfgSaveAndStart()">💾 保存并开始出题</button><button class="btn primary" style="background:var(--gold);border-color:var(--gold)" onclick="qcfgSaveAndStartPsy()">🧠 心理学出题</button>
       <button class="btn" onclick="qcfgPreview()">👁 预览样例</button>
       <button class="btn" onclick="qcfgReset()">↺ 重置</button>
       <button class="btn" onclick="bkModalClose()">取消</button>
@@ -2470,6 +2530,21 @@ async function qcfgPreview(){
       d.questions.map(q=>`<div style="border-bottom:1px dashed var(--line);padding:6px 0"><div class="s jp" style="font-size:18px">${rubyHTML(q.tokens||[],null)} <span class="tag">${esc(q.origin||'')}</span> <span class="lv lv-${q.level}">${q.level}</span></div><div class="muted" style="font-size:12px">${esc(q.name)} · ${esc(q.explain.slice(0,80))}</div></div>`).join('');
   }catch(e){ box.innerHTML='<span class="muted">预览失败</span>'; }
 }
+async function qcfgSaveAndStartPsy(){
+  const total=parseInt(document.getElementById('qcfgTotal')?.value)||10;
+  const ratios=_qcfg.ratios;
+  const diff={
+    book: document.getElementById('qcfgDiffBook')?.value||'N4',
+    corpus: document.getElementById('qcfgDiffCorpus')?.value||'N4',
+    lyric: document.getElementById('qcfgDiffLyric')?.value||'N4'
+  };
+  const rubyDef=document.getElementById('qcfgRubyDef')?.checked;
+  if(rubyDef!=null) localStorage.setItem('bkRubyAll', rubyDef?'1':'0');
+  const cfg={ratios,total,difficulty:diff, explain:_qcfg.explain||''};
+  qcfgSave(cfg);
+  bkModalClose();
+  await bkQuizOpenMultiPsy();
+}
 async function qcfgSaveAndStart(){
   const total=parseInt(document.getElementById('qcfgTotal')?.value)||10;
   const ratios=_qcfg.ratios;
@@ -2508,6 +2583,386 @@ async function bkQuizOpenMulti(){
 }
 
 
+
+
+
+/* ---------- v16 教育心理学深度模块：学习者画像、ZPD、认知负荷、布鲁姆、支架、元认知、动机 ---------- */
+let eduProfile=null, eduAnalytics=null;
+async function eduLoadProfile(){
+  try{ eduProfile=await api('/api/edu/profile'); }catch(e){ eduProfile=null; }
+  return eduProfile;
+}
+async function eduLoadAnalytics(){
+  try{ eduAnalytics=await api('/api/edu/analytics'); }catch(e){ eduAnalytics=null; }
+  return eduAnalytics;
+}
+function thetaToLevel(th){
+  if(th<-1.5) return 'N5';
+  if(th<-0.5) return 'N4';
+  if(th<0.5) return 'N3';
+  if(th<1.5) return 'N2';
+  return 'N1';
+}
+function bloomLabel(b){
+  const m={remember:'记忆',understand:'理解',apply:'应用',analyze:'分析',evaluate:'评价',create:'创造'};
+  return m[b]||b;
+}
+async function eduDashboardOpen(tab='overview'){
+  const modalHtml = `<div class="row" style="justify-content:space-between"><b>🧠 教育心理学仪表盘 v16</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="font-size:12.5px;margin-top:4px">整合 IRT能力估计 + BKT知识追踪 + ZPD + 认知负荷 + 布鲁姆 + 支架 + 元认知 + 心流 + 错误分析</div>
+    <div class="psy-tabs" id="psyTabs">
+      <button data-tab="overview" class="${tab==='overview'?'active':''}" onclick="eduDashboardOpen('overview')">总览</button>
+      <button data-tab="zpd" class="${tab==='zpd'?'active':''}" onclick="eduDashboardOpen('zpd')">ZPD</button>
+      <button data-tab="mastery" class="${tab==='mastery'?'active':''}" onclick="eduDashboardOpen('mastery')">掌握度</button>
+      <button data-tab="cognitive" class="${tab==='cognitive'?'active':''}" onclick="eduDashboardOpen('cognitive')">认知负荷</button>
+      <button data-tab="errors" class="${tab==='errors'?'active':''}" onclick="eduDashboardOpen('errors')">错误分析</button>
+      <button data-tab="motivation" class="${tab==='motivation'?'active':''}" onclick="eduDashboardOpen('motivation')">动机心流</button>
+      <button data-tab="recommend" class="${tab==='recommend'?'active':''}" onclick="eduDashboardOpen('recommend')">个性化建议</button>
+    </div>
+    <div id="psyContent" class="psy-section"><span class="muted">加载中…</span></div>
+  `;
+  bkModal(modalHtml, 860);
+  await eduLoadProfile();
+  await eduLoadAnalytics();
+  eduRenderTab(tab);
+}
+function eduRenderTab(tab){
+  const c=document.getElementById('psyContent');
+  if(!c) return;
+  if(!eduProfile || !eduAnalytics){
+    c.innerHTML='<span class="muted">数据加载失败，请稍后重试</span>';
+    return;
+  }
+  const p=eduProfile, a=eduAnalytics;
+  if(tab==='overview'){
+    c.innerHTML=`
+      <div class="psy-grid">
+        <div class="psy-card"><h4>📊 整体能力 θ</h4><div class="val">${p.overall_ability.toFixed(2)} (${p.ability_level})</div><div class="sub">IRT估计：${p.theta.kanji.toFixed(2)}汉字 ${p.theta.vocab.toFixed(2)}词汇 ${p.theta.grammar.toFixed(2)}语法</div>
+          <div class="zpd-bar"><div class="zpd" style="left:${Math.max(0,(p.zpd.zpd_min+3)/6*100)}%;width:${Math.max(0,(p.zpd.zpd_max-p.zpd.zpd_min)/6*100)}%"></div><div class="cur" style="left:${(p.zpd.current+3)/6*100}%"></div><div class="opt" style="left:${(p.zpd.optimal+3)/6*100}%"></div></div>
+          <div class="sub">当前θ ${p.zpd.current.toFixed(2)} | ZPD ${p.zpd.range_label} | 最优 ${p.zpd.level_optimal}</div>
+        </div>
+        <div class="psy-card"><h4>🎯 掌握度</h4><div class="val">${(a.srs.mature_rate*100).toFixed(1)}% 长期记忆</div><div class="sub">SRS总数 ${a.srs.total} 成熟 ${a.srs.mature} 平均阶段 ${a.srs.avg_stage} | BKT平均掌握 ${(p.avg_mastery*100).toFixed(1)}%</div><div class="mastery-bar"><i style="width:${p.avg_mastery*100}%"></i></div></div>
+        <div class="psy-card"><h4>🔥 动机与自我效能</h4><div class="val">动机 ${(p.motivation*100).toFixed(0)}% | 效能 ${(p.self_efficacy*100).toFixed(0)}%</div><div class="sub">目标导向：${p.goal_orientation==='mastery'?'掌握目标（关注进步）':'表现目标（关注成绩）'} | 元认知校准 ${(p.metacog_calibration*100).toFixed(0)}%</div></div>
+        <div class="psy-card"><h4>🌊 心流状态</h4><div class="val"><span class="flow-dot flow-${a.flow.state}"></span>${a.flow.label} 平衡${(a.flow.balance*100).toFixed(0)}%</div><div class="sub">挑战 ${a.flow.challenge} 技能 ${a.flow.skill} | ${a.flow.state==='flow'?'心流：挑战与技能匹配，沉浸学习':a.flow.state==='anxiety'?'焦虑：挑战过高，需降低难度':a.flow.state==='boredom'?'无聊：技能过高，需提高难度':'控制感：适度挑战'}</div></div>
+        <div class="psy-card"><h4>🧩 认知负荷</h4><div class="val">容量 ${(p.cognitive_capacity*100).toFixed(0)}% | 工作记忆 ${(p.working_memory*100).toFixed(0)}%</div><div class="sub">内在负荷=语法+汉字密度，外在=界面，相关=解释。保持总负荷40-70%最优</div></div>
+        <div class="psy-card"><h4>📚 布鲁姆掌握</h4><div class="val">${Object.keys(p.bloom_mastery).length}层级</div><div class="sub">${Object.entries(p.bloom_mastery).map(([k,v])=>`<span class="bloom-badge bloom-${k}">${bloomLabel(k)} ${(v*100).toFixed(0)}%</span>`).join('')}</div></div>
+      </div>
+      <div class="psy-card" style="margin-top:12px"><h4>📈 最近${a.cloze.trend.length}天正确率趋势</h4><div style="display:flex;gap:4px;align-items:end;height:60px;margin-top:8px">${a.cloze.trend.map(d=>{const acc=d.asked?d.correct/d.asked:0;return `<div style="flex:1;background:var(--accent2);height:${acc*100}%;min-height:4px;border-radius:3px" title="${d.day} ${d.correct}/${d.asked}"></div>`}).join('')}</div><div class="sub">总计 ${a.cloze.total_correct}/${a.cloze.total_asked} 正确率 ${(a.cloze.accuracy*100).toFixed(1)}%</div></div>
+    `;
+  } else if(tab==='zpd'){
+    const z=p.zpd;
+    c.innerHTML=`
+      <div class="psy-card"><h4>🎯 最近发展区 ZPD 理论（Vygotsky）</h4><div class="sub" style="line-height:1.7">ZPD = 当前能力θ + 0.2~0.8，最优 +0.5。题目难度在此区间时学习效率最高：既不会因太简单而无聊，也不会因太难而焦虑。<br>当前θ ${z.current.toFixed(2)} (${z.level_current}) → ZPD ${z.zpd_min.toFixed(2)}~${z.zpd_max.toFixed(2)} (${z.range_label}) → 最优 ${z.optimal.toFixed(2)} (${z.level_optimal})</div>
+        <div class="zpd-bar" style="height:20px;margin-top:12px"><div class="zpd" style="left:${(z.zpd_min+3)/6*100}%;width:${(z.zpd_max-z.zpd_min)/6*100}%"></div><div class="cur" style="left:${(z.current+3)/6*100}%"></div><div class="opt" style="left:${(z.optimal+3)/6*100}%"></div></div>
+        <div class="row" style="justify-content:space-between;font-size:12px;margin-top:4px"><span>简单 N5</span><span>当前</span><span style="color:var(--gold)">ZPD最优</span><span>困难 N1</span></div>
+        <div style="margin-top:12px"><b>教学意义</b><div class="sub">支架式教学：在ZPD内提供支架（提示、注音、翻译），随掌握度渐退。当前推荐支架：${eduAnalytics?eduAnalytics.recommendations[0]?.action||'中支架':'中支架'}</div></div>
+      </div>
+      <div class="psy-card" style="margin-top:12px"><h4>📊 能力分布</h4><div class="sub">汉字 θ=${p.theta.kanji.toFixed(2)} | 词汇 ${p.theta.vocab.toFixed(2)} | 语法 ${p.theta.grammar.toFixed(2)} | 听力 ${p.theta.listening.toFixed(2)}</div><div class="psy-grid" style="margin-top:8px">${Object.entries(p.theta).map(([k,v])=>`<div class="psy-card"><h4>${k}</h4><div class="val">${v.toFixed(2)} (${thetaToLevel(v)})</div><div class="mastery-bar"><i style="width:${(v+3)/6*100}%"></i></div></div>`).join('')}</div></div>
+    `;
+  } else if(tab==='mastery'){
+    const md=a.mastery_distribution;
+    c.innerHTML=`
+      <div class="psy-grid">
+        <div class="psy-card"><h4>📈 BKT掌握度分布</h4><div class="sub">BKT公式：P(L_n)=P(L_{n-1}|证据)+(1-P)*p_learn，追踪每个知识点的掌握概率</div>
+          <div style="margin-top:8px">${Object.entries(md).map(([k,v])=>`<div class="row" style="justify-content:space-between"><span>${k}</span><span class="val" style="font-size:14px">${v}个</span><div class="mastery-bar" style="flex:1;margin-left:10px"><i style="width:${v/Math.max(1,p.total_kcs)*100}%"></i></div></div>`).join('')}</div>
+        </div>
+        <div class="psy-card"><h4>📉 遗忘曲线预测（Ebbinghaus）</h4><div class="sub">基于当前平均掌握度 ${(p.avg_mastery*100).toFixed(0)}% 预测未来30天回忆概率</div><div style="display:flex;gap:2px;align-items:end;height:80px;margin-top:8px">${a.forgetting_curve.map(pt=>`<div style="flex:1;background:var(--accent);height:${pt.recall*100}%;min-height:2px;border-radius:2px" title="${pt.day}天后 ${pt.recall}"></div>`).join('')}</div><div class="row" style="justify-content:space-between;font-size:11px;margin-top:4px"><span>今天</span><span>30天后</span></div></div>
+      </div>
+      <div class="psy-card" style="margin-top:12px"><h4>🧠 知识点掌握 Top</h4><div class="sub" style="max-height:240px;overflow:auto">${Object.entries(eduAnalytics?eduAnalytics.profile.bloom_mastery||{}:{}).length} ... 详细BKT列表：${Object.entries(a.profile?{}:{}).length}
+        ${Object.entries(eduProfile?{}:{}).length}
+        ${(()=>{try{const bkt=eduAnalytics?Object.entries(eduProfile?{}:{}):[]; return ''; }catch(e){return ''}})()}
+        ${(()=>{ const bkt = (eduProfile && eduAnalytics) ? (Object.entries(eduProfile).length) : 0; return ''; })()}
+      </div>
+        <div style="max-height:300px;overflow:auto;margin-top:8px">
+          ${(function(){ 
+            // 直接从eduProfile取bkt需要额外请求，这里用analytics的原始数据
+            // 我们从eduAnalytics获取bkt通过profile的total_kcs无法，需要请求 /api/edu/bkt
+            return '<span class="muted">点击加载详细BKT</span><button class="btn mini" onclick="eduLoadBKT()">加载BKT详情</button><div id="bktDetail"></div>';
+          })()}
+        </div>
+      </div>
+    `;
+  } else if(tab==='cognitive'){
+    c.innerHTML=`
+      <div class="psy-card"><h4>🧠 认知负荷理论（Sweller）</h4><div class="sub" style="line-height:1.7">
+        <b>内在负荷</b>：由材料本身复杂度决定（汉字密度、语法难度、句长、从句数）<br>
+        <b>外在负荷</b>：由教学设计不良引起（界面干扰、冗余信息）<br>
+        <b>相关负荷</b>：有助于图式建构的负荷（解释、例子、自我解释）<br>
+        总负荷 = 内在 + 外在*0.5 + 相关*0.3，容量=${(p.cognitive_capacity*100).toFixed(0)}%，工作记忆=${(p.working_memory*100).toFixed(0)}%<br>
+        <b>最优区间 40-70%</b>：过低=无聊，过高=超载
+      </div></div>
+      <div class="psy-grid" style="margin-top:12px">
+        <div class="psy-card"><h4>📏 内在负荷估算演示</h4><div class="sub">输入句子测试负荷</div><div style="margin-top:8px"><input id="cogTestInput" placeholder="输入日语句子，如 私は学生です。" style="width:100%"><button class="btn mini" onclick="eduTestCogLoad()" style="margin-top:6px">估算负荷</button><div id="cogTestRes" style="margin-top:8px"></div></div></div>
+        <div class="psy-card"><h4>⚙️ 负荷调节策略</h4><div class="sub" style="line-height:1.6">
+          • 工作记忆低(&lt;0.5)：减少题量，关闭交错学习，增加支架<br>
+          • 容量低(&lt;0.5)：题量×0.6，简化界面<br>
+          • 内在负荷高：分块、简化、预训练<br>
+          • 外在负荷高：去冗余、一致性、信号提示<br>
+          • 相关负荷：鼓励自我解释、变式练习
+        </div></div>
+      </div>
+    `;
+  } else if(tab==='errors'){
+    const errs=a.error_distribution;
+    const totalErr=Object.values(errs).reduce((s,v)=>s+v,0);
+    c.innerHTML=`
+      <div class="psy-card"><h4>❌ 错误分析（Error Analysis）</h4><div class="sub">总错误记录：${totalErr}次 | 基于错误分类的补救教学</div>
+        <div style="margin-top:8px">${Object.entries(errs).length?Object.entries(errs).map(([k,v])=>`<div class="row" style="justify-content:space-between"><span>${k} ${({"grammar_confusion":"语法混淆","particle_error":"助词错误","conjugation_error":"活用错误","vocab_choice":"词汇选择","kanji_reading":"汉字读音","context_mismatch":"语境不符","overgeneralization":"过度泛化","l1_interference":"母语干扰"}[k]||k)}</span><span>${v}次 (${(v/totalErr*100).toFixed(1)}%)</span><div class="mastery-bar" style="flex:1;margin-left:10px"><i style="width:${v/Math.max(1,Math.max(...Object.values(errs)))*100}%;background:var(--accent)"></i></div></div>`).join(''):'<span class="muted">暂无错误记录，继续加油</span>'}</div>
+      </div>
+      <div class="psy-card" style="margin-top:12px"><h4>🛠 补救策略</h4><div class="sub" style="line-height:1.6">
+        ${Object.entries(errs).slice(0,3).map(([k,v])=>{const rem={grammar_confusion:'对比学习：并列对比相似语法',particle_error:'图式强化：助词核心意象',conjugation_error:'程序化：分解活用步骤',vocab_choice:'语境：关注搭配和语体',kanji_reading:'多模态：字形+读音+意义',context_mismatch:'语用：说话人立场和礼貌',overgeneralization:'边界：规则适用边界',l1_interference:'对比：母语与日语差异'}[k]||'针对性练习';return `<div class="rec-card high"><b>${k}</b> ${v}次 → ${rem}</div>`}).join('') || '<span class="muted">暂无</span>'}
+      </div></div>
+    `;
+  } else if(tab==='motivation'){
+    const flow=a.flow;
+    c.innerHTML=`
+      <div class="psy-grid">
+        <div class="psy-card"><h4>💪 自我决定理论（Deci & Ryan）</h4><div class="sub" style="line-height:1.7">
+          <b>自主性 Autonomy</b>：可选择出题源占比、难度、总量 → 已实现配置面板<br>
+          <b>胜任感 Competence</b>：掌握反馈、进度可视化、 badges → 仪表盘+得分<br>
+          <b>归属感 Relatedness</b>：学习共同体（可扩展）<br>
+          当前动机 ${(p.motivation*100).toFixed(0)}% 自我效能 ${(p.self_efficacy*100).toFixed(0)}%
+        </div></div>
+        <div class="psy-card"><h4>🌊 心流理论（Csikszentmihalyi）</h4><div class="val"><span class="flow-dot flow-${flow.state}"></span>${flow.label}</div><div class="sub">挑战 ${flow.challenge} vs 技能 ${flow.skill} 平衡度 ${(flow.balance*100).toFixed(0)}%<br>${flow.state==='flow'?'✅ 心流：沉浸、专注、高效学习':flow.state==='anxiety'?'⚠️ 焦虑：挑战过高，建议降低难度':flow.state==='boredom'?'⚠️ 无聊：技能过高，建议提高难度':'控制感：可控但不够沉浸'}</div><div class="zpd-bar"><div class="cur" style="left:${flow.skill*100}%;background:var(--accent2)"></div><div class="opt" style="left:${flow.challenge*100}%;background:var(--accent)"></div></div></div>
+        <div class="psy-card"><h4>🎯 成就目标理论</h4><div class="sub">当前导向：${p.goal_orientation==='mastery'?'掌握目标（关注理解和进步，利于长期记忆）':'表现目标（关注成绩和比较）'}<br>建议：保持掌握目标，关注个人进步而非他人比较</div></div>
+        <div class="psy-card"><h4>📈 期望-价值理论</h4><div class="sub">期望（能否成功）× 价值（重要性/趣味/实用性）→ 动机。当前自我效能 ${(p.self_efficacy*100).toFixed(0)}% 影响期望，建议通过小成功积累提升效能</div></div>
+      </div>
+    `;
+  } else if(tab==='recommend'){
+    c.innerHTML=`
+      <div class="psy-card"><h4>💡 个性化学习建议（基于教育心理学）</h4><div id="recList">${a.recommendations.map(r=>`<div class="rec-card ${r.priority}"><div class="row" style="justify-content:space-between"><b>${r.title}</b><span class="tag">${r.priority==='high'?'高优先级':r.priority==='medium'?'中':'低'}</span></div><div class="sub" style="margin-top:4px">${r.desc}</div><div style="margin-top:6px;font-size:12.5px">👉 ${r.action}</div></div>`).join('')||'<span class="muted">暂无建议，保持良好状态</span>'}</div></div>
+      <div class="psy-card" style="margin-top:12px"><h4>📚 理论依据</h4><div class="sub" style="line-height:1.7;font-size:12.5px">
+        • <b>艾宾浩斯遗忘曲线</b>：间隔重复，${a.srs.avg_stage.toFixed(1)}平均阶段，需及时复习<br>
+        • <b>ZPD</b>：推荐难度 ${p.zpd.level_optimal}，当前 ${p.zpd.level_current}<br>
+        • <b>认知负荷</b>：容量 ${(p.cognitive_capacity*100).toFixed(0)}%，保持40-70%最优<br>
+        • <b>布鲁姆</b>：从记忆→理解→应用→分析→评价→创造逐步进阶<br>
+        • <b>元认知</b>：校准度 ${(p.metacog_calibration*100).toFixed(0)}%，需提升自我监控<br>
+        • <b>建构主义</b>：主动学习、支架、情境化（课文/语料/歌词三源）
+      </div></div>
+    `;
+  }
+}
+async function eduLoadBKT(){
+  const box=document.getElementById('bktDetail');
+  if(!box) return;
+  box.innerHTML='加载中…';
+  try{
+    const d=await api('/api/edu/bkt');
+    const bkt=d.bkt||{};
+    const entries=Object.entries(bkt).sort((a,b)=>b[1].p_mastery-a[1].p_mastery);
+    box.innerHTML=`<div style="margin-top:8px">共${entries.length}个知识点</div>`+entries.slice(0,30).map(([k,v])=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed var(--line);padding:4px 0"><span>${esc(k)} <span class="muted">(${v.skill})</span></span><span>${v.correct}/${v.attempts} <span class="val" style="font-size:13px">${(v.p_mastery*100).toFixed(0)}%</span></span><div class="mastery-bar" style="width:80px"><i style="width:${v.p_mastery*100}%"></i></div></div>`).join('') || '<span class="muted">暂无BKT数据</span>';
+  }catch(e){ box.innerHTML='加载失败'; }
+}
+async function eduTestCogLoad(){
+  const inp=document.getElementById('cogTestInput');
+  const res=document.getElementById('cogTestRes');
+  if(!inp||!res) return;
+  const txt=inp.value.trim();
+  if(!txt){ res.innerHTML='<span class="muted">请输入句子</span>'; return; }
+  try{
+    const d=await api('/api/edu/cognitive-load',{method:'POST',body:JSON.stringify({text:txt,level:'N4'})});
+    res.innerHTML=`<div class="row" style="gap:8px;flex-wrap:wrap"><span class="cog-load cog-${d.level}">总负荷 ${d.total} (${d.level})</span><span>内在 ${d.intrinsic}</span><span>外在 ${d.extraneous}</span><span>相关 ${d.germane}</span></div><div class="sub" style="margin-top:4px">${d.optimal?'✅ 最优区间':'⚠️ 非最优'}</div>`;
+  }catch(e){ res.innerHTML='失败'; }
+}
+function eduConfidenceHTML(q){
+  return `<div class="psy-card" style="margin-top:10px"><h4>🤔 元认知：你有多大把握？</h4><div class="sub">答题前评估信心，有助于提升校准度</div><input type="range" min="0" max="100" value="60" class="conf-slider" id="confSlider" oninput="document.getElementById('confVal').textContent=this.value+'%'"><div class="row" style="justify-content:space-between"><span class="muted">不确定</span><span id="confVal">60%</span><span class="muted">非常确定</span></div></div>`;
+}
+async function eduRecordAnswer(q, chosenIdx, correct){
+  const confEl=document.getElementById('confSlider');
+  const conf=confEl?parseInt(confEl.value)/100:0.6;
+  // BKT更新
+  try{
+    await api('/api/edu/bkt/update',{method:'POST',body:JSON.stringify({kc_id:q.name, correct, skill:'grammar'})});
+    await api('/api/edu/confidence',{method:'POST',body:JSON.stringify({kc_id:q.name, confidence:conf, correct})});
+    if(!correct){
+      const err=await api('/api/edu/error',{method:'POST',body:JSON.stringify({question:q, chosen:q.options[chosenIdx], correct:q.answer})});
+      // 记录错误
+    }
+    // 动机更新在后端通过record_study_session等，这里简化
+  }catch(e){}
+}
+/* ---------- 增强版出题：整合教育心理学 ---------- */
+async function qcfgAutoPsy(){
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  const box=document.getElementById('qcfgRecommendHint');
+  if(box) box.textContent='教育心理学计算中…';
+  try{
+    const d=await api('/api/edu/recommend',{method:'POST',body:JSON.stringify({book_ids:ids})});
+    if(!d.ok){ toast('推荐失败'); if(box) box.textContent=''; return; }
+    _qcfg.ratios=d.ratios;
+    _qcfg.total=d.total;
+    _qcfg.explain=d.explain;
+    const tot=document.getElementById('qcfgTotal'); if(tot) tot.value=d.total;
+    qcfgRefreshUI();
+    const exp=document.getElementById('qcfgExplain');
+    if(exp) exp.textContent=d.explain;
+    if(box) box.textContent=`🧠 θ${d.psy.theta.overall.toFixed(2)} ZPD最优${d.psy.recommended_level} 心流${d.psy.flow.label} 支架${d.psy.scaffold}`;
+    // 显示心理学详情
+    const psyBox=document.getElementById('qcfgPsyBox');
+    if(psyBox){
+      psyBox.classList.remove('hidden');
+      psyBox.innerHTML=`
+        <div class="psy-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+          <div class="psy-card"><h4>θ能力</h4><div class="val">${d.psy.theta.overall.toFixed(2)}</div><div class="sub">${Object.entries(d.psy.theta).map(([k,v])=>`${k}:${v.toFixed(1)}`).join(' ')}</div></div>
+          <div class="psy-card"><h4>ZPD</h4><div class="val">${d.psy.recommended_level}</div><div class="sub">当前${thetaToLevel(d.psy.theta.overall)} → 最优${d.psy.recommended_level} (+${(d.psy.recommended_theta-d.psy.theta.overall).toFixed(2)})</div><div class="zpd-bar"><div class="zpd" style="left:${(d.psy.zpd.zpd_min+3)/6*100}%;width:${(d.psy.zpd.zpd_max-d.psy.zpd.zpd_min)/6*100}%"></div><div class="cur" style="left:${(d.psy.zpd.current+3)/6*100}%"></div><div class="opt" style="left:${(d.psy.recommended_theta+3)/6*100}%"></div></div></div>
+          <div class="psy-card"><h4>心流</h4><div class="val"><span class="flow-dot flow-${d.psy.flow.state}"></span>${d.psy.flow.label}</div><div class="sub">挑战${d.psy.flow.challenge} 技能${d.psy.flow.skill} 平衡${(d.psy.flow.balance*100).toFixed(0)}%</div></div>
+          <div class="psy-card"><h4>支架&布鲁姆</h4><div class="val">${d.psy.scaffold}</div><div class="sub">交错:${d.psy.interleaving?'开':'关'} 容量${(d.psy.cognitive_capacity*100).toFixed(0)}% 工作记忆${(d.psy.working_memory*100).toFixed(0)}%</div><div class="sub">${Object.entries(d.psy.bloom_target).map(([k,v])=>`${bloomLabel(k)}${(v*100).toFixed(0)}%`).join(' ')}</div></div>
+        </div>
+      `;
+    }
+    toast('已按教育心理学自动调节');
+  }catch(e){ toast('自动调节失败'); if(box) box.textContent=''; }
+}
+async function bkQuizOpenMultiPsy(){
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">🧠 教育心理学自适应出题中（ZPD+认知负荷+布鲁姆+支架…）</div></div>';
+  const cfg=qcfgLoad();
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  let d;
+  try{
+    d=await api('/api/edu/cloze-multi',{method:'POST',body:JSON.stringify({book_ids:ids,total:cfg.total,ratios:cfg.ratios,difficulty:cfg.difficulty})});
+  }catch(e){ d={ok:false}; }
+  if(!d.ok||!d.questions||!d.questions.length){
+    v.innerHTML=`<div class="card quiz-wrap">
+      <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回</button><b>📝 挖空练习（教育心理学）</b></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">暂无符合条件的题目：${esc(d.reason||'题库不足')}，试试在【出题配置】中降低难度、调整占比或使用【一键自动调节】</div>
+      <div class="quiz-nav"><button class="btn" onclick="bkQuizCfgOpen()">🎛 出题配置</button></div>
+    </div>`;
+    return;
+  }
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:'multi-psy',min:JSON.stringify(d.ratios||cfg.ratios),short:!!d.short,picked:null,ratios:d.ratios,counts:d.counts,explain:d.explain,psy:d.psy};
+  bkQuizRenderPsy();
+}
+function bkQuizRenderPsy(){
+  const v=$('#bkQuizView'),q=bkQuiz.qs[bkQuiz.i],n=bkQuiz.qs.length;
+  const B=q.tokens_b&&q.tokens_b.length?rubyHTML(q.tokens_b):esc(q.before);
+  const A=q.tokens_a&&q.tokens_a.length?rubyHTML(q.tokens_a):esc(q.after);
+  const cog=q.cognitive_load||{total:0.5,level:'medium'};
+  const scaffold=q.scaffold||'medium';
+  const bloom=q.bloom||'apply';
+  const inZpd=q.in_zpd?'✅ ZPD内':'⚠️ 非ZPD';
+  const mastery=q.mastery!=null?`${(q.mastery*100).toFixed(0)}%掌握`:'';
+  // 支架控制显示
+  let showFurigana=true, showTrans=true;
+  const sc=q.scaffold_config||{};
+  if(sc.furigana===false) showFurigana=false;
+  if(sc.translation===false) showTrans=false;
+
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top">
+      <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
+      <span class="quiz-prog">🧠 心理学 ${bkQuiz.i+1}/${n}</span>
+      <span class="lv lv-${q.level}">${q.level}</span>
+      <span class="bloom-badge bloom-${bloom}">${bloomLabel(bloom)}</span>
+      <span class="scaffold-tag">${scaffold}</span>
+      <span class="cog-load cog-${cog.level}" title="认知负荷">负荷 ${cog.total}</span>
+      <span style="flex:1"></span>
+      <span class="muted" style="font-size:12.5px">${inZpd} ${mastery} 得分 ${bkQuiz.ok}</span>
+    </div>
+    ${bkQuiz.short&&bkQuiz.i===0?'<div class="muted" style="margin-top:8px;font-size:12.5px">题库较小，仅生成 '+n+' 题</div>':''}
+    <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*bkQuiz.i/n)}%"></i></div>
+    <div class="quiz-q jp ${showFurigana?'':'noruby'}" id="bkQuizQ">${B}${bkBlankHTML(q,null)}${A}</div>
+    ${q.translation&&showTrans?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`:''}
+    <div class="opt-grid" id="bkOpts">
+      ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPickPsy(${i})"><span class="ol">${'ABCD'[i]||(i+1)}</span>${esc(o)}</button>`).join('')}
+    </div>
+    ${eduConfidenceHTML(q)}
+    <div id="bkQuizExp"></div>
+    <div class="muted" style="margin-top:8px;font-size:11px">出处：${esc(q.origin||'')} | 布鲁姆：${bloomLabel(bloom)} | 负荷：内在${q.cognitive_load? q.cognitive_load.intrinsic : ''} 外在${q.cognitive_load? q.cognitive_load.extraneous : ''} 相关${q.cognitive_load? q.cognitive_load.germane : ''}</div>
+  </div>`;
+}
+async function bkQuizPickPsy(i){
+  if(bkQuiz.picked!=null) return;
+  bkQuiz.picked=i;
+  const q=bkQuiz.qs[bkQuiz.i], ok=q.options[i]===q.answer;
+  bkQuiz.ans.push({name:q.name, ok, pick:q.options[i], bloom:q.bloom, scaffold:q.scaffold, mastery:q.mastery});
+  if(ok) bkQuiz.ok++;
+  for(let j=0;j<q.options.length;j++){
+    const b=document.getElementById('bkOpt'+j); if(!b) continue;
+    b.disabled=true;
+    if(q.options[j]===q.answer) b.classList.add('correct');
+    else if(j===i) b.classList.add('wrong');
+    else b.classList.add('dim');
+  }
+  const bl=document.getElementById('bkBlank');
+  if(bl) bl.outerHTML=bkBlankHTML(q,ok);
+  const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+  // 教育心理学反馈
+  let errInfo='', moti='';
+  if(!ok){
+    try{
+      const err=await api('/api/edu/error',{method:'POST',body:JSON.stringify({question:q, chosen:q.options[i], correct:q.answer})});
+      if(err.error_type){
+        errInfo=`<div class="rec-card high"><b>错误类型：${esc(err.label||err.error_type)}</b><div class="sub">${esc(err.remediation?err.remediation.suggestion:'')}</div><div style="font-size:12px">策略：${esc(err.remediation?err.remediation.strategy:'')} → ${esc(err.remediation?err.remediation.exercise:'')}</div></div>`;
+      }
+    }catch(e){}
+  }
+  // 动机反馈
+  const streak=(()=>{let s=0;for(let k=bkQuiz.ans.length-1;k>=0;k--){if(bkQuiz.ans[k].ok) s++; else break;} return s;})();
+  const motiMap={mastery:'🎉 掌握！',competence:'💪 胜任！',positive:'✅ 正确',corrective:'🛠 纠正',encouraging:'🤗 鼓励'};
+  // 记录答案用于BKT
+  eduRecordAnswer(q,i,ok);
+
+  document.getElementById('bkQuizExp').innerHTML=`<div class="quiz-exp">
+    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 回答正确':'❌ 答错了'}</b> ${streak>=3?`<span style="font-size:13px">连续${streak}题正确！</span>`:''}
+      ${!ok?`<span style="font-size:15px">　你的选择：${esc(q.options[i])}　→　正确答案：<b style="color:var(--accent2)">${esc(q.answer)}</b></span>`:''}</div>
+    <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:23px">${full} ${spkBtn(q.text)}</div>
+    ${q.translation?`<div class="tr">译：${esc(q.translation)}</div>`:''}
+    <div class="ex"><span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b> <span class="bloom-badge bloom-${q.bloom||'apply'}">${bloomLabel(q.bloom||'apply')}</span><br>${esc(q.explain)}
+      ${q.structure&&q.structure!=='—'?`<br><span class="muted">接续：${esc(q.structure)}</span>`:''}</div>
+    ${errInfo}
+    <div class="psy-card" style="margin-top:8px"><h4>🤔 元认知提示</h4><div class="sub">${esc((function(){const prompts=["为什么这个答案是正确的？","这个语法点和之前学过的哪个相似？","下次怎么避免这个错误？","试着用自己的话解释这个语法"];return prompts[Math.floor(Math.random()*prompts.length)];})())}</div></div>
+    <div class="quiz-nav">
+      <button class="btn primary" onclick="bkQuizNextPsy()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
+      <button class="btn danger" onclick="bkQuizDrop()" title="题目有误">⚠ 题目有误，不再出</button>
+    </div>
+  </div>`;
+  document.getElementById('bkQuizExp').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function bkQuizNextPsy(){
+  if(!bkQuiz||bkQuiz.i>=bkQuiz.qs.length) return;
+  const t=Date.now(); if(t-(bkQuiz._nt||0)<400) return; bkQuiz._nt=t;
+  bkQuiz.picked=null;
+  bkQuiz.i++;
+  if(bkQuiz.i>=bkQuiz.qs.length) bkQuizFinishPsy();
+  else{ bkQuizRenderPsy(); window.scrollTo(0,0); }
+}
+async function bkQuizFinishPsy(){
+  let d=null;
+  try{ d=await api('/api/books/cloze/answer',{method:'POST',body:JSON.stringify({results:bkQuiz.ans})}); }catch(e){}
+  const v=$('#bkQuizView'), n=bkQuiz.qs.length, pct=n?Math.round(100*bkQuiz.ok/n):0;
+  // 统计布鲁姆和掌握
+  const bloomCounts={}; bkQuiz.qs.forEach((q,i)=>{ const b=q.bloom||'apply'; bloomCounts[b]=(bloomCounts[b]||0)+1; });
+  const avgLoad=bkQuiz.qs.reduce((s,q)=>s+(q.cognitive_load?q.cognitive_load.total:0.5),0)/Math.max(1,n);
+  // 记录会话
+  try{ await api('/api/edu/sessions',{method:'POST',body:JSON.stringify({duration:n*30, questions:bkQuiz.qs.map(q=>q.name), correct:bkQuiz.ok, accuracy:pct/100, avgLoad})}); }catch(e){}
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🧠 练习完成（教育心理学）</b></div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${bkQuiz.ok}</b> / ${n}（${pct}%）
+      <div class="muted" style="font-size:13px;margin-top:4px">题源：${bkQuiz.scope} · 平均负荷 ${avgLoad.toFixed(2)} · 布鲁姆 ${Object.entries(bloomCounts).map(([k,v])=>`${bloomLabel(k)}${v}`).join(' ')}</div>
+      ${bkQuiz.psy?`<div class="sub" style="font-size:12px;margin-top:4px">θ ${bkQuiz.psy.learner_theta.toFixed(2)} → 最优ZPD ${thetaToLevel(bkQuiz.psy.zpd_optimal)} | 平均负荷 ${bkQuiz.psy.cognitive_load_avg.toFixed(2)}</div>`:''}
+    </div>
+    <div class="quiz-nav" style="justify-content:center">
+      <button class="btn primary" onclick="bkQuizOpenMultiPsy()">再来一组（心理学）</button>
+      <button class="btn" onclick="eduDashboardOpen()">📊 查看仪表盘</button>
+      <button class="btn" onclick="bkQuizQuit()">返回书架</button>
+    </div>
+    <div style="margin-top:14px"><b>答题回顾 + 元认知</b></div>
+    ${bkQuiz.qs.map((q,i)=>{
+      const a=bkQuiz.ans[i]||{ok:false,pick:''};
+      const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+      return `<div class="quiz-rev">
+        <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b> <span class="bloom-badge bloom-${q.bloom||'apply'}">${bloomLabel(q.bloom||'apply')}</span> <span class="scaffold-tag">${q.scaffold||''}</span> ${q.mastery!=null?`<span class="muted">${(q.mastery*100).toFixed(0)}%掌握</span>`:''}
+          ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
+        <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
+        <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
 
 
 /* ---------- 键盘快捷键 ---------- */

@@ -15,12 +15,13 @@ import rag
 import ktv
 import structsim
 import textbook
+import edu_psychology
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v14'
+APP_VERSION = 'v17'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
@@ -1014,6 +1015,165 @@ def api_book_cloze_answer():
     """提交挖空练习结果（计入当日统计与历史）"""
     d = request.json or {}
     return jsonify(textbook.record_cloze(d.get('results') or []))
+
+# ================================================================
+# 教育心理学深度模块 (v16) - 完整教育心理学整合
+# ================================================================
+
+@app.route('/api/edu/profile')
+def api_edu_profile():
+    """学习者画像：能力、动机、元认知等"""
+    return jsonify(edu_psychology.get_learner_profile())
+
+@app.route('/api/edu/analytics')
+def api_edu_analytics():
+    """学习分析仪表盘：全方位数据"""
+    days = request.args.get('days', 14, type=int)
+    return jsonify(edu_psychology.get_learning_analytics(days=days))
+
+@app.route('/api/edu/zpd')
+def api_edu_zpd():
+    """最近发展区"""
+    return jsonify(edu_psychology.calculate_zpd())
+
+@app.route('/api/edu/cognitive-load', methods=['POST'])
+def api_edu_cognitive_load():
+    d = request.json or {}
+    text = d.get('text', '')
+    level = d.get('level', 'N4')
+    ui = d.get('ui_settings')
+    expl_len = d.get('explanation_length', 0)
+    return jsonify(edu_psychology.calculate_total_load(text, level, ui, expl_len))
+
+@app.route('/api/edu/bkt', methods=['GET'])
+def api_edu_bkt_get():
+    """获取BKT状态"""
+    kc = request.args.get('kc')
+    if kc:
+        return jsonify({'kc': kc, 'mastery': edu_psychology.get_mastery(kc)})
+    model = edu_psychology._load_learner_model()
+    return jsonify({'bkt': model.get('bkt', {})})
+
+@app.route('/api/edu/bkt/update', methods=['POST'])
+def api_edu_bkt_update():
+    d = request.json or {}
+    kc_id = d.get('kc_id') or d.get('name')
+    correct = d.get('correct', False)
+    skill = d.get('skill', 'grammar')
+    if not kc_id:
+        return jsonify({'error': 'kc_id required'}), 400
+    entry = edu_psychology.update_knowledge_component(kc_id, bool(correct), skill)
+    return jsonify({'ok': True, 'entry': entry})
+
+@app.route('/api/edu/irt/update', methods=['POST'])
+def api_edu_irt_update():
+    d = request.json or {}
+    theta = d.get('theta', 0.0)
+    a = d.get('a', 1.0)
+    b = d.get('b', 0.0)
+    correct = d.get('correct', False)
+    new_theta = edu_psychology.irt_update_theta(theta, a, b, bool(correct))
+    return jsonify({'old_theta': theta, 'new_theta': new_theta, 'p': edu_psychology.irt_probability(theta, a, b)})
+
+@app.route('/api/edu/recommend', methods=['POST'])
+def api_edu_recommend():
+    """整合教育心理学的推荐（ZPD+认知负荷+心流）"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    return jsonify(edu_psychology.recommend_quiz_config_psy(ids or None))
+
+@app.route('/api/edu/cloze-multi', methods=['POST'])
+def api_edu_cloze_multi():
+    """自适应多源出题（教育心理学增强）"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    return jsonify(edu_psychology.adaptive_cloze_multi(
+        book_ids=ids or None,
+        total=d.get('total') or d.get('count'),
+        ratios=d.get('ratios'),
+        difficulty=d.get('difficulty'),
+        include_bloom=d.get('include_bloom', True),
+        include_scaffold=d.get('include_scaffold', True)
+    ))
+
+@app.route('/api/edu/scaffold', methods=['GET'])
+def api_edu_scaffold():
+    kc = request.args.get('kc')
+    mastery = request.args.get('mastery', type=float)
+    if kc and mastery is None:
+        mastery = edu_psychology.get_mastery(kc)
+    level = edu_psychology.recommend_scaffold_level(kc_id=kc, p_mastery=mastery)
+    return jsonify({'scaffold': level, 'config': edu_psychology.SCAFFOLD_LEVELS[level], 'mastery': mastery})
+
+@app.route('/api/edu/error', methods=['POST'])
+def api_edu_error():
+    d = request.json or {}
+    q = d.get('question', {})
+    chosen = d.get('chosen', '')
+    correct = d.get('correct', '')
+    err_type = edu_psychology.analyze_error(q, chosen, correct)
+    if err_type:
+        edu_psychology.record_error(err_type, q.get('name'))
+    remediation = edu_psychology.get_error_remediation(err_type) if err_type else None
+    return jsonify({'error_type': err_type, 'label': edu_psychology.ERROR_TAXONOMY.get(err_type) if err_type else None, 'remediation': remediation})
+
+@app.route('/api/edu/confidence', methods=['POST'])
+def api_edu_confidence():
+    d = request.json or {}
+    kc_id = d.get('kc_id') or d.get('name', 'unknown')
+    conf = d.get('confidence', 0.5)
+    correct = d.get('correct', False)
+    result = edu_psychology.record_confidence(kc_id, float(conf), bool(correct))
+    result['ok'] = True
+    return jsonify(result)
+
+@app.route('/api/edu/motivation')
+def api_edu_motivation():
+    model = edu_psychology._load_learner_model()
+    flow = edu_psychology.estimate_flow_state(model)
+    return jsonify({
+        'motivation': model.get('motivation', 0.7),
+        'self_efficacy': model.get('self_efficacy', 0.65),
+        'flow': flow,
+        'feedback': edu_psychology.recommend_motivational_feedback(True, streak=3)
+    })
+
+@app.route('/api/edu/sessions', methods=['GET', 'POST'])
+def api_edu_sessions():
+    if request.method == 'POST':
+        d = request.json or {}
+        return jsonify(edu_psychology.record_study_session(d))
+    else:
+        return jsonify(edu_psychology.get_session_analytics())
+
+@app.route('/api/edu/srl/plan')
+def api_edu_srl_plan():
+    ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    return jsonify(edu_psychology.get_study_plan_srl(ids or None))
+
+@app.route('/api/edu/bloom')
+def api_edu_bloom():
+    profile = edu_psychology.get_learner_profile()
+    return jsonify({
+        'levels': edu_psychology.BLOOM_LEVELS,
+        'descriptions': {k: k for k in edu_psychology.BLOOM_LEVELS},
+        'mastery': profile.get('bloom_mastery', {}),
+        'coverage': profile.get('bloom_mastery', {}),
+        'current_coverage': profile.get('bloom_mastery', {})
+    })
+
+@app.route('/api/edu/test')
+def api_edu_test():
+    return jsonify({'results': edu_psychology.run_self_test()})
+
+@app.route('/api/edu/reset', methods=['POST'])
+def api_edu_reset():
+    """重置学习者模型（调试用）"""
+    db.set_setting('edu_learner_model', '')
+    db.set_setting('edu_sessions', '[]')
+    return jsonify({'ok': True})
+
+
 
 
 # ---------- 数据备份：完整导出 / 导入（JSON，跨库合并） ----------
