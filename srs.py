@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-艾宾浩斯遗忘曲线复习调度。
+艾宾浩斯遗忘曲线复习调度（汉字 + 词汇双轨）。
 经典复习点: 5分钟 → 30分钟 → 12小时 → 1天 → 2天 → 4天 → 7天 → 15天 → 1个月 → 2个月
 答对进入下一阶段，模糊维持当前阶段，答错回退（记忆重置）。
+
+说明：srs 表的 kanji 列是主键，实际存放「单个汉字或整个单词」；
+kind 列区分字/词（老数据默认为 kanji），reading 列存放单词读音。
 """
 import time
 import random
@@ -11,20 +14,34 @@ import db
 
 INTERVALS_MIN = [5, 30, 720, 1440, 2880, 5760, 10080, 21600, 43200, 86400]
 STAGE_NAMES = ['5分', '30分', '12时', '1天', '2天', '4天', '7天', '15天', '1月', '2月', '✓长期']
+MATURE_STAGE = 7   # stage ≥ 7 即「长期记忆」
 
 
-def add_kanji(kanji):
+def _kind_of(item, kind=None):
+    if kind in ('kanji', 'words'):
+        return kind
+    return 'words' if len(item or '') > 1 else 'kanji'
+
+
+def add_kanji(kanji, kind=None, reading=''):
+    """开始学习一个汉字或单词（kind 未指定时按长度推断；reading 为单词读音）。"""
     now = time.time()
+    kind = _kind_of(kanji, kind)
     with db._lock, db.get_conn() as c:
-        c.execute('INSERT OR IGNORE INTO srs(kanji,stage,next_due,added_at) VALUES(?,0,?,?)',
-                  (kanji, now + INTERVALS_MIN[0] * 60, now))
-    db.log('learn', f'开始学习汉字「{kanji}」')
+        c.execute('INSERT OR IGNORE INTO srs(kanji,stage,next_due,added_at,kind,reading) '
+                  'VALUES(?,0,?,?,?,?)',
+                  (kanji, now + INTERVALS_MIN[0] * 60, now, kind, reading or ''))
+    db.log('learn', f'开始学习{"词汇" if kind == "words" else "汉字"}「{kanji}」')
+
+
+# 别名：语义更准的入口（老接口 add_kanji 保留兼容）
+add_item = add_kanji
 
 
 def remove_kanji(kanji):
     with db._lock, db.get_conn() as c:
         c.execute('DELETE FROM srs WHERE kanji=?', (kanji,))
-    db.log('remove', f'移除汉字「{kanji}」的学习记录')
+    db.log('remove', f'移除「{kanji}」的学习记录')
 
 
 def answer(kanji, result):
@@ -49,18 +66,25 @@ def answer(kanji, result):
     db.log('review', f'复习「{kanji}」：{label}')
 
 
-def _pick_sentence(kanji, known: set):
+def _pick_sentence(item, kind, known: set):
     """
     从本地语料库智能抽取例句：
     优先带翻译、长度适中、句中其他汉字大多已学过的句子；每次随机，不固定。
+    单词用子串检索，汉字走汉字索引。
     """
-    cands = db.sentences_for_kanji(kanji, limit=30)
+    import furigana
+    if kind == 'words':
+        cands = db.sentences_for_word(item, limit=30)
+    else:
+        cands = db.sentences_for_kanji(item, limit=30)
     if not cands:
         return None
 
     def score(s):
-        import furigana
-        others = [c for c in s['text'] if furigana.is_kanji(c) and c != kanji]
+        if kind == 'words':
+            others = [c for c in s['text'] if furigana.is_kanji(c) and c not in item]
+        else:
+            others = [c for c in s['text'] if furigana.is_kanji(c) and c != item]
         known_ratio = (sum(1 for c in others if c in known) / len(others)) if others else 1.0
         sc = known_ratio * 3.0
         if s['translation']:
@@ -82,9 +106,14 @@ def due_reviews(limit=30):
         known = {r['kanji'] for r in c.execute('SELECT kanji FROM srs WHERE stage>=3')}
     out = []
     for r in rows:
-        sent = _pick_sentence(r['kanji'], known)
         item = dict(r)
-        item['words'] = db.kanji_words(r['kanji'], 6)
+        kind = item.get('kind') or _kind_of(item['kanji'])
+        item['kind'] = kind
+        sent = _pick_sentence(item['kanji'], kind, known)
+        if kind == 'words':
+            item['words'] = []
+        else:
+            item['words'] = db.kanji_words(item['kanji'], 6)
         if sent:
             sent['tokens'] = json.loads(sent['tokens'])
             item['sentence'] = sent
@@ -98,7 +127,15 @@ def overview():
         total = c.execute('SELECT COUNT(*) n FROM srs').fetchone()['n']
         due = c.execute('SELECT COUNT(*) n FROM srs WHERE next_due<=?', (now,)).fetchone()['n']
         mature = c.execute('SELECT COUNT(*) n FROM srs WHERE stage>=7').fetchone()['n']
+        try:
+            words_total = c.execute("SELECT COUNT(*) n FROM srs WHERE kind='words'").fetchone()['n']
+            words_due = c.execute("SELECT COUNT(*) n FROM srs WHERE kind='words' AND next_due<=?",
+                                  (now,)).fetchone()['n']
+        except Exception:
+            words_total, words_due = 0, 0
         today0 = now - (now % 86400)
         reviewed_today = c.execute(
             "SELECT COUNT(*) n FROM history WHERE type='review' AND ts>=?", (today0,)).fetchone()['n']
-    return {'total': total, 'due': due, 'mature': mature, 'reviewed_today': reviewed_today}
+    return {'total': total, 'due': due, 'mature': mature, 'reviewed_today': reviewed_today,
+            'words_total': words_total, 'words_due': words_due,
+            'kanji_total': total - words_total}

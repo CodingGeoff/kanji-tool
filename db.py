@@ -175,6 +175,14 @@ def _migrate():
                 c.execute(f"ALTER TABLE {tab} ADD COLUMN kind TEXT DEFAULT 'kanji'")
             except sqlite3.OperationalError:
                 pass
+        # 词汇艾宾浩斯（v13：SRS 主键列沿用 kanji 之名、实际存放「汉字或单词」；
+        # kind 区分字/词，reading 存放单词读音供复习卡展示）
+        for ddl in ("ALTER TABLE srs ADD COLUMN kind TEXT DEFAULT 'kanji'",
+                    "ALTER TABLE srs ADD COLUMN reading TEXT DEFAULT ''"):
+            try:
+                c.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         # KTV 歌词表（旧库升级时补建）
         c.execute('''CREATE TABLE IF NOT EXISTS songs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,16 +357,22 @@ def upsert_srs(rows):
     with _lock, get_conn() as c:
         for r in rows:
             ex = c.execute('SELECT * FROM srs WHERE kanji=?', (r['kanji'],)).fetchone()
+            kind = r.get('kind') or ('words' if len(r['kanji'] or '') > 1 else 'kanji')
+            reading = r.get('reading') or ''
             if ex:
-                c.execute('UPDATE srs SET stage=?,next_due=?,added_at=?,last_at=?,ok=?,ng=? WHERE kanji=?',
+                c.execute('UPDATE srs SET stage=?,next_due=?,added_at=?,last_at=?,ok=?,ng=?,'
+                          'kind=?,reading=? WHERE kanji=?',
                           (_mx(ex['stage'], r['stage'] or 0), _mn(ex['next_due'], r['next_due']),
                            _mn(ex['added_at'], r['added_at']), _mx(ex['last_at'], r['last_at']),
-                           (ex['ok'] or 0) + (r['ok'] or 0), (ex['ng'] or 0) + (r['ng'] or 0), r['kanji']))
+                           (ex['ok'] or 0) + (r['ok'] or 0), (ex['ng'] or 0) + (r['ng'] or 0),
+                           ex['kind'] if ex['kind'] not in (None, '') else kind,
+                           ex['reading'] or reading, r['kanji']))
                 merged += 1
             else:
-                c.execute('INSERT INTO srs(kanji,stage,next_due,added_at,last_at,ok,ng) VALUES(?,?,?,?,?,?,?)',
+                c.execute('INSERT INTO srs(kanji,stage,next_due,added_at,last_at,ok,ng,kind,reading) '
+                          'VALUES(?,?,?,?,?,?,?,?,?)',
                           (r['kanji'], r['stage'] or 0, r['next_due'], r['added_at'],
-                           r['last_at'], r['ok'] or 0, r['ng'] or 0))
+                           r['last_at'], r['ok'] or 0, r['ng'] or 0, kind, reading))
                 added += 1
     return added, merged
 
@@ -440,6 +454,16 @@ def sentences_for_kanji(kanji, limit=200):
             WHERE ki.kanji=? GROUP BY s.id
             ORDER BY LENGTH(s.text) ASC, s.id DESC LIMIT ?
         ''', (kanji, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def sentences_for_word(word, limit=200):
+    """含某词汇的全部例句（词汇 SRS 取例 / 单词查例）：短句在前，同长度新句在前"""
+    with get_conn() as c:
+        rows = c.execute('''
+            SELECT * FROM sentences WHERE text LIKE ?
+            ORDER BY LENGTH(text) ASC, id DESC LIMIT ?
+        ''', (f'%{word}%', limit)).fetchall()
         return [dict(r) for r in rows]
 # ================================================================
 # 自建课本（v11）：课本 / 课 / 句 / 字 / 词 / 计划 / 进度 完整增删改查
@@ -715,15 +739,44 @@ def book_kanji_set(book_ids, exclude_states=('skip', 'done')):
             d.pop('state')
             out.append(d)
         return out
+def book_words_set(book_ids, exclude_states=('skip', 'done')):
+    """多本书的词汇集合（用于计划/学习；默认剔除已跳过与已标记掌握的）"""
+    ids = list(book_ids)
+    if not ids:
+        return []
+    ph = ','.join('?' * len(ids))
+    with get_conn() as c:
+        rows = c.execute(
+            f'SELECT bw.word word, bw.reading reading, bw.kanji kanji, bw.pos pos, '
+            f'MIN(bw.first_idx) first_idx, SUM(bw.freq) freq '
+            f'FROM book_words bw '
+            f'WHERE bw.book_id IN ({ph}) GROUP BY bw.word ORDER BY first_idx, word', ids).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            st = c.execute(
+                f"SELECT state FROM book_progress WHERE kanji=? AND book_id IN ({ph}) LIMIT 1",
+                [d['word']] + ids).fetchone()
+            if exclude_states and st and st['state'] in exclude_states:
+                continue
+            out.append(d)
+        return out
+
+
 # ---------- 学习计划（截止日 + 艾宾浩斯曲线排程） ----------
 
 def save_book_plan(book_id, rows):
-    """整体替换某本书的计划（rows: [(day, is_new, kanji)]）"""
+    """整体替换某本书的计划（rows: [(day, is_new, kanji)] 或 [(day, is_new, kanji, kind)]）"""
     with _lock, get_conn() as c:
         c.execute('DELETE FROM book_plan WHERE book_id=?', (book_id,))
-        c.executemany('INSERT OR IGNORE INTO book_plan(book_id,day,is_new,kanji,done,created_at) '
-                      'VALUES(?,?,?,?,0,?)',
-                      [(book_id, d, 1 if is_new else 0, k, time.time()) for d, is_new, k in rows])
+        norm = []
+        for r in rows:
+            d, is_new, k = r[0], r[1], r[2]
+            kind = r[3] if len(r) > 3 and r[3] in ('kanji', 'words') else \
+                ('words' if len(k or '') > 1 else 'kanji')
+            norm.append((book_id, d, 1 if is_new else 0, k, kind, time.time()))
+        c.executemany('INSERT OR IGNORE INTO book_plan(book_id,day,is_new,kanji,kind,done,created_at) '
+                      'VALUES(?,?,?,?,?,0,?)', norm)
 
 
 def load_book_plan(book_ids):
@@ -749,18 +802,21 @@ def clear_book_plan(book_ids):
 
 
 def set_plan_done(book_ids, day=None, kanji=None, done=1):
-    """标记计划的某天（或某个字）为已完成/未完成"""
-    ids = list(book_ids)
-    if not ids:
-        return 0
-    ph = ','.join('?' * len(ids))
-    where, args = [f'book_id IN ({ph})'], list(ids)
+    """标记计划的某天（或某个字/词）为已完成/未完成；book_ids 为空 = 作用于全部书"""
+    ids = list(book_ids or [])
+    where, args = [], []
+    if ids:
+        ph = ','.join('?' * len(ids))
+        where.append(f'book_id IN ({ph})')
+        args += ids
     if day:
         where.append('day=?')
         args.append(day)
     if kanji:
         where.append('kanji=?')
         args.append(kanji)
+    if not where:      # 无任何限定 = 会全表误改，直接拒绝
+        return 0
     with _lock, get_conn() as c:
         cur = c.execute(f'UPDATE book_plan SET done=? WHERE {" AND ".join(where)}',
                         [1 if done else 0] + args)
@@ -769,14 +825,17 @@ def set_plan_done(book_ids, day=None, kanji=None, done=1):
 
 # ---------- 本书进度（增删改查保存） ----------
 
-def set_book_progress(book_id, kanji, state, note=''):
-    """state: learning(在学) | done(已掌握·不计入计划) | skip(跳过·不计入计划)"""
+def set_book_progress(book_id, kanji, state, note='', kind=None):
+    """state: learning(在学) | done(已掌握·不计入计划) | skip(跳过·不计入计划)；
+    kanji 列存放「汉字或单词」，kind 未指定时按长度自动推断"""
     now = time.time()
+    kind = kind if kind in ('kanji', 'words') else ('words' if len(kanji or '') > 1 else 'kanji')
     with _lock, get_conn() as c:
-        c.execute('INSERT INTO book_progress(book_id,kanji,state,note,added_at,done_at) '
-                  'VALUES(?,?,?,?,?,?) ON CONFLICT(book_id,kanji) DO UPDATE SET '
-                  'state=excluded.state, note=excluded.note, done_at=excluded.done_at',
-                  (book_id, kanji, state or 'learning', note or '', now,
+        c.execute('INSERT INTO book_progress(book_id,kanji,kind,state,note,added_at,done_at) '
+                  'VALUES(?,?,?,?,?,?,?) ON CONFLICT(book_id,kanji) DO UPDATE SET '
+                  'kind=excluded.kind, state=excluded.state, note=excluded.note, '
+                  'done_at=excluded.done_at',
+                  (book_id, kanji, kind, state or 'learning', note or '', now,
                    now if state in ('done', 'skip') else None))
 
 

@@ -20,7 +20,7 @@ app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v12'
+APP_VERSION = 'v13'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
@@ -202,11 +202,15 @@ def api_new_kanji():
 
 @app.route('/api/learn', methods=['POST'])
 def api_learn():
-    ks = (request.json or {}).get('kanji', [])
+    d = request.json or {}
+    ks = d.get('kanji', [])
     if isinstance(ks, str):
         ks = [ks]
+    kind = d.get('kind')                    # kanji | words（不传则按长度推断）
+    readings = d.get('readings') or {}      # {单词: 读音}
+    single_reading = d.get('reading') or ''
     for k in ks:
-        srs.add_kanji(k)
+        srs.add_kanji(k, kind=kind, reading=readings.get(k) or single_reading)
     return jsonify({'ok': True, 'added': len(ks)})
 
 
@@ -775,8 +779,24 @@ def api_book_plan_build():
     res = textbook.build_plan(
         ids or None, start=d.get('start') or None, deadline=d.get('deadline') or None,
         minutes_per_day=d.get('minutes_per_day'), target_stage=d.get('target_stage'),
-        max_new_per_day=d.get('max_new_per_day'))
+        max_new_per_day=d.get('max_new_per_day'), content=d.get('content') or 'both')
     return jsonify(res)
+
+
+@app.route('/api/books/curve')
+def api_book_curve():
+    """艾宾浩斯 1-10 阶段说明：每阶段的复习间隔 + 从零走完该阶段需要的天数。
+    前端「学到第几阶段」选择器的数据源（每个数字都配中文解释，不再是裸数字）。"""
+    target = int(request.args.get('target', 7) or 7)
+    stages = []
+    for i in range(1, 11):
+        stages.append({'stage': i, 'interval': srs.STAGE_NAMES[i - 1],
+                       'days': textbook.curve_days(i),
+                       'mature': i >= srs.MATURE_STAGE})
+    return jsonify({'stages': stages, 'target': target,
+                    'curve': textbook.full_curve_preview(target),
+                    'curve_days': textbook.curve_days(target),
+                    'mature_stage': srs.MATURE_STAGE})
 
 
 @app.route('/api/books/plan/done', methods=['POST'])
@@ -799,7 +819,7 @@ def api_book_plan_clear():
 
 @app.route('/api/books/progress', methods=['POST'])
 def api_book_progress_set():
-    """本书内单字标记（增/改）：learning 在学 | done 已掌握 | skip 跳过"""
+    """本书内单字/词标记（增/改）：learning 在学 | done 已掌握 | skip 跳过"""
     d = request.json or {}
     kanji = (d.get('kanji') or '').strip()
     book_id = int(d.get('book_id') or 0)
@@ -809,7 +829,8 @@ def api_book_progress_set():
     if state not in ('learning', 'done', 'skip'):
         db.delete_book_progress(book_id, kanji)     # 空 state = 清除标记
     else:
-        db.set_book_progress(book_id, kanji, state, d.get('note') or '')
+        db.set_book_progress(book_id, kanji, state, d.get('note') or '',
+                             kind=d.get('kind'))
     return jsonify({'ok': True})
 
 
@@ -862,13 +883,13 @@ def api_study_cfg_set():
 
 @app.route('/api/books/examples')
 def api_book_examples():
-    """例句检索：选中的书 + 完整语料库（来源与数量由配置或参数指定）"""
+    """例句检索：选中的书 + 完整语料库（来源与数量由参数指定，未指定则取学习配置）"""
     ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
     return jsonify({'rows': textbook.unit_examples(
         kanji=request.args.get('kanji') or None,
         word=request.args.get('word') or None,
         book_ids=ids,
-        source=request.args.get('source') or 'all',
+        source=request.args.get('source') or None,
         limit=int(request.args.get('limit', 0) or 0) or None)})
 
 
@@ -911,8 +932,12 @@ def api_export():
         sentences = [dict(r) for r in c.execute(
             'SELECT text,translation,source,url,orig_text FROM sentences')]
         songs = [dict(r) for r in c.execute('SELECT title,artist,lyrics FROM songs')]
-        srs_rows = [dict(r) for r in c.execute(
-            'SELECT kanji,stage,next_due,added_at,last_at,ok,ng FROM srs')]
+        try:
+            srs_rows = [dict(r) for r in c.execute(
+                'SELECT kanji,stage,next_due,added_at,last_at,ok,ng,kind,reading FROM srs')]
+        except Exception:
+            srs_rows = [dict(r) for r in c.execute(
+                'SELECT kanji,stage,next_due,added_at,last_at,ok,ng FROM srs')]
         fav_s = [dict(r) for r in c.execute(
             'SELECT fs.note, fs.created_at, s.text sentence '
             'FROM fav_sentences fs JOIN sentences s ON s.id=fs.sentence_id')]
