@@ -799,30 +799,35 @@ def api_book_plan_clear():
 
 @app.route('/api/books/progress', methods=['POST'])
 def api_book_progress_set():
-    """本书内单字标记（增/改）：learning 在学 | done 已掌握 | skip 跳过"""
+    """本书内单字/单词标记（新增/更新）：state 为空则删除该标记"""
     d = request.json or {}
+    try:
+        book_id = int(d.get('book_id') or 0)
+    except ValueError:
+        book_id = 0
     kanji = (d.get('kanji') or '').strip()
-    book_id = int(d.get('book_id') or 0)
+    kind = (d.get('kind') or 'kanji').strip() or 'kanji'
     if not kanji or not book_id:
         return jsonify({'error': '需要 book_id 与 kanji'}), 400
     state = d.get('state') or ''
     if state not in ('learning', 'done', 'skip'):
-        db.delete_book_progress(book_id, kanji)     # 空 state = 清除标记
+        db.delete_book_progress(book_id, kanji, kind=kind)     # 空 state = 清除标记
     else:
-        db.set_book_progress(book_id, kanji, state, d.get('note') or '')
+        db.set_book_progress(book_id, kanji, state, d.get('note') or '', kind=kind)
     return jsonify({'ok': True})
 
 
 @app.route('/api/books/progress', methods=['DELETE'])
 def api_book_progress_del():
-    """本书内单字标记（删）：kanji 为空则清空本书全部标记"""
+    """本书内单字/单词标记（删）：kanji 为空则清空本书全部标记，kind 为空则删本书全部"""
     try:
         bid = int(request.args.get('book_id') or 0)
     except ValueError:
         bid = 0
     if not bid:
         return jsonify({'error': '需要 book_id'}), 400
-    n = db.delete_book_progress(bid, kanji=request.args.get('kanji') or None)
+    n = db.delete_book_progress(bid, kanji=request.args.get('kanji') or None,
+                                kind=request.args.get('kind') or None)
     return jsonify({'ok': True, 'deleted': n})
 
 
