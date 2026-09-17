@@ -254,7 +254,7 @@ PATTERNS = [
     P('〜に違いない（確信）', 'N2', '〜 + に違いない', '一定是〜（强烈确信）',
       [{'s': 'に'}, {'l': '違い'}, {'l': ('ない', '無い')}]),
     P('〜おかげで／せいで（因果）', 'N2', '連体形 + おかげで/せいで', 'おかげで=多亏〜（好结果）；せいで=都怪〜（坏结果）',
-      [{'l': ('お陰', '御陰', '所為')}]),
+      [{'l': ('お陰', '御陰', '所為')}, {'s': 'で', 'p1': '助詞', 'opt': True}]),
     P('〜たびに（反復）', 'N2', '辞書形/名詞の + たびに', '每当〜就〜',
       [{'l': '度', 'p2': '普通名詞'}, {'s': 'に'}]),
     P('〜わりに（比例不一致）', 'N2', '連体形 + わりに', '与〜（的程度）不相称地',
@@ -675,6 +675,11 @@ def _pick(templates, seed):
 
 _STOP_PUNCT = {'。', '！', '？', '!', '?', '．'}
 
+# て形复合动词的后项动词（原形）：匹配截断在这些词之前即为半截碎片
+_TAIL_AUX_LEMMAS = {'為さる', '下さる', '居る', '有る', '置く', '仕舞う', '見る',
+                    '行く', '来る', '上げる', '呉れる', '貰う', '頂く', '戴く',
+                    '差し上げる', '頂戴', 'いらっしゃる', '御座る', 'くださる'}
+
 
 def _char_spans(text, words):
     """每个形态素在原文中的 (start, end) 字符偏移（find 推进；找不到时回退累计长度，
@@ -768,10 +773,42 @@ def analyze(text: str):
                 explain += ' ' + pat['note']
             b3, c3, a3 = _context3(words, s_idx, e_idx)
             blank = [spans[s_idx][0], spans[e_idx - 1][1]]
+            # tail_cont：匹配是否截断在屈折半腰（如 戻ってこ「ない」的 てこ、
+            # ことに「した」的 ことにし）。末位是連用形/未然形的动词·助动词、
+            # 且后一位仍是助动词 → 屈折未完结，挖空时必须剔除（避免碎片答案）。
+            tail_cont = False
+            attr_slot = False
+            if e_idx < len(words):
+                lf, nf = words[e_idx - 1].feature, words[e_idx].feature
+                # 屈折未完结：末位是連用形/未然形的动词·助动词，且后一位是助动词
+                # （戻ってこ|ない、ことに|した）或て形复合动词的后项动词
+                # （帰ってき|なさい、てい|らっしゃる）→ 都是半截碎片。
+                # 注意：后一位是普通实义动词时不断言（如 にもかかわらず|嬉しい
+                # 是完整接续），只认已知的复合后项词库。
+                if lf.pos1 in ('動詞', '助動詞') and \
+                        (lf.cForm or '').startswith(('連用形', '未然形')):
+                    if nf.pos1 == '助動詞':
+                        tail_cont = True
+                    elif nf.pos1 == '動詞' and \
+                            (nf.lemma or '').split('-')[0] in _TAIL_AUX_LEMMAS:
+                        tail_cont = True
+                    elif nf.pos1 == '助詞' and \
+                            words[e_idx].surface[:1] in ('て', 'で'):
+                        # 活用词干+て形接续助词（盗もうとし|て、ようになっ|て）：
+                        # 答案是接在て前的屈折半腰，词典形干扰项接不上て，
+                        # 只能配出瞬间可排除的弱选项 → 一律不挖。
+                        tail_cont = True
+                # attr_slot：匹配以連体形收尾且后一位是名词 → 答案修饰后方名词
+                # （如 ような|男、食べたい|もの）。挖空时干扰项必须同样能作定语，
+                # 否则会被瞬间排除（如 かもしれない|男 不成立）。
+                if (lf.cForm or '').startswith('連体形') and \
+                        nf.pos1 in ('名詞', '代名詞', '形状詞'):
+                    attr_slot = True
             found.append({'name': pat['name'], 'level': pat['level'],
                           'structure': pat['structure'], 'surface': surface,
                           'before': b3, 'core': c3, 'after': a3,
                           'span': [s_idx, e_idx], 'blank': blank,
+                          'tail_cont': tail_cont, 'attr_slot': attr_slot,
                           'explain': explain, 'kind': 'pattern'})
             covered.update(range(s_idx, e_idx))
 
@@ -842,7 +879,9 @@ def analyze(text: str):
             b3, c3, a3 = _context3(words, i, i + 1)
             found.append({'name': name, 'level': level, 'structure': '—',
                           'surface': w.surface, 'before': b3, 'core': c3, 'after': a3,
-                          'span': [i, i + 1], 'explain': explain, 'kind': 'word'})
+                          'span': [i, i + 1], 'blank': [spans[i][0], spans[i][1]],
+                          'tail_cont': False, 'attr_slot': False,
+                          'explain': explain, 'kind': 'word'})
 
     # ---- 同名语法点合并：句中多次出现 → 一条条目 + 全部上下文 ----
     merged, order = {}, []

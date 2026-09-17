@@ -124,7 +124,8 @@ check(sum(per_lesson) == 14 and all(x > 0 for x in per_lesson),
 # ============ 5. 截止日计划（核心算法） ============
 print('== 5. 学习计划：曲线走完 + 每日容量 ==')
 r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',
-                                         'minutes_per_day': 30, 'target_stage': 5})
+                                         'minutes_per_day': 30, 'target_stage': 5,
+                                         'content': 'kanji'})
 p = r.get_json()
 check(r.status_code == 200 and p['feasible'] is True, f'计划可行 {p.get("reason")}')
 check(p['start'] == textbook.date.today().isoformat() and p['deadline'] == '2026-10-15', '计划区间')
@@ -167,9 +168,30 @@ check(done_map.get(k1) is True and done_map.get(k2) is True, f'已学字自动�
 check(lp2['done_new'] == 2 and lp2['progress'] > 0, f'进度自动计入 {lp2["done_new"]}/{lp2["total_new"]}')
 # 重新排程 → 已学字不再排新
 r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',
-                                         'minutes_per_day': 30, 'target_stage': 5})
+                                         'minutes_per_day': 30, 'target_stage': 5,
+                                         'content': 'kanji'})
 p3 = r.get_json()
 check(p3['new_total'] == 12, f'重排后 12 新字（排除已学），实际 {p3["new_total"]}')
+
+# 双轨：默认同时排字与词；content 可切换仅字/仅词
+r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',
+                                         'minutes_per_day': 30, 'target_stage': 5})
+pb = r.get_json()
+check(pb['feasible'] is True and pb['content'] == 'both'
+      and pb['new_kanji'] == 12 and pb['new_words'] == 9 and pb['new_total'] == 21,
+      f'双轨计划：12 字 + 9 词 = 21，实际 {pb.get("new_kanji")}+{pb.get("new_words")}={pb.get("new_total")}')
+check(all('kind' in it for d0 in pb['per_day'] for it in d0['new']),
+      '计划项带 kind（字/词可区分展示）')
+r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',
+                                         'minutes_per_day': 30, 'target_stage': 5,
+                                         'content': 'words'})
+pw = r.get_json()
+check(pw['feasible'] is True and pw['new_total'] == 9 and pw['new_kanji'] == 0,
+      f'仅词计划 9 词，实际 {pw.get("new_total")}')
+# 恢复 kanji 计划供后续用例读取
+r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',
+                                         'minutes_per_day': 30, 'target_stage': 5,
+                                         'content': 'kanji'})
 
 # ============ 7. 今日任务勾选 ============
 print('== 7. 计划勾选 ==')
@@ -177,6 +199,11 @@ r = client.post('/api/books/plan/done', json={'book_ids': [idA], 'kanji': p3['pe
                                               'done': True})
 d = r.get_json()
 check(r.status_code == 200 and d['updated'] >= 1, f'勾选 {d}')
+# 不传 book_ids = 作用于全部书（今日任务勾选框即此调用，必须 200 且生效）
+r = client.post('/api/books/plan/done', json={'kanji': p3['per_day'][2]['new'][0]['kanji'],
+                                              'done': True})
+d = r.get_json()
+check(r.status_code == 200 and d['updated'] >= 1, f'无 book_ids 勾选 {d}')
 
 # ============ 8. 句子（按课） ============
 print('== 8. 课程句子 ==')
@@ -226,6 +253,17 @@ check(act[idA] == 1 and act[idB] == 0, f'active 状态 {act}')
 r = client.post('/api/books/plan', json={'deadline': '2026-10-15', 'minutes_per_day': 30, 'target_stage': 5})
 p4 = r.get_json()
 check([b['id'] for b in p4['books']] == [idA], f'默认计划只含 active 书 {p4["books"]}')
+check(p4['content'] == 'both' and p4['new_kanji'] == 12 and p4['new_words'] == 9,
+      f'默认双轨：12 字 + 9 词，实际 {p4.get("new_kanji")}+{p4.get("new_words")}')
+# 阶段说明接口：1-10 阶段各有中文间隔与走完天数（计划表单数据源）
+r = client.get('/api/books/curve')
+cv = r.get_json()
+check(r.status_code == 200 and len(cv['stages']) == 10
+      and all('interval' in s and 'days' in s for s in cv['stages']),
+      f'曲线接口 10 阶段齐全 {len(cv.get("stages") or [])}')
+check(cv['stages'][6]['stage'] == 7 and cv['mature_stage'] == 7
+      and cv['stages'][6]['days'] == textbook.curve_days(7),
+      '第 7 阶段 = 长期记忆线，天数与 curve_days 一致')
 
 # ============ 12. 课/书增删改查 + 重置 ============
 print('== 12. CRUD ==')
@@ -281,6 +319,19 @@ check(d2['rows'] and all(x['src'] == 'corpus' for x in d2['rows']), f'全库例�
 r = client.get(f'/api/books/examples?ids={idA}&kanji=今&limit=1')
 d3 = r.get_json()
 check(len(d3['rows']) <= 1 and d3['rows'][0]['src'] == 'book', '混合模式本书优先 + limit 生效')
+check(all('origin' in x and x['origin'] for x in d['rows'] + d2['rows'] + d3['rows']),
+      '每条例句都带出处标注')
+check(any('東京散策' in (x.get('origin') or '') for x in d['rows']),
+      f'课本例句标出书名 {[x.get("origin") for x in d["rows"]]}')
+# 词汇例句：word 参数 + 出处 + 注音
+r = client.get(f'/api/books/examples?ids={idA}&word=天気')
+dw = r.get_json()
+check(dw['rows'] and all('天気' in x['text'] for x in dw['rows']) and dw['rows'][0]['tokens'],
+      f'词汇例句 {len(dw["rows"])} 条带注音')
+# 未传 source/limit 时取学习配置（前面已保存 example_limit=3 / cloze_scope=book）
+r = client.get(f'/api/books/examples?ids={idA}&kanji=今')
+dcfg = r.get_json()
+check(len(dcfg['rows']) <= 3, f'配置默认 limit 生效（≤3），实际 {len(dcfg["rows"])}')
 
 # --- 语法抽取：难度下限过滤（默认不抽 N5/N4 太简单的） ---
 gbook = textbook.import_book({'title': '语法书', 'author': '', 'level': '', 'note': '',
@@ -311,6 +362,12 @@ for q in qz['questions']:
     check(len(q['options']) == 4 and q['answer'] in q['options'] and len(set(q['options'])) == 4,
           f'选项 4 个、含答案、不重复 {q["options"]}')
     check(q['before'] is not None and q['after'] is not None and q['explain'], '挖空上下文与讲解齐全')
+    check(q['before'] + q['answer'] + q['after'] == q['text'],
+          f'完整题干可拼回原文 {q["before"]}【{q["answer"]}】{q["after"]}')
+    check(q['text'].endswith(('。', '！', '？', '!', '?')) and len(q['answer']) >= 2,
+          '题干完整成句、答案非单字碎片')
+    check(q['tokens'] and q['tokens_b'] and q['tokens_a'] and q['origin'],
+          '注音（整句/前后）与出处齐全')
 r = client.post('/api/books/cloze', json={'scope': 'corpus', 'min_level': 'N5', 'count': 5})
 qz2 = r.get_json()
 check(qz2['ok'] and qz2['scope'] == 'corpus' and qz2['count'] <= 5, f'全库题源 {qz2["count"]} 题')
