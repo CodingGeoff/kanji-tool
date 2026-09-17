@@ -596,7 +596,8 @@ def add_lesson(book_id, idx, title):
 def list_lessons(book_id):
     with get_conn() as c:
         rows = c.execute(
-            'SELECT l.*, (SELECT COUNT(*) FROM book_sentences bs WHERE bs.lesson_id=l.id) n '
+            'SELECT l.*, (SELECT COUNT(*) FROM book_sentences bs WHERE bs.lesson_id=l.id) n_sentences, '
+            '(SELECT COUNT(*) FROM book_sentences bs WHERE bs.lesson_id=l.id) n '
             'FROM book_lessons l WHERE l.book_id=? ORDER BY l.idx, l.id', (book_id,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -864,10 +865,15 @@ def list_book_progress(book_id, state=None):
         return [dict(r) for r in rows]
 
 
-def delete_book_progress(book_id, kanji=None):
+def delete_book_progress(book_id, kanji=None, kind=None):
     with _lock, get_conn() as c:
-        if kanji:
+        if kanji and kind:
+            cur = c.execute('DELETE FROM book_progress WHERE book_id=? AND kanji=? AND kind=?',
+                            (book_id, kanji, kind))
+        elif kanji:
             cur = c.execute('DELETE FROM book_progress WHERE book_id=? AND kanji=?', (book_id, kanji))
+        elif kind:
+            cur = c.execute('DELETE FROM book_progress WHERE book_id=? AND kind=?', (book_id, kind))
         else:
             cur = c.execute('DELETE FROM book_progress WHERE book_id=?', (book_id,))
         return cur.rowcount
