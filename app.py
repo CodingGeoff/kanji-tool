@@ -20,7 +20,7 @@ app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v13'
+APP_VERSION = 'v14'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
@@ -73,6 +73,24 @@ structsim.INDEX.warmup_async()
 
 
 
+def _num(value, default, lo, hi, cast=int):
+    """宽容的数字参数解析：缺失/空串/非法 → default，否则钳制到 [lo, hi]。
+    default 为 None 时表示「未指定」（调用方再用业务默认值）。"""
+    try:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return default
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    if lo is not None and v < lo:
+        v = lo
+    if hi is not None and v > hi:
+        v = hi
+    return cast(v)
+
+
 @app.route('/')
 def index():
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'index.html'),
@@ -119,8 +137,8 @@ def api_sentences():
     total, rows = db.query_sentences(
         q=request.args.get('q') or None,
         kanji=request.args.get('kanji') or None,
-        page=int(request.args.get('page', 1)),
-        per=int(request.args.get('per', 20)))
+        page=_num(request.args.get('page'), 1, 1, 100000),
+        per=_num(request.args.get('per'), 20, 1, 100))
     with db.get_conn() as c:
         fav_ids = {x['sentence_id'] for x in c.execute('SELECT sentence_id FROM fav_sentences')}
     for r in rows:
@@ -174,15 +192,15 @@ def api_kanji():
     learned = request.args.get('learned')
     learned = True if learned == '1' else (False if learned == '0' else None)
     total, rows = db.kanji_stats(learned=learned, q=request.args.get('q') or None,
-                                 page=int(request.args.get('page', 1)),
-                                 per=int(request.args.get('per', 60)))
+                                 page=_num(request.args.get('page'), 1, 1, 100000),
+                                 per=_num(request.args.get('per'), 60, 1, 200))
     return jsonify({'total': total, 'rows': rows})
 
 
 @app.route('/api/kanji/<kanji>')
 def api_kanji_detail(kanji):
     words = db.kanji_words(kanji, 12)
-    sents = db.sentences_for_kanji(kanji, 200)
+    sents = db.sentences_for_kanji(kanji, 60)
     for s in sents:
         s['tokens'] = json.loads(s['tokens'])
     return jsonify({'kanji': kanji, 'words': words,
@@ -193,11 +211,18 @@ def api_kanji_detail(kanji):
 @app.route('/api/learn/new')
 def api_new_kanji():
     """按语料频次推荐未学习的高频汉字"""
-    limit = int(request.args.get('limit', 10))
+    limit = _num(request.args.get('limit'), 10, 1, 50)
     _, rows = db.kanji_stats(learned=False, per=limit)
     for r in rows:
         r['words'] = db.kanji_words(r['kanji'], 4)
     return jsonify({'rows': rows})
+
+
+@app.route('/api/learn/new-words')
+def api_new_words():
+    """按语料频次推荐未学过的高频多字词（背单词用户用）"""
+    limit = _num(request.args.get('limit'), 10, 1, 50)
+    return jsonify({'rows': db.top_words(limit)})
 
 
 @app.route('/api/learn', methods=['POST'])
@@ -206,7 +231,11 @@ def api_learn():
     ks = d.get('kanji', [])
     if isinstance(ks, str):
         ks = [ks]
+    ks = [k.strip() for k in ks if isinstance(k, str) and k.strip()][:200]
+    ks = [k for k in ks if len(k) <= 24]
     kind = d.get('kind')                    # kanji | words（不传则按长度推断）
+    if kind not in ('kanji', 'words'):
+        kind = None
     readings = d.get('readings') or {}      # {单词: 读音}
     single_reading = d.get('reading') or ''
     for k in ks:
@@ -228,7 +257,12 @@ def api_due():
 @app.route('/api/review/answer', methods=['POST'])
 def api_answer():
     d = request.json or {}
-    srs.answer(d.get('kanji'), d.get('result', 'ok'))
+    result = d.get('result', 'ok')
+    if result not in ('ok', 'hard', 'ng'):
+        return jsonify({'error': 'bad result'}), 400
+    if not d.get('kanji'):
+        return jsonify({'error': 'empty'}), 400
+    srs.answer(d.get('kanji'), result)
     return jsonify({'ok': True})
 
 
@@ -237,7 +271,12 @@ def api_answer():
 def api_annotate():
     text = (request.json or {}).get('text', '')
     lines = []
-    for line in text.splitlines():
+    if len(text) > 30000:
+        return jsonify({'error': '文本过长（最多30000字）'}), 400
+    if not text:
+        return jsonify({'lines': []})
+    for line in text.split('\n'):
+        line = line.rstrip('\r')   # 与前端 data-raw 逐行对齐
         lines.append(furigana.annotate(line) if line.strip() else [])
     db.log('annotate', f'注音文本 {len(text)} 字')
     return jsonify({'lines': lines})
@@ -270,6 +309,8 @@ def api_grammar():
     text = (d.get('text') or '').strip()
     if not text:
         return jsonify({'error': 'empty'}), 400
+    if len(text) > 2000:
+        return jsonify({'error': '文本过长（语法解析最多2000字）'}), 400
     points = grammar.analyze(text)
     tokens = furigana.annotate(text)
     db.log('grammar', f'语法解析：{text[:24]}（{len(points)}个语法点）')
@@ -326,7 +367,9 @@ def api_favs():
 
 @app.route('/api/favs/sentence/toggle', methods=['POST'])
 def api_fav_toggle():
-    sid = (request.json or {}).get('sentence_id')
+    sid = _num((request.json or {}).get('sentence_id'), 0, 1, 100000000)
+    if not sid:
+        return jsonify({'error': 'bad sentence_id'}), 400
     with db._lock, db.get_conn() as c:
         if c.execute('SELECT 1 FROM fav_sentences WHERE sentence_id=?', (sid,)).fetchone():
             c.execute('DELETE FROM fav_sentences WHERE sentence_id=?', (sid,))
@@ -407,12 +450,12 @@ def api_rag_search():
     book_ids = _ids(d.get('book_ids') or d.get('books') or [])
     multi = rag.MULTI.search(
         q,
-        limit=int(d.get('limit', 10)),
+        limit=_num(d.get('limit'), 10, 1, 50),
         sources=sources,
-        per_song=int(d.get('per_song', 3)),
-        per_book=int(d.get('per_book', 4)),
-        min_score=float(d.get('min_score', 0)),
-        min_affinity=float(d.get('min_affinity', 0.18)),
+        per_song=_num(d.get('per_song'), 3, 0, 20),
+        per_book=_num(d.get('per_book'), 4, 0, 20),
+        min_score=_num(d.get('min_score'), 0, 0, 1, cast=float),
+        min_affinity=_num(d.get('min_affinity'), 0.18, 0, 1, cast=float),
         book_ids=book_ids,
         sort=d.get('sort') or 'priority',
     )
@@ -435,7 +478,7 @@ def api_rag_search():
     if structsim.is_sentence(q):
         sig = structsim.signature(q)
         hits = structsim.INDEX.query(q, limit=8,
-                                     per_song=int(d.get('per_song', 2)),
+                                     per_song=_num(d.get('per_song'), 2, 0, 20),
                                      book_ids=book_ids,
                                      sources=sources)
         srows = []
@@ -500,7 +543,7 @@ def api_settings_set():
 @app.route('/api/songs')
 def api_songs():
     q = (request.args.get('q') or '').strip()
-    songs = db.list_songs(q, limit=min(int(request.args.get('limit', 200)), 500))
+    songs = db.list_songs(q, limit=_num(request.args.get('limit'), 200, 1, 500))
     return jsonify({'songs': songs, 'total': len(songs)})
 
 
@@ -556,6 +599,8 @@ def api_songs_import():
     text = d.get('text') or ''
     if not text.strip():
         return jsonify({'error': 'empty'}), 400
+    if len(text) > 300000:
+        return jsonify({'error': '文本过长（最多30万字，请分批导入）'}), 400
     parsed = ktv.parse_import(text)
     if d.get('dry_run'):
         return jsonify({'songs': [
@@ -622,9 +667,11 @@ def api_books_analyze():
     text = (d.get('text') or '').strip()
     if len(text) < 6:
         return jsonify({'error': '文本太短，请粘贴句子或文章'}), 400
-    lesson_size = int(d.get('lesson_size') or textbook.AUTO_LESSON_SIZE)
+    if len(text) > 1000000:
+        return jsonify({'error': '文本过长（最多100万字，请分批导入）'}), 400
+    lesson_size = _num(d.get('lesson_size'), textbook.AUTO_LESSON_SIZE, 1, 500)
     res = textbook.analyze(text, lesson_size=lesson_size)
-    res['curve_days'] = textbook.curve_days(int(d.get('target_stage') or 7))
+    res['curve_days'] = textbook.curve_days(_num(d.get('target_stage'), 7, 1, 10))
     return jsonify(res)
 
 
@@ -635,10 +682,12 @@ def api_books_import():
     text = (d.get('text') or '').strip()
     if len(text) < 6:
         return jsonify({'error': '文本太短，请粘贴句子或文章'}), 400
-    lesson_size = int(d.get('lesson_size') or textbook.AUTO_LESSON_SIZE)
+    if len(text) > 1000000:
+        return jsonify({'error': '文本过长（最多100万字，请分批导入）'}), 400
+    lesson_size = _num(d.get('lesson_size'), textbook.AUTO_LESSON_SIZE, 1, 500)
     deadline = (d.get('deadline') or '').strip() or None
-    minutes = int(d.get('minutes_per_day') or textbook.DEFAULT_MINUTES)
-    target = int(d.get('target_stage') or 7)
+    minutes = _num(d.get('minutes_per_day'), textbook.DEFAULT_MINUTES, 1, 600)
+    target = _num(d.get('target_stage'), 7, 1, 10)
     note = (d.get('note') or '').strip()
     books = textbook.parse_books(text, lesson_size)
     out = [textbook.import_book(b, deadline=deadline, minutes_per_day=minutes,
@@ -688,9 +737,10 @@ def api_book_delete(bid):
 @app.route('/api/books/<int:bid>/sentences')
 def api_book_sentences(bid):
     total, rows = db.list_book_sentences(
-        bid, lesson_id=int(request.args.get('lesson_id')) if request.args.get('lesson_id') else None,
+        bid, lesson_id=_num(request.args.get('lesson_id'), None, 1, 1000000),
         q=request.args.get('q') or None,
-        page=int(request.args.get('page', 1)), per=int(request.args.get('per', 30)))
+        page=_num(request.args.get('page'), 1, 1, 100000),
+        per=_num(request.args.get('per'), 30, 1, 200))
     with db.get_conn() as c:
         fav_ids = {x['sentence_id'] for x in c.execute('SELECT sentence_id FROM fav_sentences')}
     for r in rows:
@@ -738,8 +788,8 @@ def api_book_units():
     if not ids:
         ids = [b['id'] for b in db.list_books() if b.get('active')]
     type_ = request.args.get('type', 'kanji')
-    page = int(request.args.get('page', 1))
-    per = min(int(request.args.get('per', 100)), 500)
+    page = _num(request.args.get('page'), 1, 1, 100000)
+    per = _num(request.args.get('per'), 100, 1, 500)
     q = request.args.get('q') or None
     if type_ == 'words':
         if len(ids) == 1:
@@ -776,10 +826,14 @@ def api_book_plan_build():
     """生成（并保存）截止日学习计划：保证记忆曲线在截止日前走完 + 每日负载不超时"""
     d = request.json or {}
     ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    content = d.get('content') or 'both'
+    if content not in ('both', 'kanji', 'words'):
+        content = 'both'
     res = textbook.build_plan(
         ids or None, start=d.get('start') or None, deadline=d.get('deadline') or None,
-        minutes_per_day=d.get('minutes_per_day'), target_stage=d.get('target_stage'),
-        max_new_per_day=d.get('max_new_per_day'), content=d.get('content') or 'both')
+        minutes_per_day=_num(d.get('minutes_per_day'), None, 1, 600),
+        target_stage=_num(d.get('target_stage'), None, 1, 10),
+        max_new_per_day=_num(d.get('max_new_per_day'), None, 1, 500), content=content)
     return jsonify(res)
 
 
@@ -787,7 +841,7 @@ def api_book_plan_build():
 def api_book_curve():
     """艾宾浩斯 1-10 阶段说明：每阶段的复习间隔 + 从零走完该阶段需要的天数。
     前端「学到第几阶段」选择器的数据源（每个数字都配中文解释，不再是裸数字）。"""
-    target = int(request.args.get('target', 7) or 7)
+    target = _num(request.args.get('target'), 7, 1, 10)
     stages = []
     for i in range(1, 11):
         stages.append({'stage': i, 'interval': srs.STAGE_NAMES[i - 1],
@@ -822,7 +876,7 @@ def api_book_progress_set():
     """本书内单字/词标记（增/改）：learning 在学 | done 已掌握 | skip 跳过"""
     d = request.json or {}
     kanji = (d.get('kanji') or '').strip()
-    book_id = int(d.get('book_id') or 0)
+    book_id = _num(d.get('book_id'), 0, 0, 1000000)
     if not kanji or not book_id:
         return jsonify({'error': '需要 book_id 与 kanji'}), 400
     state = d.get('state') or ''
@@ -837,10 +891,7 @@ def api_book_progress_set():
 @app.route('/api/books/progress', methods=['DELETE'])
 def api_book_progress_del():
     """本书内单字标记（删）：kanji 为空则清空本书全部标记"""
-    try:
-        bid = int(request.args.get('book_id') or 0)
-    except ValueError:
-        bid = 0
+    bid = _num(request.args.get('book_id'), 0, 0, 1000000)
     if not bid:
         return jsonify({'error': '需要 book_id'}), 400
     n = db.delete_book_progress(bid, kanji=request.args.get('kanji') or None)
@@ -890,7 +941,7 @@ def api_book_examples():
         word=request.args.get('word') or None,
         book_ids=ids,
         source=request.args.get('source') or None,
-        limit=int(request.args.get('limit', 0) or 0) or None)})
+        limit=_num(request.args.get('limit'), None, 1, 30))})
 
 
 @app.route('/api/books/grammar')
@@ -899,7 +950,7 @@ def api_book_grammar():
     ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
     return jsonify({'rows': textbook.book_grammar(
         ids, min_level=request.args.get('min_level') or None,
-        per=int(request.args.get('per', 40)))})
+        per=_num(request.args.get('per'), 40, 1, 200))})
 
 
 @app.route('/api/books/cloze', methods=['POST'])
@@ -908,7 +959,8 @@ def api_book_cloze():
     d = request.json or {}
     ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
     return jsonify(textbook.make_cloze(ids or None, scope=d.get('scope'),
-                                       min_level=d.get('min_level'), count=d.get('count')))
+                                       min_level=d.get('min_level'),
+                                       count=_num(d.get('count'), None, 1, 20)))
 
 
 @app.route('/api/books/cloze/answer', methods=['POST'])
@@ -1022,7 +1074,7 @@ def api_import():
 def api_history():
     with db.get_conn() as c:
         rows = c.execute('SELECT * FROM history ORDER BY id DESC LIMIT ?',
-                         (int(request.args.get('limit', 100)),)).fetchall()
+                         (_num(request.args.get('limit'), 100, 1, 500),)).fetchall()
     return jsonify({'rows': [dict(r) for r in rows]})
 
 
@@ -1066,6 +1118,8 @@ def api_tts():
     rate = RATES.get(d.get('rate') or 'normal', '+0%')
     if not text:
         return jsonify({'error': 'empty'}), 400
+    if len(text) > 600:
+        return jsonify({'error': '朗读文本过长（最多600字，请分句朗读）'}), 400
     if voice not in {v['id'] for v in VOICES}:
         return jsonify({'error': 'bad voice'}), 400
     key = hashlib.md5(f'{voice}|{rate}|{text}'.encode()).hexdigest()
@@ -1074,7 +1128,6 @@ def api_tts():
         try:
             comm = edge_tts.Communicate(text, voice, rate=rate)
             asyncio.run(comm.save(path))
-            db.log('tts', f'合成朗读[{voice.split("-")[-1].replace("Neural","")}]：{text[:24]}')
         except Exception as e:
             if os.path.exists(path):
                 os.remove(path)

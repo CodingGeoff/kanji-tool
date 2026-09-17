@@ -445,6 +445,20 @@ def kanji_words(kanji, limit=10):
         return [dict(r) for r in rows]
 
 
+def top_words(limit=10):
+    """全库高频多字词（排除已在 SRS 中的），供「学新词」推荐。"""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT ki.word word, ki.word_reading reading,
+                   COUNT(DISTINCT ki.sentence_id) freq
+            FROM kanji_index ki LEFT JOIN srs s ON s.kanji = ki.word
+            WHERE LENGTH(ki.word) > 1 AND s.kanji IS NULL
+            GROUP BY ki.word, ki.word_reading
+            ORDER BY freq DESC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def sentences_for_kanji(kanji, limit=200):
     """该汉字的全部例句：短句在前（更易读），同长度新句在前"""
     with get_conn() as c:

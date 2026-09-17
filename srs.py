@@ -46,6 +46,8 @@ def remove_kanji(kanji):
 
 def answer(kanji, result):
     """result: 'ok' 认识 | 'hard' 模糊 | 'ng' 忘记"""
+    if result not in ('ok', 'hard', 'ng'):
+        return
     now = time.time()
     with db._lock, db.get_conn() as c:
         row = c.execute('SELECT * FROM srs WHERE kanji=?', (kanji,)).fetchone()

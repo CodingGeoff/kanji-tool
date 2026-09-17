@@ -686,7 +686,14 @@ def ensure_seg(song_row):
     lyrics = song_row['lyrics']
     lines = lyrics.split('\n')
     if len(toks) != len(lines):
-        return toks
+        # 旧数据行数错位：整首重注并回写（否则前端逐行注音错位）
+        try:
+            fresh, kcount = annotate_lyrics(lyrics)
+            import db as _db
+            _db.update_song_tokens(song_row['id'], fresh)
+            return fresh
+        except Exception:
+            return []
     changed = False
     for ln, t in zip(lines, toks):
         if t and isinstance(t, list) and t and 'k' not in t[0] and 's' in t[0]:

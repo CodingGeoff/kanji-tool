@@ -46,7 +46,7 @@ select.mini{padding:4px 8px;font-size:12px;border-radius:7px;color:var(--sub)}
 body.adv .jp[data-raw]{cursor:pointer;transition:.15s}
 body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:inset 0 0 0 1px var(--gold)}
 /* 语法弹窗 */
-#gmodal{position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto}
+#gmodal{position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:90;display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto}
 #gmodal .panel{background:var(--card);border-radius:16px;max-width:760px;width:100%;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
 .gp-item{border-left:3px solid var(--line);padding:10px 14px;margin:10px 0;background:#fbf9f4;border-radius:0 10px 10px 0}
 .gp-item .head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -169,7 +169,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
 /* 版本角标（固定右下角，点击打开"关于"界面核对版本/缓存） */
 #verPill{position:fixed;bottom:10px;right:10px;z-index:60;border:1px solid var(--line);background:var(--card);color:var(--sub);border-radius:20px;padding:3px 12px;font-size:12px;cursor:pointer;opacity:.75}
 #verPill:hover{opacity:1;border-color:var(--accent);color:var(--accent)}
-#aboutWrap{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px}
+#aboutWrap{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px}
 .verline{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:14px}
 .verwarn{margin-top:10px;padding:8px 12px;border-radius:9px;background:#fdf3e7;color:#c77f38;font-size:13px;line-height:1.5}
 </style>
@@ -227,11 +227,21 @@ body.ktv-song.showhdr header{display:flex;position:static}
     <div class="row" style="justify-content:space-between">
       <div><b>推荐新汉字</b><span class="muted">（按本地语料出现频次排序，学高频字性价比最高）</span></div>
       <div class="row">
-        <button class="btn" onclick="loadNew()">换一批</button>
+        <button class="btn" onclick="loadNew(true)">换一批</button>
         <button class="btn primary" onclick="learnAllShown()">全部加入学习</button>
       </div>
     </div>
     <div id="newList" style="margin-top:14px"></div>
+  </div>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><b>推荐新词汇</b><span class="muted">（按本地语料出现频次排序，高频词优先）</span></div>
+      <div class="row">
+        <button class="btn" onclick="loadNewWords(true)">换一批</button>
+        <button class="btn primary" onclick="learnAllWordsShown()">全部加入学习</button>
+      </div>
+    </div>
+    <div id="newWordList" style="margin-top:14px"></div>
   </div>
 </section>
 
@@ -638,7 +648,9 @@ async function showAbout(){
 const $=s=>document.querySelector(s);
 const api=(u,opt)=>fetch(u,opt?Object.assign({headers:{'Content-Type':'application/json'}},opt):undefined).then(r=>r.json());
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
-function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function esc(s){return (s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function jsArg(s){return JSON.stringify(s??'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}
+window.addEventListener('unhandledrejection',e=>{console.warn('请求失败:',e.reason);toast('请求失败，请检查网络后重试')});
 function rubyHTML(tokens,hi,terms){
   // hi：单个高亮词（旧接口）；terms：关键词数组（RAG 结果高亮，匹配表记/词形/读音）
   const keys=(Array.isArray(terms)?terms:(terms?[terms]:[])).filter(Boolean);
@@ -668,15 +680,22 @@ function spkBtn(text,size){
 document.addEventListener('click', async e=>{
   const btn=e.target.closest('.spkbtn'); if(!btn) return;
   const text=btn.dataset.text; if(!text) return;
-  if(_audio){_audio.pause();_audio=null;}
-  document.querySelectorAll('.spkbtn.playing').forEach(b=>b.classList.remove('playing'));
+  if(btn.textContent==='…')return;   // 加载中忽略重复点击
+  if(btn.classList.contains('playing')){   // 再点一次 = 停止
+    if(_audio){try{_audio.pause()}catch(_){};_audio=null;}
+    try{speechSynthesis.cancel()}catch(_){}
+    btn.textContent='🔊';btn.classList.remove('playing');return;
+  }
+  if(_audio){try{_audio.pause()}catch(_){};if(_audio._url)URL.revokeObjectURL(_audio._url);_audio=null;}
+  try{speechSynthesis.cancel()}catch(_){}
+  document.querySelectorAll('.spkbtn.playing').forEach(b=>{b.classList.remove('playing');b.textContent='🔊';});
   btn.classList.add('playing'); btn.textContent='…';
   try{
     const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({text,voice:localStorage.voice||'',rate:localStorage.rate||'normal'})});
     if(!r.ok) throw new Error('tts');
     const url=URL.createObjectURL(await r.blob());
-    _audio=new Audio(url);
+    _audio=new Audio(url);_audio._url=url;
     btn.textContent='◼';
     _audio.onended=()=>{btn.textContent='🔊';btn.classList.remove('playing');URL.revokeObjectURL(url);_audio=null;};
     await _audio.play();
@@ -730,15 +749,19 @@ document.addEventListener('click', e=>{
   if(!el||document.body.className.indexOf('adv')<0)return;
   const raw=el.dataset.raw; if(raw)openGrammar(raw);
 });
+let _gseq=0;
 async function openGrammar(text){
+  const my=++_gseq;
   let m=$('#gmodal');
   if(!m){m=document.createElement('div');m.id='gmodal';document.body.appendChild(m);}
   m.style.display='flex';
   m.innerHTML='<div class="panel"><div class="muted">解析语法中…</div></div>';
   try{
-    _gdata=await api('/api/grammar',{method:'POST',body:JSON.stringify({text})});
+    const gd=await api('/api/grammar',{method:'POST',body:JSON.stringify({text})});
+    if(my!==_gseq)return;
+    _gdata=gd;
     renderGrammar();
-  }catch(e){m.innerHTML='<div class="panel"><div class="muted">解析失败</div></div>';}
+  }catch(e){ if(my===_gseq)m.innerHTML='<div class="panel"><div class="muted">解析失败</div></div>'; }
 }
 function closeGrammar(){const m=$('#gmodal');if(m)m.style.display='none';}
 function toggleLv(l){
@@ -788,7 +811,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
 
 /* ---------- 统计 ---------- */
 async function refreshStats(){
-  const s=await api('/api/stats');
+  let s; try{ s=await api('/api/stats'); }catch(e){ return null; }
   $('#dueBadge').textContent=s.srs.due; $('#dueBadge').classList.toggle('hidden',!s.srs.due);
   $('#reviewStats').innerHTML=`
     <div class="stat"><b>${s.srs.due}</b>待复习</div>
@@ -840,6 +863,7 @@ function showCard(){
       <div class="row" style="justify-content:center;margin-top:22px" id="ansBtns">
         <button class="btn primary" onclick="reveal()">显示${isW?'读音与翻译':'读音'}</button>
       </div>
+      <div class="muted" style="text-align:center;margin-top:10px;font-size:12px">快捷键：空格 显示答案 · 1 认识 2 模糊 3 忘记</div>
     </div>`;
 }
 function reveal(){
@@ -853,18 +877,25 @@ function reveal(){
     <button class="btn warn" onclick="answer('hard')">🤔 模糊</button>
     <button class="btn" style="border-color:var(--accent);color:var(--accent)" onclick="answer('ng')">😵 忘记</button>`;
 }
+let _answering=false;
 async function answer(r){
-  const it=queue.shift();
-  await api('/api/review/answer',{method:'POST',body:JSON.stringify({kanji:it.kanji,result:r})});
-  showCard();
+  if(_answering||!queue.length)return; _answering=true;
+  const it=queue[0];
+  try{
+    await api('/api/review/answer',{method:'POST',body:JSON.stringify({kanji:it.kanji,result:r})});
+    queue.shift();
+  }catch(e){ toast('提交失败，已保留本题'); }
+  _answering=false; showCard();
 }
 
 /* ---------- 学新字 ---------- */
-let shownNew=[];
-async function loadNew(){
-  const d=await api('/api/learn/new?limit=10');
-  shownNew=d.rows.map(r=>r.kanji);
-  $('#newList').innerHTML=d.rows.length?d.rows.map(r=>`
+let shownNew=[],_newPool=[],_newOff=0;
+async function loadNew(more){
+  if(!more||!_newPool.length){_newPool=(await api('/api/learn/new?limit=50')).rows||[];_newOff=0;}
+  else if(_newPool.length)_newOff=(_newOff+10)%_newPool.length;
+  const rows=_newPool.slice(_newOff,_newOff+10);
+  shownNew=rows.map(r=>r.kanji);
+  $('#newList').innerHTML=rows.length?rows.map(r=>`
     <div class="sent-item row" style="justify-content:space-between">
       <div class="row">
         <span style="font-size:38px;width:52px;text-align:center">${esc(r.kanji)}</span>
@@ -873,8 +904,53 @@ async function loadNew(){
           <div class="muted">出现于 ${r.freq} 句语料</div>
         </div>
       </div>
-      <button class="btn primary" onclick="learnOne('${r.kanji}',this)">加入学习</button>
+      <button class="btn primary" onclick="learnOne(${jsArg(r.kanji)},this)">加入学习</button>
     </div>`).join(''):'<div class="muted">语料库为空，请先到「语料库」抓取语料</div>';
+  if(!more)loadNewWords();
+}
+let shownWords=[],_wordPool=[],_wordOff=0;
+async function loadNewWords(more){
+  if(!more||!_wordPool.length){_wordPool=(await api('/api/learn/new-words?limit=50')).rows||[];_wordOff=0;}
+  else if(_wordPool.length)_wordOff=(_wordOff+10)%_wordPool.length;
+  const rows=_wordPool.slice(_wordOff,_wordOff+10);
+  shownWords=rows;
+  $('#newWordList').innerHTML=rows.length?rows.map(r=>`
+    <div class="sent-item row" style="justify-content:space-between">
+      <div class="row">
+        <div>
+          <div style="font-size:22px">${esc(r.word)} <small style="color:var(--accent)">${esc(r.reading||'')}</small> ${spkBtn(r.word)}</div>
+          <div class="muted">出现于 ${r.freq} 句语料</div>
+        </div>
+      </div>
+      <div class="row" style="gap:6px">
+        <button class="btn" onclick="wordExamples(${jsArg(r.word)})">🔍 例句</button>
+        <button class="btn primary" onclick="learnWord(${jsArg(r.word)},${jsArg(r.reading||'')},this)">加入学习</button>
+      </div>
+    </div>`).join(''):'<div class="muted">暂无可推荐词汇（高频词已全部加入学习，或语料库为空）</div>';
+}
+async function learnWord(w,reading,btn){
+  await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:[w],kind:'words',readings:{[w]:reading||''}})});
+  btn.textContent='✓ 已加入';btn.disabled=true;toast(`「${w}」已加入学习，5分钟后进入首次复习`);refreshStats();
+}
+async function learnAllWordsShown(){
+  if(!shownWords.length)return;
+  const readings={};shownWords.forEach(w=>readings[w.word]=w.reading||'');
+  await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:shownWords.map(w=>w.word),kind:'words',readings})});
+  toast(`已加入 ${shownWords.length} 个词汇`);loadNewWords();refreshStats();
+}
+async function wordExamples(w){
+  const m=bkModal('<b>🔍 例句检索中…</b>',720);
+  let d; try{ d=await api('/api/books/examples?word='+encodeURIComponent(w)+'&source=corpus&limit=8'); }
+  catch(e){ m.querySelector('.card').innerHTML='<div class="muted">检索失败</div>'; return; }
+  const rows=d.rows||[];
+  m.querySelector('.card').innerHTML=`<div class="row" style="justify-content:space-between"><b>「${esc(w)}」的例句（${rows.length}） ${spkBtn(w)}</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:4px;font-size:12.5px">来源：全库语料（带出处标注）· 开启高级模式后点击句子可解析语法</div>
+    ${rows.length?rows.map(r=>`
+      <div class="sent-item"><div class="jp" data-raw="${esc(r.text)}" style="font-size:22px">${rubyHTML(r.tokens||[],w)} ${spkBtn(r.text)}</div>
+        ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
+        <div class="meta"><span class="tag">${esc(r.origin||'语料库')}</span>
+          <button onclick="favToggle(${r.id},this)">☆收藏</button></div></div>`).join('')
+      :'<div class="muted" style="margin-top:10px">语料库中暂无该词例句，可去语料库抓取更多语料</div>'}`;
 }
 async function learnOne(k,btn){
   await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:k})});
@@ -887,10 +963,14 @@ async function learnAllShown(){
 }
 
 /* ---------- 语料库 ---------- */
+let _fetching=false;
 async function doFetch(src){
+  if(_fetching)return toast('抓取进行中，请稍候…'); _fetching=true;
   toast('抓取中，请稍候…');
-  const d=await api('/api/fetch',{method:'POST',body:JSON.stringify({source:src})});
-  toast(`新增 ${d.added} 句语料`);loadCorpus(1);refreshStats();
+  try{
+    const d=await api('/api/fetch',{method:'POST',body:JSON.stringify({source:src})});
+    toast(`新增 ${d.added} 句语料`);loadCorpus(1);refreshStats();
+  }catch(e){ toast('抓取失败，请稍后重试'); }finally{ _fetching=false; }
 }
 function toggleAddForm(){$('#addForm').classList.toggle('hidden')}
 async function addSentence(){
@@ -899,14 +979,19 @@ async function addSentence(){
   $('#addText').value='';$('#addTrans').value='';
   toast(d.repaired?'检测到内嵌注音，已自动修复后入库':'已添加并自动注音');loadCorpus(1);
 }
+let corpusPage=1,_corpusSeq=0;
 async function loadCorpus(page){
+  corpusPage=page;
+  const my=++_corpusSeq;
   const qtxt=$('#corpusQ').value.trim();
   const q=encodeURIComponent(qtxt||'');
   const d=await api(`/api/sentences?page=${page}&q=${q}`);
+  if(my!==_corpusSeq)return;
   let lyricHtml='';
   if($('#corpusSongs').checked && qtxt){
     try{
       const ls=await api('/api/songs/search?q='+encodeURIComponent(qtxt));
+      if(my!==_corpusSeq)return;
       lyricHtml=(ls.rows||[]).map(r=>`
     <div class="sent-item" style="border-left:3px solid var(--accent2)">
       <div class="jp" data-raw="${esc(r.line)}" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.line)}</div>
@@ -943,11 +1028,13 @@ async function editSentence(id){
   if(text===null)return;
   const tr=prompt('修改翻译：',el.querySelector('.tr')?.textContent||'');
   await api(`/api/sentences/${id}`,{method:'PUT',body:JSON.stringify({text,translation:tr})});
-  toast('已更新');loadCorpus(1);
+  toast('已更新');loadCorpus(corpusPage);
 }
 async function delSentence(id){
   if(!confirm('确认删除这条语料？'))return;
-  await api(`/api/sentences/${id}`,{method:'DELETE'});toast('已删除');loadCorpus(1);
+  await api(`/api/sentences/${id}`,{method:'DELETE'});toast('已删除');
+  if(document.querySelectorAll('#corpusList .sent-item').length<=1&&corpusPage>1)corpusPage--;
+  loadCorpus(corpusPage);
 }
 
 /* ---------- 汉字库 ---------- */
@@ -994,11 +1081,17 @@ function showMoreKsent(){
 }
 
 /* ---------- 字幕注音 ---------- */
+let _annotating=false;
 async function annotate(){
-  const text=$('#subText').value;if(!text.trim())return;
-  const d=await api('/api/annotate',{method:'POST',body:JSON.stringify({text})});
-  const raws=text.split('\n');
-  $('#subOut').innerHTML=d.lines.map((l,i)=>l.length?`<div class="jp" data-raw="${esc(raws[i]||'')}">${rubyHTML(l)} ${spkBtn(raws[i]||'')}</div>`:'<br>').join('');
+  const text=$('#subText').value;if(!text.trim())return toast('先粘贴文本');
+  if(_annotating)return; _annotating=true;
+  $('#subOut').innerHTML='<div class="muted">注音中…</div>';
+  try{
+    const d=await api('/api/annotate',{method:'POST',body:JSON.stringify({text})});
+    if(d.error)return toast(d.error);
+    const raws=text.split('\n').map(s=>s.replace(/\r$/,''));
+    $('#subOut').innerHTML=d.lines.map((l,i)=>l.length?`<div class="jp" data-raw="${esc(raws[i]||'')}">${rubyHTML(l)} ${spkBtn(raws[i]||'')}</div>`:'<br>').join('');
+  }catch(e){ toast('注音失败，请稍后重试'); }finally{ _annotating=false; }
 }
 
 
@@ -1019,7 +1112,7 @@ async function loadFavs(){
       ${s.fav_note?`<div style="font-size:13px;color:var(--accent2);margin-top:3px">📝 ${esc(s.fav_note)}</div>`:''}
       <div class="meta">
         <span class="tag">${esc(s.source)}</span>
-        <button onclick="favNote(${s.id},'${esc(s.fav_note||'')}')">笔记</button>
+        <button onclick="favNote(${s.id},${jsArg(s.fav_note||'')})">笔记</button>
         <button onclick="showSimilar(${s.id},this)">🔍 找相似</button>
         <button onclick="favToggle(${s.id}).then(loadFavs)">移除</button>
       </div>
@@ -1033,9 +1126,9 @@ async function loadFavs(){
         ${spkBtn(w.word)}
       </div>
       <div class="row" style="gap:4px">
-        <button class="btn" onclick="location.hash='';document.querySelector('[data-tab=corpus]').click();$('#corpusQ').value='${esc(w.word)}';loadCorpus(1)">查例句</button>
-        <button class="btn" onclick="favWordNote('${esc(w.word)}','${esc(w.note||'')}')">笔记</button>
-        <button class="btn danger" onclick="api('/api/favs/word/'+encodeURIComponent('${esc(w.word)}'),{method:'DELETE'}).then(loadFavs)">删除</button>
+        <button class="btn" onclick="favWordSentences(${jsArg(w.word)})">查例句</button>
+        <button class="btn" onclick="favWordNote(${jsArg(w.word)},${jsArg(w.note||'')})">笔记</button>
+        <button class="btn danger" onclick="favWordDel(${jsArg(w.word)})">删除</button>
       </div>
     </div>`).join('')||'<div class="muted">还没有收藏的词汇</div>';
 }
@@ -1049,6 +1142,8 @@ async function favWordAdd(){
   if(d.error)return toast(d.error);
   $('#favWordIn').value='';toast(`已收藏「${d.word}」(${d.reading})`);loadFavs();
 }
+function favWordSentences(w){document.querySelector('[data-tab=corpus]').click();$('#corpusQ').value=w;loadCorpus(1)}
+async function favWordDel(w){await api('/api/favs/word/'+encodeURIComponent(w),{method:'DELETE'});loadFavs()}
 async function favWordNote(w,cur){
   const note=prompt('词汇笔记：',cur); if(note===null)return;
   await api('/api/favs/word/'+encodeURIComponent(w),{method:'PUT',body:JSON.stringify({note})});loadFavs();
@@ -1056,14 +1151,16 @@ async function favWordNote(w,cur){
 async function showSimilar(sid,btn){
   const box=$('#sim-'+sid);
   if(box.innerHTML){box.innerHTML='';return;}
-  btn.textContent='…';
+  btn.textContent='…';btn.disabled=true;
+  try{
   const d=await api('/api/rag/similar/'+sid);
-  btn.textContent='🔍 找相似';
   box.innerHTML=d.rows.length?'<div class="muted" style="margin-top:8px">相似例句：</div>'+d.rows.map(r=>`
     <div style="padding:6px 0 6px 14px;border-left:2px solid var(--line)">
       <span class="jp" data-raw="${esc(r.text)}" style="font-size:18px">${rubyHTML(r.tokens)}</span>
       <span class="tag">相似度 ${(r.score*100).toFixed(0)}%</span> ${spkBtn(r.text)}
     </div>`).join(''):'<div class="muted" style="margin-top:8px">暂无相似句</div>';
+  }catch(e){ box.innerHTML='<div class="muted" style="margin-top:8px">查找失败</div>'; }
+  finally{ btn.textContent='🔍 找相似';btn.disabled=false; }
 }
 
 let ragBooks=[];
@@ -1119,7 +1216,7 @@ function renderRagRecent(){
   const box=$('#ragRecent');
   if(!box) return;
   box.innerHTML=a.length?`<span class="muted" style="font-size:12.5px">最近：</span>`+
-    a.map(q=>`<span class="rag-pill" onclick="ragQuick('${esc(q).replace(/'/g,'&#39;')}')" title="点击重新检索">${esc(q)}</span>`).join('')+
+    a.map(q=>`<span class="rag-pill" onclick="ragQuick(${jsArg(q)})" title="点击重新检索">${esc(q)}</span>`).join('')+
     `<button class="btn mini" onclick="ragRecentClear()">清空</button>`:'';
 }
 function ragQuick(q){ $('#ragQ').value=q; ragSearch(); }
@@ -1235,8 +1332,10 @@ function ragRowHTML(r,i,terms){
       <div class="bar"><i style="width:${pct}%"></i></div>
     </div>`;
 }
+let _ragSeq=0;
 async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
+  const my=++_ragSeq;
   ragRecentPush(q);
   $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
   const body={
@@ -1250,12 +1349,13 @@ async function ragSearch(){
   };
   let d;
   try{ d=await api('/api/rag/search',{method:'POST',body:JSON.stringify(body)}); }
-  catch(e){ $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
+  catch(e){ if(my!==_ragSeq)return; $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
+  if(my!==_ragSeq)return;
   const meta=d.meta||{};
   const terms=meta.terms||[];
   const hits=meta.hits||{};
   const chLabel=c=>`${RAG_SRC[c]?RAG_SRC[c].icon+' '+RAG_SRC[c].label:c}`;
-  const termTags=terms.map(t=>`<span class="tag rag-term-hi" onclick="ragQuick('${esc(t).replace(/'/g,'&#39;')}')" title="用该关键词重新检索">${esc(t)}</span>`).join('');
+  const termTags=terms.map(t=>`<span class="tag rag-term-hi" onclick="ragQuick(${jsArg(t)})" title="用该关键词重新检索">${esc(t)}</span>`).join('');
   const qv=(meta.qvars||[]).map(t=>`<span class="tag" title="罗马音自动转假名，跨书写系统召回">变体 ${esc(t)}</span>`).join('');
   let html='';
   // 概览
@@ -1300,8 +1400,10 @@ async function ragSearch(){
 }
 async function doCleanup(){
   toast('清理中…');
-  const d=await api('/api/cleanup',{method:'POST'});
-  toast(`清理完成：修复 ${d.repaired} 句、删除 ${d.removed} 句`);loadCorpus(1);
+  try{
+    const d=await api('/api/cleanup',{method:'POST'});
+    toast(`清理完成：修复 ${d.repaired} 句、删除 ${d.removed} 句`);loadCorpus(corpusPage);
+  }catch(e){ toast('清理失败，请稍后重试'); }
 }
 
 /* ---------- 历史 ---------- */
@@ -1322,8 +1424,11 @@ async function clearHistory(){
 let ktvCache=[], ktvCur=null, ktvFontSize=+(localStorage.getItem('ktvFont')||24), ktvSearchTimer=null;
 function ktvLoad(){ if(!ktvCache.length) ktvSearch(''); }
 function ktvSearchDebounced(){ clearTimeout(ktvSearchTimer); ktvSearchTimer=setTimeout(()=>ktvSearch($('#ktvQ').value),250); }
+let _ktvSeq=0;
 async function ktvSearch(q){
+  const my=++_ktvSeq;
   const d=await api('/api/songs?q='+encodeURIComponent(q||''));
+  if(my!==_ktvSeq)return;
   ktvCache=d.songs||[];
   const el=$('#ktvSongList');
   if(!ktvCache.length){ el.innerHTML='<div class="card muted" style="padding:18px">还没有歌。点右上「＋ 导入歌词」，整段粘贴即可自动整理。</div>'; return; }
@@ -1333,7 +1438,7 @@ async function ktvSearch(q){
         <div class="kt">${esc(s.title)}${s.artist?` <span class="muted" style="font-weight:400;font-size:13px">· ${esc(s.artist)}</span>`:''}</div>
         <div class="km muted">${s.lines} 行 · ${s.kanji_count} 个汉字</div>
       </div>
-      <button class="btn mini" onclick="event.stopPropagation();ktvQuickCopy(this,'${esc(s.title).replace(/'/g,"&#39;")}')" title="复制歌名">复制</button>
+      <button class="btn mini" onclick="event.stopPropagation();ktvQuickCopy(this,${jsArg(s.title)})" title="复制歌名">复制</button>
     </div>`).join('')+'</div>';
 }
 async function ktvOpen(id){
@@ -1356,7 +1461,7 @@ function ktvRender(){
   el.classList.toggle('noruby',!$('#ktvRubyTog').checked);
   const showKana=$('#ktvRomajiTog').checked;
   const seg=$('#ktvSegTog').checked;
-  _ktvLineIdx=0;
+  _ktvLineIdx=0;_ktvLines=ktvCur.lyrics.split('\n');
   const stanzas=ktvCur.lyrics.split(/\n{2,}/);
   let html='';
   for(const st of stanzas){
@@ -1384,11 +1489,11 @@ function ktvRender(){
   }
   el.innerHTML=html||'<div class="muted">（空）</div>';
 }
-let _ktvLineIdx=0;
+let _ktvLineIdx=0,_ktvLines=[];
 function ktvLineTokens(){
   // 从 tokens 里按顺序取与当前非空行对应的条目（空行=跳过但游标推进）
   const toks=ktvCur.tokens||[];
-  const lines=ktvCur.lyrics.split('\n');
+  const lines=_ktvLines;
   while(_ktvLineIdx<lines.length&&!lines[_ktvLineIdx].trim()) _ktvLineIdx++;
   const t=toks[_ktvLineIdx]||null;
   _ktvLineIdx++;
@@ -1428,7 +1533,10 @@ function ktvEdit(){
   $('#ktvEditBox').classList.remove('hidden');
   $('#ktvEditBox').scrollIntoView({behavior:'smooth'});
 }
+let _ktvSaving=false;
 async function ktvSave(){
+  if(_ktvSaving)return; _ktvSaving=true;
+  try{
   const title=$('#ktvTitleIn').value.trim()||'未命名歌曲';
   const artist=$('#ktvArtistIn').value.trim();
   const lyrics=$('#ktvLyricsIn').value;
@@ -1437,6 +1545,7 @@ async function ktvSave(){
   $('#ktvEditBox').classList.add('hidden');
   toast('已保存（自动重新注音）');
   ktvOpen(ktvCur.id);
+  }catch(e){ toast('保存失败'); }finally{ _ktvSaving=false; }
 }
 async function ktvDel(){
   if(!confirm(`删除《${ktvCur.title}》？`))return;
@@ -1449,23 +1558,29 @@ function ktvShowImport(on){ $('#ktvImport').classList.toggle('hidden',!on); if(o
 async function ktvPreview(){
   const text=$('#ktvPaste').value;
   if(!text.trim()) return toast('先粘贴歌词');
-  const d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text,dry_run:true})});
+  let d; try{ d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text,dry_run:true})}); }
+  catch(e){ return toast('识别失败'); }
   if(d.error) return toast('识别失败');
   $('#ktvImportPrev').innerHTML=d.songs.length
     ? '<b>识别出 '+d.songs.length+' 首：</b><ol style="margin:6px 0 0 18px">'+d.songs.map(s=>
         `<li>${esc(s.title)}${s.artist?' <span class="muted">· '+esc(s.artist)+'</span>':''} <span class="muted">（${s.lines} 行）</span></li>`).join('')+'</ol>'
     : '<span class="muted">没识别到内容，请检查粘贴文本</span>';
 }
+let _ktvImporting=false;
 async function ktvDoImport(){
-  const text=$('#ktvPaste').value;
-  if(!text.trim()) return toast('先粘贴歌词');
-  const d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text})});
-  if(d.error) return toast('导入失败');
-  const n=d.created.length, sk=d.skipped.length;
-  toast(`已导入 ${n} 首${sk?`，跳过重复 ${sk} 首`:''}`);
-  $('#ktvPaste').value=''; $('#ktvImportPrev').innerHTML='';
-  ktvShowImport(false);
-  ktvCache=[]; ktvSearch('');
+  if(_ktvImporting)return; _ktvImporting=true;
+  try{
+    const text=$('#ktvPaste').value;
+    if(!text.trim()) return toast('先粘贴歌词');
+    toast('导入注音中…');
+    const d=await api('/api/songs/import',{method:'POST',body:JSON.stringify({text})});
+    if(d.error) return toast('导入失败：'+d.error);
+    const n=d.created.length, sk=d.skipped.length;
+    toast(`已导入 ${n} 首${sk?`，跳过重复 ${sk} 首`:''}`);
+    $('#ktvPaste').value=''; $('#ktvImportPrev').innerHTML='';
+    ktvShowImport(false);
+    ktvCache=[]; ktvSearch('');
+  }catch(e){ toast('导入失败'); }finally{ _ktvImporting=false; }
 }
 
 /* ---------- 备份：完整导出 / 导入（JSON，含歌词） ---------- */
@@ -1556,11 +1671,13 @@ function bkCurveHint(){
 }
 async function loadBooks(){
   $('#bkShelf').classList.remove('hidden');$('#bkDetail').classList.add('hidden');
-  const d=await api('/api/books');
-  bkRenderList(d.rows||[]);
-  bkCfg=await api('/api/books/study-cfg');
-  const p=await api('/api/books/plan');
-  bkPlanCache=p;bkRenderPlan(p);bkBadge(p);
+  const [d,cfg,p]=await Promise.all([
+    api('/api/books').catch(()=>null),
+    api('/api/books/study-cfg').catch(()=>null),
+    api('/api/books/plan').catch(()=>null)]);
+  if(d)bkRenderList(d.rows||[]);
+  if(cfg)bkCfg=cfg;
+  if(p){bkPlanCache=p;bkRenderPlan(p);bkBadge(p);}
 }
 function bkBadge(p){
   const el=$('#bkBadge'),t=p&&p.today_tasks;
@@ -1607,30 +1724,41 @@ async function bkAnalyze(){
   const text=$('#bkText').value;
   if(!text.trim())return toast('先粘贴文本');
   $('#bkPrev').innerHTML='<span class="muted">拆分中…</span>';
-  const d=await api('/api/books/analyze',{method:'POST',body:JSON.stringify({text})});
-  if(d.error)return toast(d.error);
+  let d; try{ d=await api('/api/books/analyze',{method:'POST',body:JSON.stringify({text})}); }
+  catch(e){ $('#bkPrev').innerHTML=''; return toast('分析失败，请稍后重试'); }
+  if(d.error){ $('#bkPrev').innerHTML=''; return toast(d.error); }
   $('#bkPrev').innerHTML=`<div class="muted">识别到 <b>${d.book_count}</b> 本书 · <b>${d.lessons}</b> 课 / <b>${d.sentences}</b> 句（与库内重复 ${d.duplicated}），覆盖 <b>${d.kanji}</b> 字 / <b>${d.words}</b> 词${d.sampled?`（长文本已抽样 ${d.sample_size} 句统计）`:''}</div>`+
     d.books.map(b=>`<div style="margin-top:6px">📘 <b>${esc(b.title)}</b>：${b.lessons} 课 · ${b.sentences} 句 <span class="muted">${esc((b.excerpt||[]).join('／').slice(0,60))}…</span></div>`).join('');
 }
+let _bkImporting=false;
 async function bkDoImport(){
-  const text=$('#bkText').value;
-  if(!text.trim())return toast('先粘贴文本');
-  const d=await api('/api/books/import',{method:'POST',body:JSON.stringify({text})});
-  if(d.error)return toast(d.error);
-  const n=d.books.reduce((a,b)=>a+b.sentences,0),k=d.books.reduce((a,b)=>a+b.kanji,0);
-  toast(`已导入 ${d.books.length} 本书 · ${n} 句 · ${k} 字`);
-  $('#bkText').value='';$('#bkPrev').innerHTML='';$('#bkImport').classList.add('hidden');
-  loadBooks();
+  if(_bkImporting)return; _bkImporting=true;
+  try{
+    const text=$('#bkText').value;
+    if(!text.trim())return toast('先粘贴文本');
+    toast('导入注音中，大文本请稍候…');
+    const d=await api('/api/books/import',{method:'POST',body:JSON.stringify({text})});
+    if(d.error)return toast(d.error);
+    const n=d.books.reduce((a,b)=>a+b.sentences,0),k=d.books.reduce((a,b)=>a+b.kanji,0);
+    toast(`已导入 ${d.books.length} 本书 · ${n} 句 · ${k} 字`);
+    $('#bkText').value='';$('#bkPrev').innerHTML='';$('#bkImport').classList.add('hidden');
+    loadBooks();
+  }catch(e){ toast('导入失败，请稍后重试'); }finally{ _bkImporting=false; }
 }
+let _planBuilding=false;
 async function bkPlanBuild(){
-  const body={book_ids:[...bkSel],deadline:$('#bkDeadline').value||null,
-    minutes_per_day:parseInt($('#bkMinutes').value)||null,target_stage:parseInt($('#bkTarget').value)||null,
-    content:$('#bkContent').value||'both'};
-  $('#bkPlanResult').innerHTML='<span class="muted">排程中…</span>';
-  const d=await api('/api/books/plan',{method:'POST',body:JSON.stringify(body)});
-  bkRenderPlanResult(d);
-  const p=await api('/api/books/plan');bkPlanCache=p;bkRenderPlan(p);
-  const dd=await api('/api/books');bkRenderList(dd.rows||[]);
+  if(_planBuilding)return; _planBuilding=true;
+  try{
+    const body={book_ids:[...bkSel],deadline:$('#bkDeadline').value||null,
+      minutes_per_day:parseInt($('#bkMinutes').value)||null,target_stage:parseInt($('#bkTarget').value)||null,
+      content:$('#bkContent').value||'both'};
+    $('#bkPlanResult').innerHTML='<span class="muted">排程中…</span>';
+    const d=await api('/api/books/plan',{method:'POST',body:JSON.stringify(body)});
+    bkRenderPlanResult(d);
+    const p=await api('/api/books/plan');bkPlanCache=p;bkRenderPlan(p);
+    const dd=await api('/api/books');bkRenderList(dd.rows||[]);
+  }catch(e){ $('#bkPlanResult').innerHTML='<div class="verwarn">排程失败，请重试</div>'; }
+  finally{ _planBuilding=false; }
 }
 function bkRenderPlanResult(d){
   const box=$('#bkPlanResult');
@@ -1667,8 +1795,8 @@ function bkRenderPlan(p){
     w:today.new.filter(x=>(x.kind==='words')||(x.kanji&&x.kanji.length>1)).length}:{k:0,w:0};
   const chip=it=>{
     const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
-    const q=esc(it.kanji).replace(/'/g,"&#39;");
-    return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}','${q}')">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone('${q}',this.checked)"> ${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;
+    const q=jsArg(it.kanji);
+    return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked)"> ${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;
   };
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
@@ -1687,8 +1815,8 @@ function bkRenderPlan(p){
     <div class="muted" style="margin-top:6px">${today?`今天新学 ${today.new.length} 项（${cntNew.k} 字＋${cntNew.w} 词） · ${today.review.length} 项复习${today.total?` · 完成 ${Math.round(100*today.done_n/today.total)}%`:''}`:'今天没有排程任务 🎉'}</div>
     ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学项到期复习，点击可查例句）</summary><div style="margin-top:4px">${today.review.map(it=>{
       const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
-      const q=esc(it.kanji).replace(/'/g,"&#39;");
-      return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}','${q}')">${bkKindBadge(it)}${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;}).join('')}</div></details>`:''}
+      const q=jsArg(it.kanji);
+      return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;}).join('')}</div></details>`:''}
     <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">随后几天（共 ${p.per_day.length} 天）</summary>
       ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
     </details>`;
@@ -1804,9 +1932,7 @@ async function bkUnitsTab(mode){
     }).join('')||'<span class="muted">本书还没有索引字</span>';
   }else{
     box.innerHTML=d.rows.map(r=>{
-      const q=esc(r.word).replace(/'/g,"&#39;");
-      const qr=esc(r.reading||'').replace(/'/g,"&#39;");
-      return `<span class="wordchip" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu('${q}','${qr}')">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`;
+      return `<span class="wordchip" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu(${jsArg(r.word)},${jsArg(r.reading||'')})">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`;
     }).join('')||'<span class="muted">本书还没有词汇</span>';
   }
 }
@@ -1816,22 +1942,22 @@ function bkWordMenu(w,reading){
   const m=document.createElement('div');m.id='bkMenu';
   m.style.cssText='position:fixed;inset:0;background:rgba(40,35,25,.45);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px';
   m.onclick=e=>{if(e.target===m)m.remove()};
-  const q=w.replace(/'/g,"&#39;");
+  const q=jsArg(w),qr=jsArg(reading);
   m.innerHTML=`<div class="card" style="max-width:360px;width:100%">
     <div class="row" style="justify-content:space-between"><div><span class="kbadge w">词</span><b style="font-size:24px">${esc(w)}</b>
       <div class="muted" style="margin-top:2px">${esc(reading)} ${spkBtn(w)}</div></div>
       <button class="btn mini" onclick="document.getElementById('bkMenu').remove()">✕</button></div>
     <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="bkProgress('${q}','learning','words')">📖 在学</button>
-      <button class="btn green" onclick="bkProgress('${q}','done','words')">✅ 已掌握</button>
-      <button class="btn warn" onclick="bkProgress('${q}','skip','words')">⏭ 跳过</button>
-      <button class="btn danger" onclick="bkProgress('${q}','','words')">✖ 清除标记</button>
+      <button class="btn" onclick="bkProgress(${q},'learning','words')">📖 在学</button>
+      <button class="btn green" onclick="bkProgress(${q},'done','words')">✅ 已掌握</button>
+      <button class="btn warn" onclick="bkProgress(${q},'skip','words')">⏭ 跳过</button>
+      <button class="btn danger" onclick="bkProgress(${q},'','words')">✖ 清除标记</button>
     </div>
     <div class="row" style="margin-top:10px;gap:8px">
-      <button class="btn primary" onclick="bkAddGlobalWord('${q}','${reading.replace(/'/g,"&#39;")}')">加入全局艾宾浩斯复习</button>
+      <button class="btn primary" onclick="bkAddGlobalWord(${q},${qr})">加入全局艾宾浩斯复习</button>
     </div>
     <div class="row" style="margin-top:8px;gap:8px">
-      <button class="btn" onclick="bkExamplesUnit('word','${q}')">🔍 例句（本书＋全库）</button>
+      <button class="btn" onclick="bkExamplesUnit('word',${q})">🔍 例句（本书＋全库）</button>
     </div>
   </div>`;
   document.body.appendChild(m);
@@ -1885,7 +2011,8 @@ function bkModal(html,width){
   document.body.appendChild(m);return m;
 }
 function bkModalClose(){const m=document.getElementById('bkModal');if(m)m.remove()}
-function bkCfgOpen(){
+async function bkCfgOpen(){
+  if(!bkCfg){ try{ bkCfg=await api('/api/books/study-cfg'); }catch(e){} }
   const c=bkCfg||{};
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>⚙ 学习配置（每个环节都可自定义）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
@@ -2006,7 +2133,7 @@ function bkQuizRender(){
     <div class="quiz-q jp" id="bkQuizQ">${B}${bkBlankHTML(q,null)}${A}</div>
     ${q.translation?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`:''}
     <div class="opt-grid" id="bkOpts">
-      ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPick(${i})"><span class="ol">${'ABCD'[i]}</span>${esc(o)}</button>`).join('')}
+      ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPick(${i})"><span class="ol">${'ABCD'[i]||(i+1)}</span>${esc(o)}</button>`).join('')}
     </div>
     <div id="bkQuizExp"></div>
   </div>`;
@@ -2043,6 +2170,8 @@ function bkQuizPick(i){
   document.getElementById('bkQuizExp').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 function bkQuizNext(){
+  if(!bkQuiz||bkQuiz.i>=bkQuiz.qs.length)return;
+  const t=Date.now(); if(t-(bkQuiz._nt||0)<400)return; bkQuiz._nt=t;
   bkQuiz.picked=null;
   bkQuiz.i++;
   if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
@@ -2059,7 +2188,8 @@ async function bkQuizDrop(){
     toast('已移除该题');
   }catch(e){toast('移除失败')}
   bkQuiz.qs.splice(bkQuiz.i,1);
-  bkQuiz.ans.pop();
+  const dropped=bkQuiz.ans.pop();
+  if(dropped&&dropped.ok)bkQuiz.ok=Math.max(0,bkQuiz.ok-1);
   bkQuiz.picked=null;
   if(!bkQuiz.qs.length){bkQuizQuit();return}
   if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
@@ -2096,6 +2226,40 @@ async function bkQuizFinish(){
   window.scrollTo(0,0);
 }
 
+/* ---------- 键盘快捷键 ---------- */
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){   // Esc 关闭一切弹窗
+    closeGrammar();bkModalClose();
+    const m=document.getElementById('bkMenu');if(m)m.remove();
+    const a=document.getElementById('aboutWrap');if(a)a.classList.add('hidden');
+    return;
+  }
+  const tag=(e.target.tagName||'').toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select'||e.target.isContentEditable)return;
+  if(document.getElementById('bkModal')||document.getElementById('bkMenu'))return;   // 弹窗打开时不触发做题快捷键
+  const gm=document.getElementById('gmodal');
+  if(gm&&gm.style.display==='flex')return;
+  if((e.key==='Enter'||e.code==='Space')&&(tag==='button'||tag==='a'))return;   // 交给原生点击，避免双重触发
+  if(!$('#tab-review').classList.contains('hidden')&&queue.length){   // 复习：空格/1/2/3
+    if(e.code==='Space'){
+      e.preventDefault();
+      const rb=[...document.querySelectorAll('#ansBtns button')].find(b=>b.textContent.includes('显示'));
+      if(rb)reveal();
+      return;
+    }
+    if($('#ansBtns')&&$('#ansBtns').querySelectorAll('button').length===3){
+      if(e.key==='1')answer('ok');else if(e.key==='2')answer('hard');else if(e.key==='3')answer('ng');
+    }
+    return;
+  }
+  if(!$('#bkQuizView').classList.contains('hidden')&&bkQuiz&&bkQuiz.qs){   // 挖空：1-4/回车
+    const q=bkQuiz.qs[bkQuiz.i];
+    if(bkQuiz.picked==null&&q&&['1','2','3','4'].includes(e.key)){
+      const i=+e.key-1; if(i<q.options.length)bkQuizPick(i);
+    }else if(e.key==='Enter'&&bkQuiz.picked!=null){bkQuizNext();}
+  }
+});
+
 /* ---------- 启动 ---------- */
 initVoices();
 initAdv();
@@ -2104,7 +2268,7 @@ initRag();
 if(localStorage.cs==='0')$('#corpusSongs').checked=false;
 if(localStorage.getItem('ktvSeg')==='0')$('#ktvSegTog').checked=false;
 loadReview();
-setInterval(refreshStats,60000);
+setInterval(()=>{if(!document.hidden)refreshStats()},60000);
 </script>
 </body>
 </html>
