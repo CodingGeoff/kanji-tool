@@ -3577,3 +3577,554 @@ def cloze_stats(days=14):
     except Exception:
         stats = {}
     return [{'day': day, **stats[day]} for day in sorted(stats)[-max(1, int(days)):]]
+
+
+# ================================================================
+# 7. 出题配置面板：高级算法自动推荐 + 多源按比例出题（v15）
+# ================================================================
+
+def _user_accuracy():
+    """用户过往答题正确率：综合 SRS (ok/ng) 与挖空统计，返回 0.0-1.0"""
+    acc_srs = None
+    try:
+        with db.get_conn() as c:
+            row = c.execute('SELECT SUM(ok) ok_sum, SUM(ng) ng_sum FROM srs').fetchone()
+            ok = row['ok_sum'] or 0
+            ng = row['ng_sum'] or 0
+            if ok + ng >= 5:
+                acc_srs = ok / float(ok + ng)
+    except Exception:
+        pass
+    acc_cloze = None
+    try:
+        stats = json.loads(db.get_setting('book_cloze_stats', '') or '{}')
+        asked = sum(v.get('asked', 0) for v in stats.values())
+        correct = sum(v.get('correct', 0) for v in stats.values())
+        if asked >= 5:
+            acc_cloze = correct / float(asked) if asked else None
+    except Exception:
+        pass
+    if acc_srs is not None and acc_cloze is not None:
+        return round((acc_srs * 0.6 + acc_cloze * 0.4), 3)
+    if acc_srs is not None:
+        return round(acc_srs, 3)
+    if acc_cloze is not None:
+        return round(acc_cloze, 3)
+    return 0.65  # 新用户默认值
+
+
+def _book_difficulty(book_ids):
+    """课文句子难度分级：分析书中句子的语法点平均等级，返回 (avg_order, level_str, count)"""
+    ids = [int(b) for b in (book_ids or [])]
+    if not ids:
+        return 1.5, 'N4', 0
+    ph = ','.join('?' * len(ids))
+    try:
+        with db.get_conn() as c:
+            rows = c.execute(
+                f'SELECT s.text FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+                f'WHERE bs.book_id IN ({ph}) ORDER BY bs.id LIMIT 120', ids).fetchall()
+    except Exception:
+        return 1.5, 'N4', 0
+    levels = []
+    for r in rows:
+        try:
+            pts = grammar.analyze(r['text'])
+            for g in pts:
+                if g.get('kind') == 'pattern':
+                    levels.append(_lv(g.get('level')))
+        except Exception:
+            continue
+    if not levels:
+        # 退化：按句长估算难度
+        try:
+            avg_len = sum(len(r['text']) for r in rows) / max(1, len(rows))
+            if avg_len < 15:
+                return 0.5, 'N5', len(rows)
+            if avg_len < 25:
+                return 1.2, 'N4', len(rows)
+            if avg_len < 35:
+                return 2.0, 'N3', len(rows)
+            if avg_len < 45:
+                return 3.0, 'N2', len(rows)
+            return 3.8, 'N1', len(rows)
+        except Exception:
+            return 1.5, 'N4', len(rows)
+    avg = sum(levels) / len(levels)
+    # order -> level
+    order_to_level = {0: 'N5', 1: 'N4', 2: 'N3', 3: 'N2', 4: 'N1'}
+    lv = order_to_level.get(int(round(avg)), 'N4')
+    return round(avg, 2), lv, len(rows)
+
+
+def recommend_quiz_config(book_ids=None, total_override=None):
+    """高级算法自动计算推荐题量与三类语料占比
+
+    算法逻辑（需求）：
+    - 读取当前课文句子总量、用户过往答题正确率、句子难度分级，自动算出推荐题量
+    - 自动分配三类语料百分比
+
+    返回：{total, ratios:{book,corpus,lyric}, accuracy, difficulty, explain}
+    """
+    ids = [int(b) for b in (book_ids or [])]
+    if not ids:
+        ids = [b['id'] for b in db.list_books() if b.get('active')]
+    # 课文句子总量
+    book_sent_total = 0
+    try:
+        if ids:
+            ph = ','.join('?' * len(ids))
+            with db.get_conn() as c:
+                book_sent_total = c.execute(
+                    f'SELECT COUNT(*) n FROM book_sentences WHERE book_id IN ({ph})', ids).fetchone()['n']
+    except Exception:
+        book_sent_total = 0
+    # 语料库与歌词总量
+    try:
+        with db.get_conn() as c:
+            corpus_total = c.execute('SELECT COUNT(*) n FROM sentences WHERE source != \"book\"').fetchone()['n']
+            lyric_total = c.execute('SELECT COUNT(*) n FROM songs').fetchone()['n']
+            lyric_lines = 0
+            if lyric_total:
+                # 估算歌词行数
+                rows = c.execute('SELECT lyrics FROM songs').fetchall()
+                lyric_lines = sum(len((r['lyrics'] or '').split('\n')) for r in rows)
+    except Exception:
+        corpus_total = 0
+        lyric_total = 0
+        lyric_lines = 0
+
+    accuracy = _user_accuracy()
+    avg_order, avg_level, sampled = _book_difficulty(ids)
+
+    # ---- 推荐题量 ----
+    # 基础：课文句数的 60%，最少 5，最多 30
+    if book_sent_total > 0:
+        base = book_sent_total * 0.6
+    else:
+        base = 12
+    # 正确率修正：正确率高 → 多出题；低 → 少出题
+    if accuracy < 0.55:
+        base *= 0.65
+    elif accuracy < 0.7:
+        base *= 0.85
+    elif accuracy > 0.85:
+        base *= 1.35
+    elif accuracy > 0.75:
+        base *= 1.15
+    # 难度修正：难度高 → 少出题
+    if avg_order >= 3.0:  # N2+
+        base *= 0.8
+    elif avg_order <= 1.0:  # N5-N4
+        base *= 1.2
+
+    if total_override and total_override > 0:
+        total = max(1, min(int(total_override), 50))
+    else:
+        total = int(round(base))
+        total = max(5, min(total, 30))
+
+    # ---- 占比分配 ----
+    # 默认 60/25/15
+    r_book, r_corpus, r_lyric = 60, 25, 15
+
+    if accuracy < 0.6:
+        r_book, r_corpus, r_lyric = 70, 20, 10
+    elif accuracy > 0.8:
+        r_book, r_corpus, r_lyric = 40, 30, 30
+    elif accuracy > 0.7:
+        r_book, r_corpus, r_lyric = 50, 30, 20
+
+    # 课文句数很少时，降低课文占比
+    if book_sent_total < 8 and book_sent_total > 0:
+        r_book = max(20, r_book - 20)
+        r_corpus += 10
+        r_lyric += 10
+    if book_sent_total == 0:
+        r_book = 0
+        # 重新分配
+        if corpus_total and lyric_total:
+            r_corpus, r_lyric = 60, 40
+        elif corpus_total:
+            r_corpus, r_lyric = 100, 0
+        elif lyric_total:
+            r_corpus, r_lyric = 0, 100
+        else:
+            r_corpus, r_lyric = 100, 0
+
+    # 歌词库为空时，归零并分给其他
+    if lyric_total == 0 or lyric_lines == 0:
+        if r_lyric:
+            # 分给课文和语料
+            if r_book:
+                r_book += r_lyric // 2
+                r_corpus += r_lyric - r_lyric // 2
+            else:
+                r_corpus += r_lyric
+            r_lyric = 0
+
+    # 语料库为空
+    if corpus_total == 0:
+        if r_corpus:
+            if r_book:
+                r_book += r_corpus
+            else:
+                r_lyric += r_corpus
+            r_corpus = 0
+
+    # 归一化到 100
+    s = r_book + r_corpus + r_lyric
+    if s != 100 and s > 0:
+        # 按比例缩放
+        r_book = int(round(r_book * 100 / s))
+        r_corpus = int(round(r_corpus * 100 / s))
+        r_lyric = 100 - r_book - r_corpus
+    # 兜底
+    if r_book + r_corpus + r_lyric != 100:
+        # 简单修正
+        diff = 100 - (r_book + r_corpus + r_lyric)
+        if r_book >= 30:
+            r_book += diff
+        elif r_corpus >= 20:
+            r_corpus += diff
+        else:
+            r_lyric += diff
+
+    explain = (
+        f'课文 {book_sent_total} 句 · 语料库 {corpus_total} 句 · 歌词 {lyric_total} 首({lyric_lines}行) · '
+        f'正确率 {int(accuracy*100)}% · 平均难度 {avg_level}({avg_order}) → 推荐 {total} 题，'
+        f'课文{r_book}%/语料{r_corpus}%/歌词{r_lyric}%'
+    )
+
+    return {
+        'ok': True,
+        'book_sent_total': book_sent_total,
+        'corpus_total': corpus_total,
+        'lyric_total': lyric_total,
+        'lyric_lines': lyric_lines,
+        'accuracy': accuracy,
+        'avg_difficulty_order': avg_order,
+        'avg_difficulty_level': avg_level,
+        'total': total,
+        'ratios': {'book': r_book, 'corpus': r_corpus, 'lyric': r_lyric},
+        'explain': explain,
+        'book_ids': ids,
+    }
+
+
+def _fetch_lyric_lines(limit=200):
+    """从歌词库随机取行，返回 [(sid, title, artist, line)]"""
+    try:
+        with db.get_conn() as c:
+            rows = c.execute('SELECT id, title, artist, lyrics FROM songs ORDER BY RANDOM() LIMIT 80').fetchall()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        title = r['title']
+        artist = r['artist'] or ''
+        sid = r['id']
+        for ln in (r['lyrics'] or '').split('\n'):
+            t = ln.strip()
+            if not t or len(t) < 4:
+                continue
+            # 过滤明显不是日语句子的行（可选）
+            if not re.search(r'[ぁ-んァ-ヶ一-鿿]', t):
+                continue
+            out.append((sid, title, artist, t))
+            if len(out) >= limit:
+                break
+        if len(out) >= limit:
+            break
+    random.shuffle(out)
+    return out
+
+
+def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
+                     min_level=None, count=None):
+    """多源按比例出题（v15）
+
+    参数：
+    - book_ids: 课本 id 列表（当前课文源）
+    - total: 题目总量（手动模式）
+    - ratios: {book, corpus, lyric} 百分比，自动归一 100
+    - difficulty: {book, corpus, lyric} 每源的最小难度等级，或单个等级字符串
+    - min_level: 全局最小难度（兼容旧接口）
+    - count: total 别名
+
+    返回：{ok, total, ratios, counts:{book,corpus,lyric}, questions, explain}
+    """
+    cfg = study_cfg()
+    if not cfg.get('cloze_enabled', True):
+        return {'ok': False, 'reason': '挖空测验已在学习配置中关闭', 'count': 0, 'questions': []}
+
+    # 归一参数
+    ids = [int(b) for b in (book_ids or [])]
+    if not ids:
+        try:
+            ids = [b['id'] for b in __import__('db').list_books() if b.get('active')]
+        except Exception:
+            ids = []
+    total = int(total or count or cfg.get('cloze_per_day', 10) or 10)
+    total = max(1, min(total, 50))
+
+    # ratios 归一
+    if ratios is None:
+        ratios = {'book': 60, 'corpus': 25, 'lyric': 15}
+    rb = int(ratios.get('book', 60) or 0)
+    rc = int(ratios.get('corpus', 25) or 0)
+    rl = int(ratios.get('lyric', 15) or 0)
+    # 允许传数组或字符串，兼容
+    if isinstance(ratios, (list, tuple)) and len(ratios) == 3:
+        rb, rc, rl = int(ratios[0]), int(ratios[1]), int(ratios[2])
+    # 负数/超限修正
+    rb, rc, rl = max(0, rb), max(0, rc), max(0, rl)
+    s = rb + rc + rl
+    if s == 0:
+        rb, rc, rl = 60, 25, 15
+        s = 100
+    # 归一到 100，再按 total 分配题数
+    rb_n = rb * 100.0 / s
+    rc_n = rc * 100.0 / s
+    rl_n = rl * 100.0 / s
+    # 按 total 分配，四舍五入后修正
+    n_book = int(round(total * rb_n / 100.0))
+    n_corpus = int(round(total * rc_n / 100.0))
+    n_lyric = total - n_book - n_corpus
+    # 保证非负
+    if n_lyric < 0:
+        # 从最大的里扣
+        if n_book >= n_corpus:
+            n_book += n_lyric
+        else:
+            n_corpus += n_lyric
+        n_lyric = 0
+    # 再次修正总和
+    diff = total - (n_book + n_corpus + n_lyric)
+    if diff != 0:
+        # 加到占比最高的源
+        if rb_n >= rc_n and rb_n >= rl_n:
+            n_book += diff
+        elif rc_n >= rl_n:
+            n_corpus += diff
+        else:
+            n_lyric += diff
+
+    # difficulty 归一
+    if difficulty is None:
+        difficulty = {}
+    if isinstance(difficulty, str):
+        # 全局同一难度
+        difficulty = {'book': difficulty, 'corpus': difficulty, 'lyric': difficulty}
+    # 每源最小等级，默认取配置
+    def _min_lv(src):
+        if src in difficulty and difficulty[src]:
+            return difficulty[src]
+        if min_level:
+            return min_level
+        return cfg.get('cloze_min_level', 'N4')
+
+    min_book = _min_lv('book')
+    min_corpus = _min_lv('corpus')
+    min_lyric = _min_lv('lyric')
+
+    # ---- 各源候选池 ----
+    pools = {'book': [], 'corpus': [], 'lyric': []}
+
+    # book 源
+    if n_book > 0 and ids:
+        need = min(n_book * 30, 300)
+        ph = ','.join('?' * len(ids))
+        try:
+            with db.get_conn() as c:
+                rows = c.execute(
+                    f'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
+                    f'bs.book_id book_id, b.title book_title, l.title lesson_title '
+                    f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+                    f'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
+                    f'WHERE bs.book_id IN ({ph}) ORDER BY RANDOM() LIMIT ?', ids + [need]).fetchall()
+        except Exception:
+            rows = []
+        min_o = _lv(min_book)
+        for r in rows:
+            meta = {'sid': r['sid'], 'translation': r['translation'], 'source': r['source'],
+                    'book_id': r['book_id'], 'book_title': r['book_title'],
+                    'lesson': r['lesson_title'] if 'lesson_title' in r.keys() else None,
+                    'origin_type': 'book'}
+            pools['book'] += _cloze_candidates(r['text'], min_o, meta)
+
+    # corpus 源
+    if n_corpus > 0:
+        need = min(n_corpus * 30, 400)
+        try:
+            with db.get_conn() as c:
+                rows = c.execute(
+                    'SELECT id sid, text text, translation translation, source source '
+                    'FROM sentences WHERE source != \"book\" OR source IS NULL '
+                    'ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()
+        except Exception:
+            rows = []
+        min_o = _lv(min_corpus)
+        for r in rows:
+            meta = {'sid': r['sid'], 'translation': r['translation'], 'source': r['source'],
+                    'origin_type': 'corpus'}
+            pools['corpus'] += _cloze_candidates(r['text'], min_o, meta)
+
+    # lyric 源
+    if n_lyric > 0:
+        lines = _fetch_lyric_lines(limit=n_lyric * 50)
+        min_o = _lv(min_lyric)
+        for sid, title, artist, line in lines:
+            if not _cloze_sentence_ok(line):
+                continue
+            meta = {'sid': sid, 'translation': None, 'source': 'lyric',
+                    'book_id': None, 'book_title': title, 'artist': artist,
+                    'lesson': None, 'origin_type': 'lyric', 'lyric_text': line,
+                    'title': title}
+            pools['lyric'] += _cloze_candidates(line, min_o, meta)
+
+    # 合并全局词池用于干扰项（跨源共享，保证选项丰富）
+    pool_by_level = {}
+    for src in pools:
+        for p in pools[src]:
+            pool_by_level.setdefault(p['level'], []).append(p['answer'])
+
+    # ---- 按配额选题 ----
+    questions = []
+    chosen_key = set()
+    chosen_sid = set()
+    chosen_ans = set()
+
+    def _pick_from(src_pool, need_count, src_name):
+        nonlocal questions, chosen_key, chosen_sid, chosen_ans
+        random.shuffle(src_pool)
+        picked = 0
+        for relax in (False, True):
+            for p in src_pool:
+                if picked >= need_count:
+                    break
+                key = (p['name'], p['sid'], p['text'])
+                if key in chosen_key or p['answer'] in chosen_ans:
+                    continue
+                if not relax and p['sid'] in chosen_sid:
+                    continue
+                opts = [p['answer']] + _cloze_distractors(
+                    p['name'], p['answer'], p['level'], pool_by_level,
+                    after=p['after'], attr=p.get('attr'), before=p['before'])
+                opts = opts[:4]
+                if len(opts) < 4 or len(set(opts)) < 4 or p['answer'] not in opts:
+                    continue
+                random.shuffle(opts)
+                chosen_key.add(key)
+                chosen_sid.add(p['sid'])
+                chosen_ans.add(p['answer'])
+                # 注音
+                try:
+                    tokens = furigana.annotate(p['text'])
+                    tokens_b = furigana.annotate(p['before'])
+                    tokens_a = furigana.annotate(p['after'])
+                    atokens = furigana.annotate(p['answer'])
+                except Exception:
+                    tokens, tokens_b, tokens_a, atokens = [], [], [], []
+                # 出处
+                if p.get('origin_type') == 'book':
+                    origin = origin_label(p['source'], p.get('book_title'), p.get('lesson'))
+                elif p.get('origin_type') == 'lyric':
+                    origin = f"🎵《{p.get('book_title') or '歌词'}》" + (f" · {p.get('artist')}" if p.get('artist') else '')
+                else:
+                    origin = origin_label(p.get('source'))
+
+                questions.append({
+                    'sid': p['sid'], 'text': p['text'], 'name': p['name'],
+                    'level': p['level'], 'structure': p['structure'],
+                    'explain': p['explain'], 'answer': p['answer'],
+                    'before': p['before'], 'after': p['after'],
+                    'blank': p['blank'], 'options': opts,
+                    'tokens': tokens, 'tokens_b': tokens_b,
+                    'tokens_a': tokens_a, 'atokens': atokens,
+                    'translation': p.get('translation'),
+                    'origin': origin, 'source': p.get('source'),
+                    'book_id': p.get('book_id'), 'lesson': p.get('lesson'),
+                    'origin_type': p.get('origin_type'),
+                    'title': p.get('book_title') or p.get('title'),
+                })
+                picked += 1
+            if picked >= need_count:
+                break
+        return picked
+
+    got_book = _pick_from(pools['book'], n_book, 'book') if n_book > 0 else 0
+    got_corpus = _pick_from(pools['corpus'], n_corpus, 'corpus') if n_corpus > 0 else 0
+    got_lyric = _pick_from(pools['lyric'], n_lyric, 'lyric') if n_lyric > 0 else 0
+
+    # 如果某源不够，尝试从其他源补足
+    total_got = len(questions)
+    if total_got < total:
+        # 剩余需求
+        remain = total - total_got
+        # 合并剩余池
+        rest_pool = []
+        for src in pools:
+            # 过滤已选
+            for p in pools[src]:
+                if (p['name'], p['sid'], p['text']) not in chosen_key:
+                    rest_pool.append(p)
+        random.shuffle(rest_pool)
+        for p in rest_pool:
+            if len(questions) >= total:
+                break
+            key = (p['name'], p['sid'], p['text'])
+            if key in chosen_key or p['answer'] in chosen_ans:
+                continue
+            opts = [p['answer']] + _cloze_distractors(
+                p['name'], p['answer'], p['level'], pool_by_level,
+                after=p['after'], attr=p.get('attr'), before=p['before'])
+            opts = opts[:4]
+            if len(opts) < 4 or len(set(opts)) < 4 or p['answer'] not in opts:
+                continue
+            random.shuffle(opts)
+            chosen_key.add(key)
+            chosen_sid.add(p['sid'])
+            chosen_ans.add(p['answer'])
+            try:
+                tokens = furigana.annotate(p['text'])
+                tokens_b = furigana.annotate(p['before'])
+                tokens_a = furigana.annotate(p['after'])
+                atokens = furigana.annotate(p['answer'])
+            except Exception:
+                tokens, tokens_b, tokens_a, atokens = [], [], [], []
+            if p.get('origin_type') == 'book':
+                origin = origin_label(p['source'], p.get('book_title'), p.get('lesson'))
+            elif p.get('origin_type') == 'lyric':
+                origin = f"🎵《{p.get('book_title') or '歌词'}》"
+            else:
+                origin = origin_label(p.get('source'))
+            questions.append({
+                'sid': p['sid'], 'text': p['text'], 'name': p['name'],
+                'level': p['level'], 'structure': p['structure'],
+                'explain': p['explain'], 'answer': p['answer'],
+                'before': p['before'], 'after': p['after'],
+                'blank': p['blank'], 'options': opts,
+                'tokens': tokens, 'tokens_b': tokens_b,
+                'tokens_a': tokens_a, 'atokens': atokens,
+                'translation': p.get('translation'),
+                'origin': origin, 'source': p.get('source'),
+                'book_id': p.get('book_id'), 'lesson': p.get('lesson'),
+                'origin_type': p.get('origin_type'),
+                'title': p.get('book_title') or p.get('title'),
+            })
+
+    random.shuffle(questions)
+    # 按请求比例截断
+    questions = questions[:total]
+
+    return {
+        'ok': True,
+        'total': total,
+        'ratios': {'book': rb_n, 'corpus': rc_n, 'lyric': rl_n},
+        'counts': {'book': got_book, 'corpus': got_corpus, 'lyric': got_lyric, 'total': len(questions)},
+        'questions': questions,
+        'short': len(questions) < total,
+        'explain': f'按比例出题：课文{rb_n:.0f}%({got_book}) 语料{rc_n:.0f}%({got_corpus}) 歌词{rl_n:.0f}%({got_lyric}) / 共{len(questions)}/{total}',
+        'book_ids': ids,
+    }

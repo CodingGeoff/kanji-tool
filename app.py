@@ -970,6 +970,45 @@ def api_book_cloze():
                                        count=_num(d.get('count'), None, 1, 20)))
 
 
+@app.route('/api/books/quiz-recommend', methods=['GET', 'POST'])
+def api_book_quiz_recommend():
+    """高级算法自动推荐题量与占比（课文总量 + 正确率 + 难度）"""
+    d = {}
+    if request.method == 'POST':
+        d = request.json or {}
+    # book_ids 可从 query 或 body 来
+    ids = []
+    if d.get('book_ids'):
+        ids = [int(x) for x in d.get('book_ids') if str(x).strip().isdigit()]
+    elif request.args.get('ids'):
+        ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
+    total = None
+    if d.get('total'):
+        try:
+            total = int(d.get('total'))
+        except Exception:
+            total = None
+    return jsonify(textbook.recommend_quiz_config(ids or None, total_override=total))
+
+
+@app.route('/api/books/cloze-multi', methods=['POST'])
+def api_book_cloze_multi():
+    """多源按比例出题：课文/语料库/歌词（占比和100%）"""
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    ratios = d.get('ratios') or d.get('ratio')
+    # 兼容 {book,corpus,lyric} 或数组
+    difficulty = d.get('difficulty')
+    # 兼容旧：min_level 全局
+    return jsonify(textbook.make_cloze_multi(
+        book_ids=ids or None,
+        total=d.get('total') or d.get('count'),
+        ratios=ratios,
+        difficulty=difficulty,
+        min_level=d.get('min_level'),
+        count=d.get('count')))
+
+
 @app.route('/api/books/cloze/answer', methods=['POST'])
 def api_book_cloze_answer():
     """提交挖空练习结果（计入当日统计与历史）"""

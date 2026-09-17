@@ -464,6 +464,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" style="justify-content:space-between">
         <b>我的课本</b>
         <div class="row">
+          <button class="btn primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比、出题数量，支持一键自动调节">🎛 出题配置</button>
           <button class="btn" onclick="bkQuizOpen()" title="从本书或全库句子挖空，考察语法点（难度可配）">📝 挖空练习</button>
           <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
@@ -642,6 +643,20 @@ async function showAbout(){
   .opt-btn{font-size:19px;padding:14px 10px}
   .cloze-blank{min-width:100px;font-size:18px}
 }
+/* ---------- v15 出题配置面板 ---------- */
+.qcfg-grid{display:grid;grid-template-columns:110px 1fr 52px;gap:8px 10px;align-items:center;margin-top:12px}
+.qcfg-grid .lbl{font-size:14px;font-weight:600}
+.qcfg-slider{width:100%}
+.qcfg-pct{font-size:13px;color:var(--accent);font-weight:700;text-align:right}
+.qcfg-bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:4px}
+.qcfg-bar i{display:block;height:100%;transition:.2s}
+.qcfg-bar .b-book{background:var(--gold)}
+.qcfg-bar .b-corpus{background:var(--accent2)}
+.qcfg-bar .b-lyric{background:var(--accent)}
+.qcfg-total{border:2px dashed var(--gold);border-radius:12px;padding:10px 12px;margin-top:14px;background:#fdfbf3}
+.qcfg-diff{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
+.qcfg-prev{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:12px;background:#fbf9f4;max-height:240px;overflow:auto}
+.qcfg-prev .s{font-size:18px;line-height:1.9}
 </style>
 
 <script>
@@ -1835,6 +1850,7 @@ async function bkOpen(id){
 function bkBack(){$('#bkDetail').classList.add('hidden');$('#bkShelf').classList.remove('hidden');loadBooks()}
 function bkRenderDetail(){
   const b=bkCur;
+  const rubyOn=localStorage.getItem('bkRubyAll')==='1';
   $('#bkDetail').innerHTML=`
    <div class="card">
      <div class="row" style="justify-content:space-between">
@@ -1845,6 +1861,8 @@ function bkRenderDetail(){
          ${b.author?`<span class="muted">${esc(b.author)}</span>`:''}
        </div>
        <div class="row" style="gap:6px">
+         <button class="btn mini primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比与数量，支持一键自动调节">🎛 出题配置</button>
+         <button class="btn mini ${rubyOn?'green':''}" id="bkRubyBtn" onclick="bkToggleRubyAll()" title="一键显示/隐藏全部汉字读音">🔤 ${rubyOn?'隐藏读音':'显示读音'}</button>
          <button class="btn mini" onclick="bkGrammarOpen(bkCur.id)" title="抽取本书句型（按配置过滤太简单的级别）">语法点</button>
          <button class="btn mini" onclick="bkEditMeta()">编辑</button>
          <button class="btn mini" onclick="bkReindex()" title="句子变动后重建字/词索引">重建索引</button>
@@ -1860,6 +1878,7 @@ function bkRenderDetail(){
      <div class="row" style="margin-top:10px;gap:6px">
        <button class="btn mini green" id="bkTabKanji" onclick="bkUnitsTab('kanji')">汉字 ${b.kanji_total}</button>
        <button class="btn mini" id="bkTabWords" onclick="bkUnitsTab('words')">词汇 ${b.words_total}</button>
+       <span class="muted" style="font-size:12px;margin-left:8px">💡 顶部【显示读音】可一键切换课文注音显隐，状态自动记忆</span>
      </div>
      <div id="bkUnits" style="margin-top:10px"></div>
    </div>
@@ -1869,12 +1888,12 @@ function bkRenderDetail(){
 }
 async function bkRenderLessons(){
   const ls=bkCur.lessons_list||[];
-  $('#bkLessonsBox').innerHTML=`<div class="row" style="justify-content:space-between"><b>课程目录</b><span class="muted">点开一课查看原文与注音</span></div>
+  $('#bkLessonsBox').innerHTML=`<div class="row" style="justify-content:space-between"><b>课程目录</b><span class="muted">点开一课查看原文与注音 · 右上角【显示读音】可一键切换全部</span></div>
     ${ls.length?ls.map(l=>`
     <div style="border-bottom:1px solid var(--line);padding:9px 2px">
       <div class="row" style="justify-content:space-between;cursor:pointer" onclick="bkToggleLesson(${l.id})">
         <b>${esc(l.title)}</b>
-        <span class="muted" style="font-size:12.5px">${l.n_sentences} 句 · 汉字 ${l.learned}/${l.kanji}（${l.progress}%） ${bkLessonsOpen.has(l.id)?'▲':'▼'}</span>
+        <span class="muted" style="font-size:12.5px">${l.n_sentences!=null?l.n_sentences:(l.n!=null?l.n:0)} 句 · 汉字 ${l.learned}/${l.kanji}（${l.progress}%） ${bkLessonsOpen.has(l.id)?'▲':'▼'}</span>
       </div>
       <div class="progressbar" style="margin:4px 0"><i style="width:${l.progress||0}%"></i></div>
       <div id="bkLes-${l.id}" class="${bkLessonsOpen.has(l.id)?'':'hidden'}">${bkLessonsOpen.has(l.id)?'<span class="muted">加载中…</span>':''}</div>
@@ -1882,11 +1901,23 @@ async function bkRenderLessons(){
   for(const id of bkLessonsOpen)bkLoadLesson(id);
 }
 function bkToggleLesson(id){bkLessonsOpen.has(id)?bkLessonsOpen.delete(id):bkLessonsOpen.add(id);bkRenderLessons()}
+function bkToggleRubyAll(){
+  const cur=localStorage.getItem('bkRubyAll')==='1';
+  const nxt=!cur;
+  localStorage.setItem('bkRubyAll',nxt?'1':'0');
+  const btn=document.getElementById('bkRubyBtn');
+  if(btn){btn.classList.toggle('green',nxt);btn.innerHTML=`🔤 ${nxt?'隐藏读音':'显示读音'}`;}
+  document.querySelectorAll('#bkDetail .jp').forEach(el=>{
+    if(nxt) el.classList.remove('noruby'); else el.classList.add('noruby');
+  });
+  toast(nxt?'已显示全部读音（状态已记忆）':'已隐藏读音（悬停可见）');
+}
 async function bkLoadLesson(lid){
   const d=await api(`/api/books/${bkCur.id}/sentences?lesson_id=${lid}&per=100`);
   const box=document.getElementById('bkLes-'+lid);if(!box)return;
+  const rubyOn=localStorage.getItem('bkRubyAll')==='1';
   box.innerHTML=(d.rows||[]).map(r=>`
-    <div class="sent-item"><div class="jp noruby" data-raw="${esc(r.text)}">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
+    <div class="sent-item"><div class="jp ${rubyOn?'':'noruby'}" data-raw="${esc(r.text)}">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
       <div class="meta"><button onclick="bkSentDel(${r.id})">从本书移除</button></div></div>`).join('')||'<span class="muted">本课暂无句子</span>';
 }
@@ -2225,6 +2256,259 @@ async function bkQuizFinish(){
   </div>`;
   window.scrollTo(0,0);
 }
+
+
+/* ---------- v15 出题配置面板（多源占比+自动调节+记忆+难度过滤+预览+导入导出） ---------- */
+let _qcfg = null;
+function qcfgLoad(){
+  try{
+    const v=JSON.parse(localStorage.getItem('bkQuizCfg')||'null');
+    if(v && v.ratios) return v;
+  }catch(e){}
+  return {ratios:{book:60,corpus:25,lyric:15}, total:10, difficulty:{book:'N4',corpus:'N4',lyric:'N4'}, rubyDefault: (localStorage.getItem('bkRubyAll')==='1')};
+}
+function qcfgSave(cfg){
+  localStorage.setItem('bkQuizCfg', JSON.stringify(cfg));
+}
+function qcfgNormRatios(r){
+  let rb=+r.book||0, rc=+r.corpus||0, rl=+r.lyric||0;
+  if(rb<0)rb=0; if(rc<0)rc=0; if(rl<0)rl=0;
+  let sum=rb+rc+rl;
+  if(sum===0) return {book:60,corpus:25,lyric:15};
+  // 归一到100
+  rb=Math.round(rb*100/sum); rc=Math.round(rc*100/sum); rl=100-rb-rc;
+  if(rl<0){ rl=0; // 再修正
+    sum=rb+rc; if(sum){ rb=Math.round(rb*100/sum); rc=100-rb; }
+  }
+  return {book:rb,corpus:rc,lyric:rl};
+}
+function bkQuizCfgOpen(){
+  _qcfg=qcfgLoad();
+  // 当前选中的书
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  const modalHtml = `
+    <div class="row" style="justify-content:space-between"><b>🎛 出题配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">配置记忆：自动沿用上次设置 · 难度过滤 · 预览样例 · 导出/导入 · 一键自动调节（算法读取课文句总量、正确率、难度）</div>
+
+    <div style="margin-top:14px"><b>2.1 出题数据源配置（占比和100%）</b>
+      <div class="muted" style="font-size:12px">当前课文句子%、语料库素材%、歌词素材% — 滑块调节，和为100%</div>
+      <div class="qcfg-grid" id="qcfgGrid">
+        <span class="lbl">📖 课文</span><input type="range" min="0" max="100" value="${_qcfg.ratios.book}" class="qcfg-slider" id="qcfgBook" oninput="qcfgOnSlide('book',this.value)"><span class="qcfg-pct" id="qcfgBookPct">${_qcfg.ratios.book}%</span>
+        <span class="lbl">🌐 语料库</span><input type="range" min="0" max="100" value="${_qcfg.ratios.corpus}" class="qcfg-slider" id="qcfgCorpus" oninput="qcfgOnSlide('corpus',this.value)"><span class="qcfg-pct" id="qcfgCorpusPct">${_qcfg.ratios.corpus}%</span>
+        <span class="lbl">🎵 歌词</span><input type="range" min="0" max="100" value="${_qcfg.ratios.lyric}" class="qcfg-slider" id="qcfgLyric" oninput="qcfgOnSlide('lyric',this.value)"><span class="qcfg-pct" id="qcfgLyricPct">${_qcfg.ratios.lyric}%</span>
+      </div>
+      <div class="qcfg-bar" style="margin-top:10px;display:flex"><i class="b-book" id="qcfgBarBook" style="width:${_qcfg.ratios.book}%"></i><i class="b-corpus" id="qcfgBarCorpus" style="width:${_qcfg.ratios.corpus}%"></i><i class="b-lyric" id="qcfgBarLyric" style="width:${_qcfg.ratios.lyric}%"></i></div>
+      <div class="muted" id="qcfgSum" style="margin-top:6px;font-size:12px">合计：${_qcfg.ratios.book+_qcfg.ratios.corpus+_qcfg.ratios.lyric}% ${(_qcfg.ratios.book+_qcfg.ratios.corpus+_qcfg.ratios.lyric)===100?'✅':'❌ 需=100%'}</div>
+    </div>
+
+    <div class="qcfg-total">
+      <div class="row" style="justify-content:space-between"><b>2.2 出题数量配置</b><span class="muted" id="qcfgRecommendHint"></span></div>
+      <div class="row" style="margin-top:8px">
+        <label class="muted">总量 <input type="number" id="qcfgTotal" min="1" max="50" value="${_qcfg.total}" style="width:80px"></label>
+        <button class="btn mini green" onclick="qcfgAuto()">✨ 一键自动调节</button>
+        <span class="muted" style="font-size:12px">算法：课文句总量 + 正确率 + 难度分级 → 推荐题量与占比</span>
+      </div>
+      <div class="qcfg-diff">
+        <label class="muted">课文难度下限 <select id="qcfgDiffBook" class="mini">${['N5','N4','N3','N2','N1'].map(l=>`<option value="${l}" ${(_qcfg.difficulty&&_qcfg.difficulty.book===l)?'selected':''}>${l}</option>`).join('')}</select></label>
+        <label class="muted">语料难度下限 <select id="qcfgDiffCorpus" class="mini">${['N5','N4','N3','N2','N1'].map(l=>`<option value="${l}" ${(_qcfg.difficulty&&_qcfg.difficulty.corpus===l)?'selected':''}>${l}</option>`).join('')}</select></label>
+        <label class="muted">歌词难度下限 <select id="qcfgDiffLyric" class="mini">${['N5','N4','N3','N2','N1'].map(l=>`<option value="${l}" ${(_qcfg.difficulty&&_qcfg.difficulty.lyric===l)?'selected':''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="advtog ${localStorage.getItem('bkRubyAll')==='1'?'on':''}"><input type="checkbox" id="qcfgRubyDef" ${localStorage.getItem('bkRubyAll')==='1'?'checked':''} onchange="this.parentElement.classList.toggle('on',this.checked)"><span>默认显示全部读音</span></label>
+      </div>
+    </div>
+
+    <div class="qcfg-prev hidden" id="qcfgPreviewBox"></div>
+
+    <div class="row" style="margin-top:14px;flex-wrap:wrap;gap:8px">
+      <button class="btn primary" onclick="qcfgSaveAndStart()">💾 保存并开始出题</button>
+      <button class="btn" onclick="qcfgPreview()">👁 预览样例</button>
+      <button class="btn" onclick="qcfgReset()">↺ 重置</button>
+      <button class="btn" onclick="bkModalClose()">取消</button>
+      <span style="flex:1"></span>
+      <button class="btn mini" onclick="qcfgExport()">📤 导出配置</button>
+      <button class="btn mini" onclick="qcfgImport()">📥 导入配置</button>
+    </div>
+    <div class="muted" style="margin-top:8px;font-size:12px" id="qcfgExplain">${_qcfg.explain?esc(_qcfg.explain):'拖动滑块调节占比，总和自动归一到100%，可二次手动微调'}</div>
+  `;
+  bkModal(modalHtml, 720);
+  // 初始同步
+  qcfgRefreshUI();
+}
+function qcfgOnSlide(which, val){
+  val=parseInt(val)||0;
+  if(!_qcfg) _qcfg=qcfgLoad();
+  const r={..._qcfg.ratios};
+  r[which]=val;
+  // 自动归一保持总和100：把差值按比例分给其他两项
+  let sum=r.book+r.corpus+r.lyric;
+  let diff=100-sum;
+  if(diff!==0){
+    const others=Object.keys(r).filter(k=>k!==which);
+    if(others.length){
+      // 简单策略：均分差值
+      const per = Math.floor(diff/others.length);
+      let rem = diff - per*others.length;
+      for(const k of others){
+        r[k]+=per;
+      }
+      // 剩余加到第一个
+      if(rem) r[others[0]]+=rem;
+      // 钳制0-100
+      for(const k of Object.keys(r)){
+        if(r[k]<0) r[k]=0;
+        if(r[k]>100) r[k]=100;
+      }
+      // 再归一
+      sum=r.book+r.corpus+r.lyric;
+      if(sum!==100){
+        // 最终强制归一
+        r.book=Math.round(r.book*100/sum);
+        r.corpus=Math.round(r.corpus*100/sum);
+        r.lyric=100-r.book-r.corpus;
+      }
+    }
+  }
+  _qcfg.ratios=r;
+  qcfgRefreshUI();
+}
+function qcfgRefreshUI(){
+  if(!_qcfg) return;
+  const r=_qcfg.ratios;
+  const setVal=(id,v)=>{ const el=document.getElementById(id); if(el) el.value=v; };
+  const setTxt=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
+  setVal('qcfgBook', r.book); setTxt('qcfgBookPct', r.book+'%');
+  setVal('qcfgCorpus', r.corpus); setTxt('qcfgCorpusPct', r.corpus+'%');
+  setVal('qcfgLyric', r.lyric); setTxt('qcfgLyricPct', r.lyric+'%');
+  const b=document.getElementById('qcfgBarBook'); if(b) b.style.width=r.book+'%';
+  const c=document.getElementById('qcfgBarCorpus'); if(c) c.style.width=r.corpus+'%';
+  const l=document.getElementById('qcfgBarLyric'); if(l) l.style.width=r.lyric+'%';
+  const sum=r.book+r.corpus+r.lyric;
+  const sumEl=document.getElementById('qcfgSum');
+  if(sumEl) sumEl.innerHTML=`合计：${sum}% ${sum===100?'✅':'❌ 需=100%（已自动归一）'}`;
+}
+async function qcfgAuto(){
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  const box=document.getElementById('qcfgRecommendHint');
+  if(box) box.textContent='计算中…';
+  try{
+    const body={book_ids:ids};
+    const d=await api('/api/books/quiz-recommend',{method:'POST',body:JSON.stringify(body)});
+    if(!d.ok){ toast('推荐失败'); if(box) box.textContent=''; return; }
+    _qcfg.ratios=d.ratios;
+    _qcfg.total=d.total;
+    _qcfg.explain=d.explain;
+    const tot=document.getElementById('qcfgTotal'); if(tot) tot.value=d.total;
+    qcfgRefreshUI();
+    const exp=document.getElementById('qcfgExplain');
+    if(exp) exp.textContent=d.explain;
+    if(box) box.textContent=`推荐 ${d.total} 题 · 正确率 ${Math.round(d.accuracy*100)}% · 难度 ${d.avg_difficulty_level}`;
+    toast('已自动调节：'+d.explain);
+  }catch(e){
+    toast('自动调节失败'); if(box) box.textContent='';
+  }
+}
+function qcfgReset(){
+  _qcfg={ratios:{book:60,corpus:25,lyric:15}, total:10, difficulty:{book:'N4',corpus:'N4',lyric:'N4'}};
+  const tot=document.getElementById('qcfgTotal'); if(tot) tot.value=10;
+  qcfgRefreshUI();
+  const exp=document.getElementById('qcfgExplain'); if(exp) exp.textContent='已重置为默认：课文60% 语料25% 歌词15% / 10题';
+}
+function qcfgExport(){
+  const cfg={
+    ratios:_qcfg.ratios,
+    total: parseInt(document.getElementById('qcfgTotal')?.value)||_qcfg.total,
+    difficulty:{
+      book: document.getElementById('qcfgDiffBook')?.value||'N4',
+      corpus: document.getElementById('qcfgDiffCorpus')?.value||'N4',
+      lyric: document.getElementById('qcfgDiffLyric')?.value||'N4'
+    },
+    rubyDefault: document.getElementById('qcfgRubyDef')?.checked||false
+  };
+  const blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='quiz_config.json'; a.click();
+  URL.revokeObjectURL(url);
+}
+function qcfgImport(){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
+  inp.onchange=async()=>{
+    const f=inp.files[0]; if(!f) return;
+    try{
+      const txt=await f.text(); const cfg=JSON.parse(txt);
+      if(!cfg.ratios) throw new Error('bad');
+      _qcfg.ratios=qcfgNormRatios(cfg.ratios);
+      _qcfg.total=cfg.total||10;
+      _qcfg.difficulty=cfg.difficulty||{book:'N4',corpus:'N4',lyric:'N4'};
+      const tot=document.getElementById('qcfgTotal'); if(tot) tot.value=_qcfg.total;
+      const db=document.getElementById('qcfgDiffBook'); if(db&&cfg.difficulty) db.value=cfg.difficulty.book||'N4';
+      const dc=document.getElementById('qcfgDiffCorpus'); if(dc&&cfg.difficulty) dc.value=cfg.difficulty.corpus||'N4';
+      const dl=document.getElementById('qcfgDiffLyric'); if(dl&&cfg.difficulty) dl.value=cfg.difficulty.lyric||'N4';
+      qcfgRefreshUI();
+      toast('配置已导入');
+    }catch(e){ toast('导入失败：不是有效的配置文件'); }
+  };
+  inp.click();
+}
+async function qcfgPreview(){
+  const total=parseInt(document.getElementById('qcfgTotal')?.value)||10;
+  const ratios=_qcfg.ratios;
+  const diff={
+    book: document.getElementById('qcfgDiffBook')?.value||'N4',
+    corpus: document.getElementById('qcfgDiffCorpus')?.value||'N4',
+    lyric: document.getElementById('qcfgDiffLyric')?.value||'N4'
+  };
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  const box=document.getElementById('qcfgPreviewBox');
+  if(!box) return;
+  box.classList.remove('hidden');
+  box.innerHTML='<span class="muted">预览生成中…</span>';
+  try{
+    const d=await api('/api/books/cloze-multi',{method:'POST',body:JSON.stringify({book_ids:ids,total:Math.min(total,3),ratios,difficulty:diff})});
+    if(!d.ok||!d.questions||!d.questions.length){ box.innerHTML='<span class="muted">暂无符合条件的题目，试试降低难度或调整占比</span>'; return; }
+    box.innerHTML=`<b>预览样例（${d.questions.length}）</b><div class="muted" style="font-size:12px;margin-bottom:6px">${esc(d.explain||'')}</div>`+
+      d.questions.map(q=>`<div style="border-bottom:1px dashed var(--line);padding:6px 0"><div class="s jp" style="font-size:18px">${rubyHTML(q.tokens||[],null)} <span class="tag">${esc(q.origin||'')}</span> <span class="lv lv-${q.level}">${q.level}</span></div><div class="muted" style="font-size:12px">${esc(q.name)} · ${esc(q.explain.slice(0,80))}</div></div>`).join('');
+  }catch(e){ box.innerHTML='<span class="muted">预览失败</span>'; }
+}
+async function qcfgSaveAndStart(){
+  const total=parseInt(document.getElementById('qcfgTotal')?.value)||10;
+  const ratios=_qcfg.ratios;
+  const diff={
+    book: document.getElementById('qcfgDiffBook')?.value||'N4',
+    corpus: document.getElementById('qcfgDiffCorpus')?.value||'N4',
+    lyric: document.getElementById('qcfgDiffLyric')?.value||'N4'
+  };
+  const rubyDef=document.getElementById('qcfgRubyDef')?.checked;
+  if(rubyDef!=null) localStorage.setItem('bkRubyAll', rubyDef?'1':'0');
+  const cfg={ratios,total,difficulty:diff, explain:_qcfg.explain||''};
+  qcfgSave(cfg);
+  bkModalClose();
+  await bkQuizOpenMulti();
+}
+async function bkQuizOpenMulti(){
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">📝 按比例出题中（课文/语料/歌词混合＋质检…）</div></div>';
+  const cfg=qcfgLoad();
+  const ids = bkCur? [bkCur.id] : [...bkSel];
+  let d;
+  try{
+    d=await api('/api/books/cloze-multi',{method:'POST',body:JSON.stringify({book_ids:ids,total:cfg.total,ratios:cfg.ratios,difficulty:cfg.difficulty})});
+  }catch(e){ d={ok:false}; }
+  if(!d.ok||!d.questions||!d.questions.length){
+    v.innerHTML=`<div class="card quiz-wrap">
+      <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回</button><b>📝 挖空练习（多源）</b></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">暂无符合条件的题目：${esc(d.reason||'题库不足')}，试试在【出题配置】中降低难度、调整占比或使用【一键自动调节】</div>
+      <div class="quiz-nav"><button class="btn" onclick="bkQuizCfgOpen()">🎛 出题配置</button></div>
+    </div>`;
+    return;
+  }
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:'multi',min:JSON.stringify(d.ratios||cfg.ratios),short:!!d.short,picked:null,ratios:d.ratios,counts:d.counts,explain:d.explain};
+  bkQuizRender();
+}
+
+
+
 
 /* ---------- 键盘快捷键 ---------- */
 document.addEventListener('keydown',e=>{
