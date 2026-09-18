@@ -1798,11 +1798,18 @@ async function bkDel(id){
 async function bkAnalyze(){
   const text=$('#bkText').value;
   if(!text.trim())return toast('先粘贴文本');
-  $('#bkPrev').innerHTML='<span class="muted">拆分中…</span>';
+  $('#bkPrev').innerHTML='<span class="muted">拆分与语法质检中…</span>';
   let d; try{ d=await api('/api/books/analyze',{method:'POST',body:JSON.stringify({text})}); }
   catch(e){ $('#bkPrev').innerHTML=''; return toast('分析失败，请稍后重试'); }
   if(d.error){ $('#bkPrev').innerHTML=''; return toast(d.error); }
+  let gcHtml = '';
+  if (d.grammar_check) {
+    const gc = d.grammar_check;
+    const gColor = gc.rate >= 90 ? 'var(--accent2)' : (gc.rate >= 75 ? 'var(--gold)' : 'var(--accent)');
+    gcHtml = `<div style="margin-top:8px;padding:6px 10px;background:var(--card);border:1px solid var(--line);border-radius:8px;font-size:13px">✨ <b>句法质检健康度</b>：<b style="color:${gColor}">${gc.valid}</b> / ${gc.valid + gc.invalid} 句合规（${gc.rate}%）${gc.invalid > 0 ? ` · <span style="color:var(--accent)">识别出 ${gc.invalid} 处存疑/片段/出处行（已在考查出题前自动隔离）</span>` : ''}</div>`;
+  }
   $('#bkPrev').innerHTML=`<div class="muted">识别到 <b>${d.book_count}</b> 本书 · <b>${d.lessons}</b> 课 / <b>${d.sentences}</b> 句（与库内重复 ${d.duplicated}），覆盖 <b>${d.kanji}</b> 字 / <b>${d.words}</b> 词${d.sampled?`（长文本已抽样 ${d.sample_size} 句统计）`:''}</div>`+
+    gcHtml +
     d.books.map(b=>`<div style="margin-top:6px">📘 <b>${esc(b.title)}</b>：${b.lessons} 课 · ${b.sentences} 句 <span class="muted">${esc((b.excerpt||[]).join('／').slice(0,60))}…</span></div>`).join('');
 }
 let _bkImporting=false;

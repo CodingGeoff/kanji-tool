@@ -110,16 +110,18 @@ def main():
 
     # --- 3. 语料 CRUD ---
     print('\n[3] 语料 CRUD')
-    import uuid
-    # 注意：应用会拒绝含下划线/时间戳/「test」等垃圾标记的文本，故用随机假名保唯一
-    _kana = 'あいうえおかきくけこさしすせそたちつてとなにぬねの'
-    tag = ''.join(_kana[int(uuid.uuid4().hex[i:i + 2], 16) % len(_kana)] for i in range(0, 16, 2))
-    test_text = f'日本語の勉強を始めました{tag}。'
+    import time
+    seq = int(time.time() * 1000) % 1000000
+    test_text = f'第{seq}回目の日本語の勉強を始めました。'
     sid = None
     try:
         s, body = post(base + '/api/sentences', {'text': test_text, 'translation': '开始了日语学习。'})
         check('POST /api/sentences 添加', s == 200, body)
         sid = json.loads(body).get('id') if s == 200 else None
+
+        # 语法检查防御测试：非法/残缺假名文本应被拒绝返回 400
+        s_bad, _ = post(base + '/api/sentences', {'text': '日本語の勉強を始めましたうてえていさねに。'}, expected=400)
+        check('非法病句添加被语法检查拒绝(400)', s_bad == 400)
 
         # 重复添加 → 409（预期状态需显式声明，否则助手函数断言失败）
         s2, _ = post(base + '/api/sentences', {'text': test_text}, expected=409)
@@ -148,12 +150,29 @@ def main():
         if sid:
             s6, _ = delete(base + f'/api/sentences/{sid}')
             check(f'DELETE /api/sentences/{sid} 删除', s6 == 200)
+            sid = None
             # 删除后搜索应不存在
             s7, body7 = get(base + '/api/sentences?q=' + urllib.parse.quote(test_text))
             d7 = json.loads(body7)
             check('删除后语料不存在', s7 == 200 and d7['total'] == 0)
+
+        # 语法质检接口测试
+        s_gc, body_gc = post(base + '/api/grammar/check', {'text': '日本語の勉強を始めました。'})
+        d_gc = json.loads(body_gc)
+        check('POST /api/grammar/check 合规句返回 ok=True', s_gc == 200 and d_gc.get('ok') is True)
+
+        s_gc2, body_gc2 = post(base + '/api/grammar/check', {'text': '日本語の勉強を始めましたうてえていさねに。'})
+        d_gc2 = json.loads(body_gc2)
+        check('POST /api/grammar/check 异常句返回 ok=False 及错误列表',
+              s_gc2 == 200 and d_gc2.get('ok') is False and len(d_gc2.get('errors', [])) > 0)
     except Exception as e:
         check('语料 CRUD', False, str(e))
+    finally:
+        if sid:
+            try:
+                delete(base + f'/api/sentences/{sid}')
+            except Exception:
+                pass
 
     # --- 4. 汉字 ---
     print('\n[4] 汉字')

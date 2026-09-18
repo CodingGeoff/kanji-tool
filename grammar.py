@@ -17,6 +17,7 @@
 同一语法点在不同句子里的讲解措辞和引用内容都不同。
 """
 import hashlib
+import re
 import fugashi
 
 _tagger = fugashi.Tagger()
@@ -903,6 +904,277 @@ def analyze(text: str):
     # ---- 排序：由浅入深（N5→N1），同级按句中位置 ----
     found.sort(key=lambda x: (LEVEL_ORDER.get(x['level'], 9), x['span'][0]))
     return found
+
+
+# ===============================================================
+# 基本语法检查器（句子完整性、形态素连贯性与质检门禁）
+# ===============================================================
+
+_JUNK_RE = re.compile(r'[_＿]|\d{7,}|テスト文|[A-Za-z]{25,}')
+_META_LINE_RE = re.compile(r'^[（(【\[『「].*[）)】\]』」]$')
+_META_KEYWORDS = ('書', '著', '社', '刊', '号', '企画', '新聞', 'シリーズ',
+                  '加筆', '出典', '引用', '編', '訳', 'ページ', 'PAGE', '版')
+_DATE_LINE_RE = re.compile(
+    r'^(?:(?:\d{2,4}|[一二三四五六七八九十百千]+)年)?\s*'
+    r'(?:(?:\d{1,2}|[一二三四五六七八九十]+)月)?\s*'
+    r'(?:(?:\d{1,2}|[一二三四五六七八九十]+)日)?$'
+)
+_BRACKET_PAIRS = {'（': '）', '(': ')', '「': '」', '『': '』', '【': '】', '[': ']'}
+_SENT_END_PUNCT = ('。', '！', '？', '!', '?')
+_DANGLING_CONJ = ('ば', 'つつ', 'ながら', 'ても', 'でも', 'たり', 'ので')
+_RANDOM_KANA_RE = re.compile(r'[あいうえおかきくけこさしすせそたちつてとなにぬねの]{7,}')
+
+
+def check_sentence_grammar(text: str, strict_mode: bool = False) -> dict:
+    """
+    单句全方位基础语法质检：
+    1. 句子边界与格式：长度合理、包含日文字符、无垃圾标记、无版权出处附注、括号匹配、句末标点合规。
+    2. 谓语完整性：必须具备至少一个有效述语（動詞、形容詞、断定助動詞だ/です/である等），拒绝纯名词标题/人名/日期片段。
+    3. 句尾形态素合规：严禁句尾格助词截断（如 さねに。/天気が。）、严禁接续助词悬空（如 読めば。）、严禁动词/形容词连用形未完结句（如 読み。）。
+    4. 句内语法连贯性：严禁终助词后连用格助词（如 さねに）、严禁格助词非法重叠、严禁敬体终止形后无接续拼接实词（如 始めましたうてえ）、严禁助动词非法活用接续（如 使役せる接意志推量形）。
+    5. 伪假名串过滤：严禁无意义随机假名拼接串。
+
+    返回 dict:
+      ok: bool - 是否通过语法检查
+      score: float - 语法健康得分 (0.0 ~ 1.0)
+      errors: list[str] - 致命语法错误
+      warnings: list[str] - 语法警告（轻度瑕疵）
+      has_predicate: bool - 是否包含有效谓语
+      ending_type: str - 句尾类型
+      token_count: int - 形态素数量
+    """
+    text = (text or '').strip()
+    errors = []
+    warnings = []
+
+    if not text:
+        return {'ok': False, 'score': 0.0, 'errors': ['文本为空'], 'warnings': [],
+                'has_predicate': False, 'ending_type': 'empty', 'token_count': 0}
+
+    # 1. 基础长度与字符检查
+    if len(text) < 4:
+        errors.append('句子过短（少于4字符），属于片段或单字')
+    elif len(text) < 6:
+        warnings.append('句子较短，请确认是否为完整语句')
+    if len(text) > 150:
+        warnings.append('句子过长（超过150字符），可能为长段落未拆分')
+
+    has_kana = bool(re.search(r'[ぁ-んァ-ヶ]', text))
+    has_kanji = bool(re.search(r'[一-龥々〆ヶ]', text))
+    if not has_kana and not has_kanji:
+        return {'ok': False, 'score': 0.0, 'errors': ['不包含日文汉字或假名'],
+                'warnings': [], 'has_predicate': False, 'ending_type': 'non_japanese',
+                'token_count': 0}
+
+    # 垃圾标记防御
+    if _JUNK_RE.search(text):
+        errors.append('包含下划线、超长数字串或测试垃圾标记')
+
+    # 书目引用/版权括号行（如（『日本人の法則』株式会社ヤック企画））
+    if _META_LINE_RE.match(text) and any(k in text for k in _META_KEYWORDS):
+        errors.append('为文献出处、版权或括号附注行，非合规教学语句')
+
+    # 纯日期行
+    if _DATE_LINE_RE.match(text) and len(text) <= 15:
+        errors.append('为纯日期文本，无陈述谓语')
+
+    # 括号配对检查
+    stack = []
+    for ch in text:
+        if ch in _BRACKET_PAIRS:
+            stack.append(_BRACKET_PAIRS[ch])
+        elif ch in _BRACKET_PAIRS.values():
+            if not stack or stack[-1] != ch:
+                warnings.append('括号不匹配或未正确闭合')
+                break
+            stack.pop()
+    if stack:
+        warnings.append('存在未闭合的括号')
+
+    # 标点与多句检查
+    has_end = text.endswith(_SENT_END_PUNCT)
+    if not has_end:
+        if strict_mode:
+            errors.append('缺少句末标点（。！？）')
+        else:
+            warnings.append('缺少句末标点（。！？）')
+
+    inner_ends = [i for i, ch in enumerate(text[:-1]) if ch in _SENT_END_PUNCT]
+    if inner_ends:
+        warnings.append('句中包含多个独立分句标点，可能为拼接句')
+
+    # 2. 形态素句法深度分析
+    try:
+        words = list(_tagger(text))
+    except Exception as e:
+        return {'ok': False, 'score': 0.0, 'errors': [f'分词解析异常: {e}'],
+                'warnings': [], 'has_predicate': False, 'ending_type': 'parse_error',
+                'token_count': 0}
+
+    _PUNCT_SURFS = ('。', '！', '？', '!', '?', '…', '・', '「', '」', '『', '』',
+                    '（', '）', '(', ')', '【', '】', '［', '］', '[', ']')
+    non_punct = [w for w in words
+                 if w.feature.pos1 not in ('補助記号', '記号') and w.surface not in _PUNCT_SURFS]
+
+    if not non_punct:
+        errors.append('无实质词汇成分（全为标点符号）')
+        return {'ok': False, 'score': 0.0, 'errors': errors, 'warnings': warnings,
+                'has_predicate': False, 'ending_type': 'empty', 'token_count': len(words)}
+
+    # 谓语成分识别
+    pred_count = 0
+    for w in non_punct:
+        f = w.feature
+        if f.pos1 in ('動詞', '形容詞'):
+            pred_count += 1
+        elif f.pos1 == '助動詞' and (
+            f.lemma in ('だ', 'です', 'ます', 'た', 'ない', 'たい', 'らしい', 'そうだ', 'ようだ')
+            or w.surface in ('だ', 'です', 'でした', 'だった', 'ない', 'なかった', 'ます', 'ました')
+        ):
+            pred_count += 1
+
+    has_predicate = pred_count > 0
+    if not has_predicate:
+        if all(w.feature.pos1 in ('名詞', '接尾辞') for w in non_punct):
+            errors.append('句子全由名词/词缀构成，无任何谓语动词、形容词或断定助动词（为标题、日期、人名或体言片段）')
+        else:
+            errors.append('未检测到有效谓语（動詞、形容詞、助動詞等主干成分）')
+
+    # 句尾形态素分析
+    last = non_punct[-1]
+    lf = last.feature
+    ending_type = 'unknown'
+
+    if lf.pos1 == '助詞' and lf.pos2 == '格助詞':
+        prev = non_punct[-2] if len(non_punct) >= 2 else None
+        if last.surface == 'に' and prev and prev.surface in ('の', 'ん'):
+            ending_type = 'colloquial_noni'
+        elif last.surface == 'と' and prev and (
+            prev.surface in ('ない', 'なかっ') or '未然形' in (prev.feature.cForm or '')
+        ):
+            ending_type = 'colloquial_naito'
+        elif last.surface == 'へ' and len(non_punct) <= 6:
+            ending_type = 'heading_to'
+            warnings.append('句尾以格助词「へ」终结，可能为书信称呼或标题')
+        else:
+            ending_type = 'invalid_case_particle'
+            errors.append(f'句尾以格助词「{last.surface}」异常截断，缺少后续谓语')
+    elif lf.pos1 == '助詞' and lf.pos2 == '接続助詞':
+        if last.surface in _DANGLING_CONJ:
+            ending_type = 'dangling_conj_particle'
+            errors.append(f'句尾以接续助词「{last.surface}」悬空终结，从句后缺少主句')
+        elif last.surface in ('て', 'で'):
+            ending_type = 'colloquial_te'
+            if strict_mode:
+                errors.append(f'句尾停留在连接式「{last.surface}」，考察句应具备完整结句')
+            else:
+                warnings.append(f'句尾停留在连接式「{last.surface}」，若非口语请求则为主干残缺')
+        else:
+            ending_type = 'conj_particle'
+    elif lf.pos1 == '助詞' and lf.pos2 == '係助詞':
+        prev = non_punct[-2] if len(non_punct) >= 2 else None
+        if prev and prev.surface in ('て', 'で') and last.surface == 'も':
+            ending_type = 'dangling_temo'
+            errors.append(f'句尾以让步接续助词「{prev.surface}{last.surface}」悬空终结，缺少后续主句')
+        elif text.endswith(('？', '?')):
+            ending_type = 'colloquial_kakari_q'
+            warnings.append(f'句尾以系助词「{last.surface}」提问，为口语省略表达')
+        else:
+            ending_type = 'dangling_kakari'
+            errors.append(f'句尾以系助词「{last.surface}」截断，缺少主干谓语')
+    elif lf.pos1 == '助詞' and lf.pos2 == '終助詞':
+        ending_type = 'final_particle'
+    elif lf.pos1 == '動詞':
+        cf = lf.cForm or ''
+        if cf.startswith('連用形'):
+            ending_type = 'dangling_renyou'
+            errors.append(f'句尾动词「{last.surface}」停留在连用形，未完成结句')
+        elif cf.startswith('未然形'):
+            ending_type = 'dangling_mizen'
+            errors.append(f'句尾动词「{last.surface}」停留在未然形，缺少后续助动词')
+        elif cf.startswith('仮定形'):
+            ending_type = 'dangling_katei'
+            errors.append(f'句尾动词「{last.surface}」停留在假定形，缺少后续主句')
+        else:
+            ending_type = 'verb_terminal'
+    elif lf.pos1 == '形容詞':
+        cf = lf.cForm or ''
+        if cf.startswith('連用形'):
+            ending_type = 'dangling_adj_renyou'
+            errors.append(f'句尾形容词「{last.surface}」停留在连用形，未完成结句')
+        else:
+            ending_type = 'adj_terminal'
+    elif lf.pos1 == '助動詞':
+        cf = lf.cForm or ''
+        if cf.startswith('連用形') and last.surface not in ('まし',):
+            ending_type = 'dangling_aux_renyou'
+            errors.append(f'句尾助动词「{last.surface}」停留在连用形，未完成结句')
+        else:
+            ending_type = 'aux_terminal'
+    elif lf.pos1 == '名詞':
+        ending_type = 'noun_terminal'
+        if strict_mode:
+            warnings.append('句尾为体言（名词体言止）')
+
+    # 句内形态素与接续合法性检查
+    for i in range(len(non_punct) - 1):
+        w1, w2 = non_punct[i], non_punct[i + 1]
+        f1, f2 = w1.feature, w2.feature
+
+        # 终助词 + 格助词（如 さねに）
+        if f1.pos1 == '助詞' and f1.pos2 == '終助詞':
+            if f2.pos1 == '助詞' and f2.pos2 in ('格助詞', '係助詞') and w2.surface not in ('と',):
+                errors.append(f'终助词「{w1.surface}」后非法连用「{w2.surface}」（句法结构断裂）')
+
+        # 格助词 + 格助词 非法重叠
+        if f1.pos1 == '助詞' and f1.pos2 == '格助詞':
+            if f2.pos1 == '助詞' and f2.pos2 == '格助詞':
+                if not (w2.surface == 'の' or (w1.surface == 'に' and w2.surface == 'て')):
+                    errors.append(f'格助词「{w1.surface}」后非法重叠格助词「{w2.surface}」')
+
+        # 敬体终结形后直接拼接词汇（如 始めました + うてえ）
+        is_polite = (w1.surface in ('ました', 'ません', 'でした') or
+                     (w1.surface == 'た' and i >= 1 and non_punct[i - 1].surface == 'まし'))
+        if is_polite:
+            if f2.pos1 in ('動詞', '形容詞') and w2.surface not in ('ある', 'いる'):
+                errors.append(f'敬体结句「{w1.surface}」后直接拼接实词「{w2.surface}」，缺少标点、引用或接续助词')
+            elif f2.pos1 == '感動詞' and f2.pos2 == 'フィラー':
+                errors.append(f'敬体结句「{w1.surface}」后直接拼接填充词「{w2.surface}」')
+
+        # 助动词非法接续（使役「せる/させる」接非未然形）
+        if f2.pos1 == '助動詞' and f2.lemma in ('せる', 'させる') and not ('未然形' in (f1.cForm or '')):
+            errors.append(f'使役助动词「{w2.surface}」接续了非未然形「{w1.surface}」')
+
+        # 助动词「ない」接非未然形
+        if f2.pos1 == '助動詞' and f2.lemma == 'ない' and not ('未然形' in (f1.cForm or '')) and f1.pos1 == '動詞':
+            errors.append(f'否定助动词「{w2.surface}」接续了非未然形动词「{w1.surface}」')
+
+    # 伪假名串防御（连续7+随机假名）
+    if _RANDOM_KANA_RE.search(text):
+        m = _RANDOM_KANA_RE.search(text).group(0)
+        sub_tokens = list(_tagger(m))
+        if len(sub_tokens) >= 3 and any(t.feature.pos2 in ('フィラー', '一般') for t in sub_tokens):
+            errors.append(f'包含无意义随机假名拼接串「{m}」')
+
+    score = 1.0 - (len(errors) * 0.4 + len(warnings) * 0.1)
+    score = max(0.0, min(1.0, round(score, 2)))
+    ok = len(errors) == 0
+
+    return {
+        'ok': ok,
+        'score': score,
+        'errors': errors,
+        'warnings': warnings,
+        'has_predicate': has_predicate,
+        'ending_type': ending_type,
+        'token_count': len(words),
+    }
+
+
+def is_sentence_grammatically_sound(text: str, strict_mode: bool = False) -> bool:
+    """快速语法门禁判定：无致命语法错误即通过。"""
+    res = check_sentence_grammar(text, strict_mode=strict_mode)
+    return res['ok']
 
 
 if __name__ == '__main__':
