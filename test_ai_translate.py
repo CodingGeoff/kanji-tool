@@ -29,6 +29,30 @@ def _fake_empty(url, headers, payload, timeout):
     return (200, {'choices': [{'message': {'content': '```\n```'}}]})
 
 
+def _fake_spark(url, headers, payload, timeout):
+    """按星火 MaaS v2 文档校验请求体、返回真实形状的响应。"""
+    assert url == 'https://maas-api.cn-huabei-1.xf-yun.com/v2/chat/completions', url
+    assert headers['Authorization'] == 'Bearer ak-fake', '鉴权头异常'
+    assert payload['model'] == 'spark-x2.5-4b', payload.get('model')
+    assert payload['stream'] is False
+    assert 'temperature' not in payload and 'top_p' not in payload, '星火不应传 temperature/top_p'
+    assert 'max_tokens' not in payload, '星火 max_tokens 已废弃'
+    assert payload['max_completion_tokens'] == 500, payload
+    assert [m['role'] for m in payload['messages']] == ['system', 'user']
+    user = payload['messages'][1]['content']
+    return (200, {'code': 0, 'message': 'success', 'id': 'chatcmpl-fake',
+                  'object': 'chat.completion', 'created': 1726000000,
+                  'model': 'spark-x2.5-4b',
+                  'choices': [{'index': 0, 'finish_reason': 'stop',
+                               'message': {'role': 'assistant', 'content': f'春天来了。{user[:0]}',
+                                           'reasoning_content': None}}],
+                  'usage': {'prompt_tokens': 20, 'completion_tokens': 6, 'total_tokens': 26}})
+
+
+def _fake_spark_bizerr(url, headers, payload, timeout):
+    return (200, {'code': 130003, 'message': 'Quota exceeded'})
+
+
 def _fake_boom(url, headers, payload, timeout):
     raise ConnectionError('offline')
 
@@ -55,7 +79,10 @@ def main():
 
     print('== 配置 ==')
     cfg = AIConfig.from_dict({'provider': 'nope', 'lang': 'fr'})
-    check('非法provider回退', cfg.provider == 'deepseek' and cfg.lang == 'zh')
+    check('非法provider回退星火', cfg.provider == 'spark' and cfg.lang == 'zh')
+    dft = AIConfig()
+    check('默认星火v2', dft.provider == 'spark' and dft.model == 'spark-x2.5-4b'
+          and dft.base_url == 'https://maas-api.cn-huabei-1.xf-yun.com/v2', dft.to_dict())
     check('来源标记', AIConfig('spark', model='spark-max').source_tag == 'ai:spark:spark-max')
     check('key打码', AIConfig(api_key='sk-1').to_dict()['api_key'] == '***')
 
@@ -78,6 +105,14 @@ def main():
     check('空返回视为失败', not r.ok and '为空' in r.error, r.error)
     r = ai_translate.translate_text('春が来た。', online, _http_post=_fake_boom)
     check('断网明确报错', not r.ok and 'ConnectionError' in r.error, r.error)
+
+    print('== 星火 v2 分支（fake HTTP，按官方文档形状）==')
+    spark = AIConfig('spark', model='spark-x2.5-4b', api_key='ak-fake')
+    r = ai_translate.translate_text('春が来た。', spark, _http_post=_fake_spark)
+    check('星火请求体/响应解析', r.ok and r.text == '春天来了。'
+          and r.source == 'ai:spark:spark-x2.5-4b', r.to_dict())
+    r = ai_translate.translate_text('春が来た。', spark, _http_post=_fake_spark_bizerr)
+    check('星火业务错误码', not r.ok and '130003' in r.error and 'Quota' in r.error, r.error)
 
     print('== 落库 + 批量（临时库）==')
     import db

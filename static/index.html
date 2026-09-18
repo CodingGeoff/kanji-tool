@@ -333,15 +333,15 @@ body.ktv-song.showhdr header{display:flex;position:static}
     <div class="ai-grid">
       <label>服务商
         <select id="aiProvider" onchange="aiProviderPreset()">
-          <option value="deepseek">DeepSeek</option>
-          <option value="spark">讯飞星火</option>
+          <option value="spark">讯飞星火（默认）</option>
+          <option value="deepseek">DeepSeek（备选）</option>
           <option value="openai">OpenAI 兼容</option>
           <option value="mock">mock（离线演示）</option>
         </select>
       </label>
-      <label>模型 <input id="aiModel" placeholder="deepseek-chat"></label>
-      <label>API Key <input id="aiKey" type="password" placeholder="sk-…（mock 不需要）"></label>
-      <label>接口地址 <input id="aiBase" placeholder="https://api.deepseek.com/v1"></label>
+      <label>模型 <input id="aiModel" placeholder="spark-x2.5-4b"></label>
+      <label>API Key <input id="aiKey" type="password" placeholder="ak-…（mock 不需要）"></label>
+      <label>接口地址 <input id="aiBase" placeholder="https://maas-api.cn-huabei-1.xf-yun.com/v2"></label>
       <label>目标语言
         <select id="aiLang"><option value="zh">简体中文</option><option value="en">English</option></select>
       </label>
@@ -1161,7 +1161,7 @@ async function delSentence(id){
 
 /* ---------- AI 翻译补译（v18） ---------- */
 const AI_PRESET={deepseek:{model:'deepseek-chat',base:'https://api.deepseek.com/v1'},
-  spark:{model:'spark-max',base:'https://spark-api-open.xf-yun.com/v1'},
+  spark:{model:'spark-x2.5-4b',base:'https://maas-api.cn-huabei-1.xf-yun.com/v2'},
   openai:{model:'gpt-4o-mini',base:'https://api.openai.com/v1'},mock:{model:'mock-v1',base:''}};
 function aiProviderPreset(){
   const p=AI_PRESET[$('#aiProvider').value]||{};
@@ -1172,7 +1172,7 @@ async function aiLoad(){
   try{
     const d=await api('/api/translate/config');
     const c=d.config||{};
-    $('#aiProvider').value=c.provider||'deepseek';
+    $('#aiProvider').value=c.provider||'spark';
     $('#aiModel').value=c.model||'';
     $('#aiKey').value=c.api_key||'';
     $('#aiKey').placeholder=c.api_key?'（已保存，回传 *** 表示不变）':'sk-…（mock 不需要）';

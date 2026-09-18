@@ -3,9 +3,10 @@
 
 设计要点
 --------
-1. 多 Provider：deepseek / spark（星火）/ openai（OpenAI 兼容接口）/ mock。
-   三个在线 Provider 统一走 OpenAI-compatible `/chat/completions` 协议，
-   仅默认 base_url / model 不同。
+1. 多 Provider：spark（讯飞星火，默认）/ deepseek / openai（OpenAI 兼容接口）/ mock。
+   三个在线 Provider 统一走 `/chat/completions` 协议；星火用 MaaS v2 地址
+   （https://maas-api.cn-huabei-1.xf-yun.com/v2），请求体按星火文档微调：
+   max_completion_tokens 代替已废弃的 max_tokens，且不传 temperature/top_p。
 2. 无静默降级：在线 Provider 出错（断网、无 key、4xx/5xx、超时）时，
    直接返回 error，绝不悄悄换成 mock 结果欺骗用户（诚实性红线）。
 3. 自动清洗：sanitize() 去掉模型常带的 ```围栏、"翻译："前缀、首尾引号；
@@ -26,17 +27,20 @@ AI_TRANSLATE_VERSION = 'v18'
 
 DEFAULT_MODELS = {
     'deepseek': 'deepseek-chat',
-    'spark': 'spark-max',
+    'spark': 'spark-x2.5-4b',
     'openai': 'gpt-4o-mini',
     'mock': 'mock-v1',
 }
 
 DEFAULT_BASE_URLS = {
     'deepseek': 'https://api.deepseek.com/v1',
-    'spark': 'https://spark-api-open.xf-yun.com/v1',
+    'spark': 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     'openai': 'https://api.openai.com/v1',
     'mock': '',
 }
+
+# 默认服务商：讯飞星火（用户指定；DeepSeek 仅作翻译质量再三被投诉时的备选）
+DEFAULT_PROVIDER = 'spark'
 
 DEFAULT_PROMPTS = {
     'zh': ('你是一名资深日中翻译。请把用户给出的日语句子翻译成简体中文。'
@@ -52,9 +56,9 @@ CONFIG_KEY = 'ai_translate_config'
 class AIConfig:
     """AI 翻译配置（可 JSON 序列化）。"""
 
-    def __init__(self, provider='deepseek', model='', api_key='', base_url='',
+    def __init__(self, provider='spark', model='', api_key='', base_url='',
                  lang='zh', max_tokens=500, temperature=0.3, timeout=30):
-        self.provider = provider if provider in PROVIDERS else 'deepseek'
+        self.provider = provider if provider in PROVIDERS else DEFAULT_PROVIDER
         self.model = model or DEFAULT_MODELS[self.provider]
         self.api_key = api_key or ''
         self.base_url = (base_url or DEFAULT_BASE_URLS.get(self.provider, '')).rstrip('/')
@@ -75,7 +79,7 @@ class AIConfig:
     @classmethod
     def from_dict(cls, d):
         d = d or {}
-        return cls(provider=d.get('provider', 'deepseek'),
+        return cls(provider=d.get('provider', DEFAULT_PROVIDER),
                    model=d.get('model', ''),
                    api_key=d.get('api_key', ''),
                    base_url=d.get('base_url', ''),
@@ -175,6 +179,26 @@ def _mock_translate(text, lang):
     return f'[{tag}] {text}'
 
 
+def _build_payload(cfg, text):
+    """按服务商拼请求体。
+
+    星火 MaaS v2（https://maas.xfyun.cn/doc Chat API）：
+    - max_tokens 已废弃 → 改用 max_completion_tokens；
+    - temperature/top_p 固定值生效、文档明确建议不要显式传入 → 不传；
+    - 其余服务商保持 OpenAI 兼容参数（max_tokens + temperature）。
+    """
+    payload = {'model': cfg.model,
+               'messages': [{'role': 'system', 'content': DEFAULT_PROMPTS[cfg.lang]},
+                            {'role': 'user', 'content': text}],
+               'stream': False}
+    if cfg.provider == 'spark':
+        payload['max_completion_tokens'] = cfg.max_tokens
+    else:
+        payload['max_tokens'] = cfg.max_tokens
+        payload['temperature'] = cfg.temperature
+    return payload
+
+
 def translate_text(text, config=None, _http_post=None):
     """翻译单条日语句子。
 
@@ -196,11 +220,7 @@ def translate_text(text, config=None, _http_post=None):
     if not cfg.base_url:
         return TranslateResult(False, error=f'{cfg.provider} 未配置接口地址 base_url')
     url = cfg.base_url + '/chat/completions'
-    payload = {'model': cfg.model,
-               'messages': [{'role': 'system', 'content': DEFAULT_PROMPTS[cfg.lang]},
-                            {'role': 'user', 'content': text}],
-               'max_tokens': cfg.max_tokens,
-               'temperature': cfg.temperature}
+    payload = _build_payload(cfg, text)
     headers = {'Authorization': f'Bearer {cfg.api_key}', 'Content-Type': 'application/json'}
     try:
         if _http_post is not None:
@@ -217,6 +237,12 @@ def translate_text(text, config=None, _http_post=None):
         msg = (data.get('error', {}) or {}).get('message', '') if isinstance(data, dict) else ''
         return TranslateResult(False, error=f'接口返回 {status}：{msg or data}',
                                elapsed=time.time() - t0)
+    # 星火业务错误码：HTTP 200 但 code != 0（其他服务商无 code 字段，不受影响）
+    if isinstance(data, dict) and 'code' in data and data.get('code') not in (0, '0', None):
+        return TranslateResult(
+            False,
+            error=f"星火业务错误 {data.get('code')}：{data.get('message') or '未知错误'}",
+            elapsed=time.time() - t0)
     try:
         raw = data['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError):
