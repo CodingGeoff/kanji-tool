@@ -146,6 +146,10 @@ details.rag-fold .rag-grid{margin-top:10px}
 .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px}
 .wordchip{display:inline-block;background:#f2efe7;border-radius:8px;padding:3px 10px;margin:3px;font-size:15px}
 .wordchip small{color:var(--accent);margin-left:5px}
+/* 词汇 ruby 注音：chip 内的 ruby 用稍大注音，不再挤在右侧 */
+.wordchip.word-ruby{line-height:2.0;padding:4px 10px 6px}
+.wordchip.word-ruby ruby{ruby-position:over}
+.wordchip.word-ruby rt{font-size:.55em;color:var(--accent);font-weight:500;letter-spacing:.01em}
 .hist-item{padding:8px 4px;border-bottom:1px dashed var(--line);font-size:13px;display:flex;gap:12px}
 .hist-item .t{color:var(--sub);white-space:nowrap}
 .reveal-area{min-height:60px}
@@ -212,7 +216,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px}
 .ai-grid label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
 .ai-grid input,.ai-grid select{padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:14px}
-.ai-tag-ai{background:#e3f2fd;color:#1565c0}
+.ai-tag-ai{background:#e8f5e9;color:var(--accent2);font-size:10px;padding:1px 5px;border-radius:4px;opacity:.7;transition:.2s}
+.ai-tag-ai:hover{opacity:1}
 
 </style>
 </head>
@@ -1127,7 +1132,7 @@ async function loadCorpus(page){
       ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:`<div class="tr muted">（暂无翻译）</div>`}
       <div class="meta">
         <span class="tag">${esc(r.source)}</span><span>#${r.id}</span><span>${fmtTime(r.created_at)}</span>
-        ${r.translation_source?`<span class="tag ai-tag-ai" title="该译文由 AI 自动补译，人工校对前请审慎使用">🤖 ${esc(r.translation_source)}</span>`:''}
+        ${r.translation_source?`<span class="tag ai-tag-ai" title="该译文由 AI 自动补译（${esc(r.translation_source)}），可点击编辑修正" style="cursor:pointer" onclick="editSentence(${r.id})">🤖</span>`:''}
         ${r.orig_text?`<span class="orig-tag" title="已自动转为现代假名。原文：${esc(r.orig_text)}">旧仮名原文 ⓘ</span>`:''}
         <button onclick="favToggle(${r.id},this)" style="font-size:14px">${r.fav?'★已收藏':'☆收藏'}</button>
         ${r.translation?'':`<button onclick="aiOne(${r.id},this)">🤖 AI翻译</button>`}
@@ -1200,16 +1205,82 @@ async function aiOne(sid,btn){
 }
 async function aiBatch(){
   const limit=+($('#aiLimit').value||20);
-  $('#aiStatus').textContent=`批量补译中（最多 ${limit} 条）…`;
-  try{
-    const d=await api('/api/translate/batch-missing',{method:'POST',body:JSON.stringify({limit})});
-    if(d.ok){
-      $('#aiStatus').textContent=`完成：成功 ${d.done}/${d.total}（${d.source}），剩余缺译 ${d.missing_left}`;
-      toast(`批量补译完成：${d.done}/${d.total} 成功`);
-      loadCorpus(corpusPage); aiLoad();
-      if(d.errors&&d.errors.length) console.warn('AI补译失败明细',d.errors);
-    }else $('#aiStatus').textContent='批量补译失败：'+(d.error||'unknown');
-  }catch(e){ $('#aiStatus').textContent='批量补译失败：'+e; }
+  const statusEl=$('#aiStatus');
+  // 创建进度面板
+  let progBox=document.getElementById('aiProgBox');
+  if(!progBox){
+    progBox=document.createElement('div');
+    progBox.id='aiProgBox';
+    progBox.style.cssText='margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:#fbf9f4';
+    $('#aiCard').appendChild(progBox);
+  }
+  progBox.innerHTML=`
+    <div class="row" style="justify-content:space-between"><b>📡 批量补译进行中</b><span class="muted" id="aiProgTxt">0/${limit}</span></div>
+    <div class="progressbar" style="margin:6px 0"><i id="aiProgBar" style="width:0%"></i></div>
+    <div id="aiProgLog" style="max-height:200px;overflow:auto;margin-top:6px;font-size:13px"></div>`;
+  if(statusEl) statusEl.textContent='批量补译中（实时进度）…';
+
+  try {
+    const resp = await fetch('/api/translate/batch-stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({limit})
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(()=>({error:'请求失败'}));
+      if(statusEl) statusEl.textContent='批量补译失败：'+(err.error||resp.statusText);
+      progBox.innerHTML=`<div style="color:var(--accent)">❌ ${esc(err.error||'请求失败')}</div>`;
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let done=0, total=limit, failed=0;
+    while (true) {
+      const {value, done: streamDone} = await reader.read();
+      if (streamDone) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === 'progress') {
+            done = evt.done; total = evt.total; failed = evt.failed;
+            const pct = total ? Math.round(evt.index / total * 100) : 0;
+            const bar = document.getElementById('aiProgBar');
+            if (bar) bar.style.width = pct + '%';
+            const txt = document.getElementById('aiProgTxt');
+            if (txt) txt.textContent = `${done}✓ ${failed}✗ / ${total}`;
+            const log = document.getElementById('aiProgLog');
+            if (log) {
+              const item = document.createElement('div');
+              item.style.cssText = 'padding:3px 0;border-bottom:1px dashed var(--line);line-height:1.5';
+              if (evt.ok) {
+                item.innerHTML = `<span style="color:var(--accent2)">✅</span> <span style="font-size:12px">${esc(evt.text)}</span><br><span class="muted" style="font-size:12px">→ ${esc(evt.translation)}</span>`;
+              } else {
+                item.innerHTML = `<span style="color:var(--accent)">❌</span> <span style="font-size:12px">${esc(evt.text)}</span><br><span class="muted" style="font-size:12px;color:var(--accent)">${esc(evt.error||'失败')}</span>`;
+              }
+              log.appendChild(item);
+              log.scrollTop = log.scrollHeight;
+            }
+          } else if (evt.type === 'complete') {
+            const bar = document.getElementById('aiProgBar');
+            if (bar) bar.style.width = '100%';
+            if(statusEl) statusEl.textContent = `完成：成功 ${evt.done}/${evt.total}，剩余缺译 ${evt.missing_left>=0?evt.missing_left:'?'}`;
+            const header = progBox.querySelector('b');
+            if (header) header.textContent = `✅ 批量补译完成：${evt.done}✓ ${evt.failed}✗ / ${evt.total}`;
+            toast(`批量补译完成：${evt.done}/${evt.total} 成功`);
+            loadCorpus(corpusPage); aiLoad();
+          }
+        } catch(e) { /* skip bad lines */ }
+      }
+    }
+  } catch(e) {
+    if(statusEl) statusEl.textContent='批量补译失败：'+e;
+    progBox.innerHTML=`<div style="color:var(--accent)">❌ ${esc(String(e))}</div>`;
+  }
 }
 
 /* ---------- 汉字库 ---------- */
@@ -2073,7 +2144,11 @@ function bkRenderDetail(){
 }
 async function bkRenderLessons(){
   const ls=bkCur.lessons_list||[];
-  $('#bkLessonsBox').innerHTML=`<div class="row" style="justify-content:space-between"><b>课程目录</b><span class="muted">点开一课查看原文与注音 · 右上角【显示读音】可一键切换全部</span></div>
+  $('#bkLessonsBox').innerHTML=`<div class="row" style="justify-content:space-between"><b>课程目录</b>
+    <div class="row" style="gap:6px">
+      <button class="btn mini green" onclick="bkTranslateAllLessons()" title="用 AI 翻译全部缺译句子">🤖 翻译全部</button>
+      <span class="muted">点开一课查看原文与注音 · 右上角【显示读音】可一键切换全部</span>
+    </div></div>
     ${ls.length?ls.map(l=>`
     <div style="border-bottom:1px solid var(--line);padding:9px 2px">
       <div class="row" style="justify-content:space-between;cursor:pointer" onclick="bkToggleLesson(${l.id})">
@@ -2101,10 +2176,65 @@ async function bkLoadLesson(lid){
   const d=await api(`/api/books/${bkCur.id}/sentences?lesson_id=${lid}&per=100`);
   const box=document.getElementById('bkLes-'+lid);if(!box)return;
   const rubyOn=localStorage.getItem('bkRubyAll')==='1';
-  box.innerHTML=(d.rows||[]).map(r=>`
+  const missingCount = (d.rows||[]).filter(r=>!r.translation).length;
+  box.innerHTML=`
+    ${missingCount>0?`<div class="row" style="margin-bottom:8px;gap:6px">
+      <button class="btn mini green" onclick="bkTranslateLesson(${lid})" title="用 AI 翻译本课缺译的 ${missingCount} 句">🤖 翻译本课（${missingCount}句缺译）</button>
+    </div>`:''}
+    ${(d.rows||[]).map(r=>`
     <div class="sent-item"><div class="jp ${rubyOn?'':'noruby'}" data-raw="${esc(r.text)}">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
-      ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
-      <div class="meta"><button onclick="bkSentDel(${r.id})">从本书移除</button></div></div>`).join('')||'<span class="muted">本课暂无句子</span>';
+      ${r.translation?`<div class="tr">${esc(r.translation)}${r.translation_source?` <span class="tag ai-tag-ai" title="AI翻译（${esc(r.translation_source)}）· 点击编辑修正" style="cursor:pointer" onclick="bkEditSentTrans(${r.id},${jsArg(r.translation)})">🤖</span>`:''}</div>`
+        :`<div class="tr muted">（暂无翻译） <button class="btn mini" style="font-size:11px;padding:2px 8px" onclick="bkTransOne(${r.id},this)">🤖 AI翻译</button></div>`}
+      <div class="meta"><button onclick="bkSentDel(${r.id})">从本书移除</button></div></div>`).join('')||'<span class="muted">本课暂无句子</span>'}`;
+}
+async function bkTransOne(sid, btn){
+  const old=btn.textContent; btn.textContent='翻译中…'; btn.disabled=true;
+  // 找到当前句子所在的 lesson box
+  const lesBox = btn.closest('[id^="bkLes-"]');
+  const lid = lesBox ? lesBox.id.replace('bkLes-','') : null;
+  try{
+    const d=await api('/api/translate/one',{method:'POST',body:JSON.stringify({sid,save:1})});
+    if(d.ok){ toast('已补译'); if(lid) bkLoadLesson(parseInt(lid)); }
+    else toast('翻译失败：'+(d.error||''));
+  }catch(e){ toast('翻译失败：'+e); }
+  btn.textContent=old; btn.disabled=false;
+}
+async function bkTranslateLesson(lid){
+  if(!confirm('确定用 AI 翻译本课所有缺译句子？'))return;
+  toast('翻译中，请稍候…');
+  try{
+    const d=await api(`/api/books/${bkCur.id}/translate-lesson`,{method:'POST',body:JSON.stringify({lesson_id:lid})});
+    if(d.ok) toast(`已翻译 ${d.translated}/${d.total} 句`);
+    else toast('翻译失败：'+(d.error||''));
+  }catch(e){ toast('翻译失败：'+e); }
+  bkLoadLesson(lid);
+}
+async function bkEditSentTrans(sid, cur){
+  const tr=prompt('修改翻译：',cur||'');
+  if(tr===null)return;
+  await api(`/api/sentences/${sid}`,{method:'PUT',body:JSON.stringify({translation:tr})});
+  toast('已更新翻译');
+  // 刷新当前展开的课
+  for(const id of bkLessonsOpen) bkLoadLesson(id);
+}
+async function bkTranslateAllLessons(){
+  if(!bkCur) return;
+  if(!confirm('确定用 AI 翻译本书全部课程中缺译的句子？\n（可能耗时较长，翻译过程中请不要关闭页面）')) return;
+  const ls = bkCur.lessons_list || [];
+  if(!ls.length) return toast('本书没有课程');
+  toast('开始翻译全部课程，请耐心等待…');
+  let totalTranslated = 0, totalFailed = 0;
+  for(const l of ls){
+    try{
+      const d = await api(`/api/books/${bkCur.id}/translate-lesson`,{method:'POST',body:JSON.stringify({lesson_id:l.id})});
+      if(d.ok) totalTranslated += (d.translated||0);
+    }catch(e){
+      console.warn('翻译课程失败:', l.id, e);
+    }
+  }
+  toast(`全部翻译完成：成功 ${totalTranslated} 句`);
+  // 刷新所有展开的课
+  for(const id of bkLessonsOpen) bkLoadLesson(id);
 }
 async function bkSentDel(sid){
   if(!confirm('从本书移除该句？（语料本体保留）'))return;
@@ -2144,11 +2274,18 @@ async function bkUnitsTab(mode){
       const st=r.srs_stage,pb=r.progress;
       const cls=pb==='done'||(st||0)>=7?'background:#e7f2ec;border-color:var(--accent2)':(pb==='learning'||(st!=null&&!pb)?'background:#fdf3e7':'');
       const op=pb==='skip'?'opacity:.35;text-decoration:line-through':'';
-      return `<span class="wordchip" style="cursor:pointer;${cls}${op}" title="全局阶段 ${st??'未学'}${pb?' · 标记:'+pb:''} · 点击设置" onclick="bkKanjiMenu('${r.kanji}')">${esc(r.kanji)}${st!=null?`<small>${st}</small>`:''}</span>`;
+      const reading = r.reading || '';
+      const kanjiHtml = reading
+        ? `<ruby>${esc(r.kanji)}<rt>${esc(reading)}</rt></ruby>`
+        : esc(r.kanji);
+      return `<span class="wordchip word-ruby" style="cursor:pointer;${cls}${op}" title="全局阶段 ${st??'未学'}${pb?' · 标记:'+pb:''} · 点击设置" onclick="bkKanjiMenu('${r.kanji}')">${kanjiHtml}${st!=null?`<small style="font-size:10px;margin-left:3px;color:var(--accent2)">S${st}</small>`:''}</span>`;
     }).join('')||'<span class="muted">本书还没有索引字</span>';
   }else{
     box.innerHTML=d.rows.map(r=>{
-      return `<span class="wordchip" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu(${jsArg(r.word)},${jsArg(r.reading||'')})">${esc(r.word)}<small>${esc(r.reading||'')}</small>${spkBtn(r.word)}</span>`;
+      const wordHtml = (r.tokens && r.tokens.length)
+        ? rubyHTML(r.tokens)
+        : (esc(r.word) + (r.reading ? `<small>${esc(r.reading)}</small>` : ''));
+      return `<span class="wordchip word-ruby" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu(${jsArg(r.word)},${jsArg(r.reading||'')})">${wordHtml}${spkBtn(r.word)}</span>`;
     }).join('')||'<span class="muted">本书还没有词汇</span>';
   }
 }
@@ -2347,8 +2484,8 @@ function bkQuizRender(){
     ${bkQuiz.short&&bkQuiz.i===0?'<div class="muted" style="margin-top:8px;font-size:12.5px">题库较小，仅生成 '+n+' 题（可在 ⚙ 配置中降低难度下限或切换全库题源）</div>':''}
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*bkQuiz.i/n)}%"></i></div>
     <div class="quiz-q jp" id="bkQuizQ">${B}${bkBlankHTML(q,null)}${A}</div>
-    ${q.translation?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`:''}
-    <div class="opt-grid" id="bkOpts">
+    ${q.translation?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`
+      :`<div class="muted" style="font-size:14.5px;margin-top:2px;color:var(--gold)">（暂无翻译）<button class="btn mini" style="font-size:11px;padding:2px 8px;margin-left:6px" onclick="bkQuizTransOne(${q.sid},this)">🤖 翻译</button></div>`}    <div class="opt-grid" id="bkOpts">
       ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPick(${i})"><span class="ol">${'ABCD'[i]||(i+1)}</span>${esc(o)}</button>`).join('')}
     </div>
     <div id="bkQuizExp"></div>
@@ -2411,6 +2548,21 @@ async function bkQuizDrop(){
   if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
   else bkQuizRender();
 }
+async function bkQuizTransOne(sid, btn){
+  const old=btn.textContent; btn.textContent='翻译中…'; btn.disabled=true;
+  try{
+    const d=await api('/api/translate/one',{method:'POST',body:JSON.stringify({sid,save:1})});
+    if(d.ok){
+      // 更新当前题目的 translation
+      if(bkQuiz && bkQuiz.qs[bkQuiz.i]) bkQuiz.qs[bkQuiz.i].translation = d.text;
+      toast('已补译：'+(d.text||'').slice(0,20));
+      // 刷新当前显示
+      const trDiv = btn.parentElement;
+      if(trDiv) trDiv.innerHTML = `译：${esc(d.text)}`;
+    } else toast('翻译失败：'+(d.error||''));
+  }catch(e){ toast('翻译失败：'+e); }
+  btn.textContent=old; btn.disabled=false;
+}
 async function bkQuizFinish(){
   let d=null;
   try{ d=await api('/api/books/cloze/answer',{method:'POST',body:JSON.stringify({results:bkQuiz.ans})}); }catch(e){}
@@ -2431,7 +2583,8 @@ async function bkQuizFinish(){
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b>
           ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
-        ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
+        ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`
+          :`<div class="muted" style="font-size:13.5px;color:var(--gold)">（暂无翻译）<button class="btn mini" style="font-size:11px;padding:2px 8px;margin-left:6px" onclick="bkQuizTransOne(${q.sid},this)">🤖 翻译</button></div>`}
         <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
       </div>`;}).join('')}
     <div class="quiz-nav" style="justify-content:center;margin-top:16px">
@@ -2988,8 +3141,8 @@ function bkQuizRenderPsy(){
     ${bkQuiz.short&&bkQuiz.i===0?'<div class="muted" style="margin-top:8px;font-size:12.5px">题库较小，仅生成 '+n+' 题</div>':''}
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*bkQuiz.i/n)}%"></i></div>
     <div class="quiz-q jp ${showFurigana?'':'noruby'}" id="bkQuizQ">${B}${bkBlankHTML(q,null)}${A}</div>
-    ${q.translation&&showTrans?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`:''}
-    <div class="opt-grid" id="bkOpts">
+    ${q.translation&&showTrans?`<div class="muted" style="font-size:14.5px;margin-top:2px">译：${esc(q.translation)}</div>`
+      :(!showTrans?'':`<div class="muted" style="font-size:14.5px;margin-top:2px;color:var(--gold)">（暂无翻译）<button class="btn mini" style="font-size:11px;padding:2px 8px;margin-left:6px" onclick="bkQuizTransOne(${q.sid},this)">🤖 翻译</button></div>`)}    <div class="opt-grid" id="bkOpts">
       ${q.options.map((o,i)=>`<button class="opt-btn" id="bkOpt${i}" onclick="bkQuizPickPsy(${i})"><span class="ol">${'ABCD'[i]||(i+1)}</span>${esc(o)}</button>`).join('')}
     </div>
     ${eduConfidenceHTML(q)}
