@@ -117,7 +117,8 @@ def init_db():
             source TEXT,
             url TEXT,
             tokens TEXT,
-            created_at REAL
+            created_at REAL,
+            translation_source TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS kanji_index(
             kanji TEXT NOT NULL,
@@ -178,6 +179,11 @@ def _migrate():
     with get_conn() as c:
         try:
             c.execute('ALTER TABLE sentences ADD COLUMN orig_text TEXT')
+        except sqlite3.OperationalError:
+            pass
+        # v18 AI 翻译：译文来源标记（''=人工/导入，'ai:<provider>:<model>'=AI 补译）
+        try:
+            c.execute("ALTER TABLE sentences ADD COLUMN translation_source TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
         # 字 / 词双轨（v12：计划与进度同时支持汉字与词汇）
@@ -249,10 +255,13 @@ def add_sentence(text, translation, source, url, tokens, kanji_words, orig_text=
         return sid
 
 
-def update_sentence(sid, text=None, translation=None, tokens=None, kanji_words=None, orig_text=None):
+def update_sentence(sid, text=None, translation=None, tokens=None, kanji_words=None, orig_text=None,
+                  translation_source=None):
     with _lock, get_conn() as c:
         if orig_text is not None:
             c.execute('UPDATE sentences SET orig_text=? WHERE id=?', (orig_text, sid))
+        if translation_source is not None:
+            c.execute('UPDATE sentences SET translation_source=? WHERE id=?', (translation_source, sid))
         if text is not None:
             c.execute('UPDATE sentences SET text=?, tokens=? WHERE id=?',
                       (text, json.dumps(tokens, ensure_ascii=False), sid))
@@ -270,7 +279,7 @@ def delete_sentence(sid):
         c.execute('DELETE FROM kanji_index WHERE sentence_id=?', (sid,))
 
 
-def query_sentences(q=None, kanji=None, page=1, per=20):
+def query_sentences(q=None, kanji=None, page=1, per=20, missing_trans=False):
     with get_conn() as c:
         where, args = [], []
         if q:
@@ -279,6 +288,8 @@ def query_sentences(q=None, kanji=None, page=1, per=20):
         if kanji:
             where.append('id IN (SELECT sentence_id FROM kanji_index WHERE kanji=?)')
             args.append(kanji)
+        if missing_trans:
+            where.append("(translation IS NULL OR TRIM(COALESCE(translation,''))='')")
         w = ('WHERE ' + ' AND '.join(where)) if where else ''
         total = c.execute(f'SELECT COUNT(*) n FROM sentences {w}', args).fetchone()['n']
         rows = c.execute(

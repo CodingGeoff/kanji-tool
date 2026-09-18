@@ -16,12 +16,13 @@ import ktv
 import structsim
 import textbook
 import edu_psychology
+import ai_translate
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
-APP_VERSION = 'v17'
+APP_VERSION = 'v18'
 try:
     import subprocess as _sp
     _g = _sp.run(['git', 'log', '-1', '--format=%h|%ci'],
@@ -139,7 +140,8 @@ def api_sentences():
         q=request.args.get('q') or None,
         kanji=request.args.get('kanji') or None,
         page=_num(request.args.get('page'), 1, 1, 100000),
-        per=_num(request.args.get('per'), 20, 1, 100))
+        per=_num(request.args.get('per'), 20, 1, 100),
+        missing_trans=request.args.get('missing_trans') == '1')
     with db.get_conn() as c:
         fav_ids = {x['sentence_id'] for x in c.execute('SELECT sentence_id FROM fav_sentences')}
     for r in rows:
@@ -1369,6 +1371,79 @@ def api_tts():
                 os.remove(path)
             return jsonify({'error': f'TTS失败: {e}'}), 502
     return send_from_directory(AUDIO_DIR, key + '.mp3', mimetype='audio/mpeg')
+
+
+# ---------- AI 翻译（v18）：缺译补译 + 来源标记 ----------
+@app.route('/api/translate/config')
+def api_translate_config():
+    cfg = ai_translate.load_config()
+    return jsonify({'config': cfg.to_dict(hide_key=True),
+                    'has_key': bool(cfg.api_key),
+                    'providers': list(ai_translate.PROVIDERS),
+                    'missing': ai_translate.count_missing(),
+                    'version': ai_translate.AI_TRANSLATE_VERSION})
+
+
+@app.route('/api/translate/config', methods=['POST'])
+def api_translate_config_save():
+    d = request.json or {}
+    cur = ai_translate.load_config()
+    # 前端打码回传的 '***' 表示"保持原 key 不变"
+    if d.get('api_key') in (None, '', '***'):
+        d['api_key'] = cur.api_key
+    cfg = ai_translate.save_config(ai_translate.AIConfig.from_dict(d))
+    db.log('ai_translate', f'更新AI翻译配置：{cfg.provider}/{cfg.model}/{cfg.lang}')
+    out = cfg.to_dict(hide_key=True)
+    out['has_key'] = bool(cfg.api_key)
+    return jsonify({'ok': True, 'config': out})
+
+
+@app.route('/api/translate/missing')
+def api_translate_missing():
+    limit = _num(request.args.get('limit'), 50, 1, 200)
+    return jsonify({'count': ai_translate.count_missing(),
+                    'rows': ai_translate.list_missing(limit)})
+
+
+@app.route('/api/translate/one', methods=['POST'])
+def api_translate_one():
+    """单条翻译：{text} 或 {sid}；save=1 且 sid 有效时落库。"""
+    d = request.json or {}
+    sid = d.get('sid')
+    text = (d.get('text') or '').strip()
+    if sid and not text:
+        with db.get_conn() as c:
+            r = c.execute('SELECT text FROM sentences WHERE id=?', (sid,)).fetchone()
+        if not r:
+            return jsonify({'ok': False, 'error': '句子不存在'}), 404
+        text = r['text']
+    if not text:
+        return jsonify({'ok': False, 'error': '翻译内容为空'}), 400
+    res = ai_translate.translate_text(text, ai_translate.load_config())
+    if not res.ok:
+        return jsonify(res.to_dict()), 502
+    out = res.to_dict()
+    if d.get('save') and sid:
+        out['saved'] = ai_translate.save_translation(sid, res.text, res.source)
+        db.log('ai_translate', f'AI补译 #{sid}（{res.source}）')
+    return jsonify(out)
+
+
+@app.route('/api/translate/batch-missing', methods=['POST'])
+def api_translate_batch_missing():
+    """批量补译缺翻译例句（失败逐条跳过，不断流）。"""
+    d = request.json or {}
+    limit = _num(d.get('limit'), 20, 1, 200)
+    cfg = ai_translate.load_config()
+    if cfg.provider != 'mock' and not cfg.api_key:
+        return jsonify({'ok': False,
+                        'error': f'{cfg.provider} 未配置 API Key（请先在 AI 翻译面板填写，或切换 mock 演示）'}), 400
+    stat = ai_translate.batch_translate_missing(limit=limit, config=cfg)
+    db.log('ai_translate', f'批量补译：{stat["done"]}/{stat["total"]} 成功（{cfg.source_tag}）')
+    stat['ok'] = True
+    stat['source'] = cfg.source_tag
+    stat['missing_left'] = ai_translate.count_missing()
+    return jsonify(stat)
 
 
 if __name__ == '__main__':

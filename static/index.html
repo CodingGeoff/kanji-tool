@@ -201,6 +201,18 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .psy-section{margin-top:14px}
+/* v18: RAG 分阶段检索进度条 + AI 翻译面板 */
+.rag-prog{margin-top:10px}
+.rag-prog .stages{display:flex;gap:4px;margin-bottom:6px}
+.rag-prog .stg{flex:1;text-align:center;font-size:12px;color:var(--muted);padding:4px 2px;border-radius:6px;background:#f1f3f4}
+.rag-prog .stg.on{background:#e3f2fd;color:#1565c0;font-weight:700}
+.rag-prog .stg.done{background:#e8f5e9;color:#2e7d32}
+.rag-prog .bar{height:8px;border-radius:6px;background:#eceff1;overflow:hidden}
+.rag-prog .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s;border-radius:6px}
+.ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px}
+.ai-grid label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.ai-grid input,.ai-grid select{padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:14px}
+.ai-tag-ai{background:#e3f2fd;color:#1565c0}
 
 </style>
 </head>
@@ -301,6 +313,9 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <label class="advtog" title="高级学习模式：搜索时同时检索已导入的歌词（含汉字行，带注音）">
         <input type="checkbox" id="corpusSongs" checked onchange="localStorage.cs=this.checked?'1':'0';loadCorpus(1)"><span>🎵 含歌词</span>
       </label>
+      <label class="advtog" title="只看没有翻译的句子，配合下方 AI 翻译面板补译">
+        <input type="checkbox" id="corpusMissing" onchange="loadCorpus(1)"><span>🈳 缺翻译</span>
+      </label>
     </div>
     <div id="addForm" class="hidden" style="margin-top:12px">
       <textarea id="addText" placeholder="日语句子（自动注音）"></textarea>
@@ -309,6 +324,35 @@ body.ktv-song.showhdr header{display:flex;position:static}
     </div>
     <div id="corpusList" style="margin-top:6px"></div>
     <div class="pager" id="corpusPager"></div>
+  </div>
+  <div class="card" id="aiCard">
+    <div class="row" style="justify-content:space-between">
+      <b>🤖 AI 翻译补译 <span class="muted" style="font-weight:400">（缺翻译 <span id="aiMissing">…</span> 句 · AI 译文自动打来源标记）</span></b>
+      <button class="btn mini" onclick="aiLoad()">刷新状态</button>
+    </div>
+    <div class="ai-grid">
+      <label>服务商
+        <select id="aiProvider" onchange="aiProviderPreset()">
+          <option value="deepseek">DeepSeek</option>
+          <option value="spark">讯飞星火</option>
+          <option value="openai">OpenAI 兼容</option>
+          <option value="mock">mock（离线演示）</option>
+        </select>
+      </label>
+      <label>模型 <input id="aiModel" placeholder="deepseek-chat"></label>
+      <label>API Key <input id="aiKey" type="password" placeholder="sk-…（mock 不需要）"></label>
+      <label>接口地址 <input id="aiBase" placeholder="https://api.deepseek.com/v1"></label>
+      <label>目标语言
+        <select id="aiLang"><option value="zh">简体中文</option><option value="en">English</option></select>
+      </label>
+      <label>批量条数 <input id="aiLimit" type="number" min="1" max="200" value="20"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" onclick="aiSave()">💾 保存配置</button>
+      <button class="btn green" onclick="aiBatch()">⚡ 批量补译缺翻译</button>
+      <span class="muted" id="aiStatus"></span>
+    </div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">说明：在线服务商断网 / 无 Key / 报错时<b>不会</b>悄悄用假翻译代替，会明确报错；mock 仅用于离线演示，译文带 [MOCK] 前缀。</div>
   </div>
 </section>
 
@@ -881,7 +925,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.body.classList.remove('ktv-song','showhdr');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  ({review:loadReview,learn:loadNew,books:loadBooks,corpus:()=>loadCorpus(1),kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
+  ({review:loadReview,learn:loadNew,books:loadBooks,corpus:()=>{loadCorpus(1);aiLoad();},kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ---------- 统计 ---------- */
@@ -1060,7 +1104,8 @@ async function loadCorpus(page){
   const my=++_corpusSeq;
   const qtxt=$('#corpusQ').value.trim();
   const q=encodeURIComponent(qtxt||'');
-  const d=await api(`/api/sentences?page=${page}&q=${q}`);
+  const miss=$('#corpusMissing')&&$('#corpusMissing').checked?'&missing_trans=1':'';
+  const d=await api(`/api/sentences?page=${page}&q=${q}${miss}`);
   if(my!==_corpusSeq)return;
   let lyricHtml='';
   if($('#corpusSongs').checked && qtxt){
@@ -1079,11 +1124,13 @@ async function loadCorpus(page){
   $('#corpusList').innerHTML=lyricHtml+d.rows.map(r=>`
     <div class="sent-item" id="sent-${r.id}">
       <div class="jp" data-raw="${esc(r.text)}" style="font-size:22px">${rubyHTML(r.tokens)} ${spkBtn(r.text)}</div>
-      ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:''}
+      ${r.translation?`<div class="tr">${esc(r.translation)}</div>`:`<div class="tr muted">（暂无翻译）</div>`}
       <div class="meta">
         <span class="tag">${esc(r.source)}</span><span>#${r.id}</span><span>${fmtTime(r.created_at)}</span>
+        ${r.translation_source?`<span class="tag ai-tag-ai" title="该译文由 AI 自动补译，人工校对前请审慎使用">🤖 ${esc(r.translation_source)}</span>`:''}
         ${r.orig_text?`<span class="orig-tag" title="已自动转为现代假名。原文：${esc(r.orig_text)}">旧仮名原文 ⓘ</span>`:''}
         <button onclick="favToggle(${r.id},this)" style="font-size:14px">${r.fav?'★已收藏':'☆收藏'}</button>
+        ${r.translation?'':`<button onclick="aiOne(${r.id},this)">🤖 AI翻译</button>`}
         <button onclick="editSentence(${r.id},this)">编辑</button>
         <button onclick="delSentence(${r.id})">删除</button>
       </div>
@@ -1110,6 +1157,59 @@ async function delSentence(id){
   await api(`/api/sentences/${id}`,{method:'DELETE'});toast('已删除');
   if(document.querySelectorAll('#corpusList .sent-item').length<=1&&corpusPage>1)corpusPage--;
   loadCorpus(corpusPage);
+}
+
+/* ---------- AI 翻译补译（v18） ---------- */
+const AI_PRESET={deepseek:{model:'deepseek-chat',base:'https://api.deepseek.com/v1'},
+  spark:{model:'spark-max',base:'https://spark-api-open.xf-yun.com/v1'},
+  openai:{model:'gpt-4o-mini',base:'https://api.openai.com/v1'},mock:{model:'mock-v1',base:''}};
+function aiProviderPreset(){
+  const p=AI_PRESET[$('#aiProvider').value]||{};
+  if(p.model)$('#aiModel').value=p.model;
+  $('#aiBase').value=p.base||'';
+}
+async function aiLoad(){
+  try{
+    const d=await api('/api/translate/config');
+    const c=d.config||{};
+    $('#aiProvider').value=c.provider||'deepseek';
+    $('#aiModel').value=c.model||'';
+    $('#aiKey').value=c.api_key||'';
+    $('#aiKey').placeholder=c.api_key?'（已保存，回传 *** 表示不变）':'sk-…（mock 不需要）';
+    $('#aiBase').value=c.base_url||'';
+    $('#aiLang').value=c.lang||'zh';
+    $('#aiMissing').textContent=d.missing??'…';
+    $('#aiStatus').textContent=d.has_key?`已配置 Key · ${c.provider}/${c.model}`:`未配置 Key（${c.provider}）`;
+  }catch(e){ $('#aiStatus').textContent='配置加载失败：'+e; }
+}
+async function aiSave(){
+  const body={provider:$('#aiProvider').value,model:$('#aiModel').value.trim(),
+    api_key:$('#aiKey').value,base_url:$('#aiBase').value.trim(),lang:$('#aiLang').value};
+  const d=await api('/api/translate/config',{method:'POST',body:JSON.stringify(body)});
+  if(d.ok){ toast('AI 翻译配置已保存'); aiLoad(); }
+  else toast('保存失败：'+(d.error||'unknown'));
+}
+async function aiOne(sid,btn){
+  const old=btn.textContent; btn.textContent='翻译中…'; btn.disabled=true;
+  try{
+    const d=await api('/api/translate/one',{method:'POST',body:JSON.stringify({sid,save:1})});
+    if(d.ok){ toast('已补译：'+(d.text||'').slice(0,24)); loadCorpus(corpusPage); aiLoad(); }
+    else toast('翻译失败：'+(d.error||'unknown'));
+  }catch(e){ toast('翻译失败：'+e); }
+  btn.textContent=old; btn.disabled=false;
+}
+async function aiBatch(){
+  const limit=+($('#aiLimit').value||20);
+  $('#aiStatus').textContent=`批量补译中（最多 ${limit} 条）…`;
+  try{
+    const d=await api('/api/translate/batch-missing',{method:'POST',body:JSON.stringify({limit})});
+    if(d.ok){
+      $('#aiStatus').textContent=`完成：成功 ${d.done}/${d.total}（${d.source}），剩余缺译 ${d.missing_left}`;
+      toast(`批量补译完成：${d.done}/${d.total} 成功`);
+      loadCorpus(corpusPage); aiLoad();
+      if(d.errors&&d.errors.length) console.warn('AI补译失败明细',d.errors);
+    }else $('#aiStatus').textContent='批量补译失败：'+(d.error||'unknown');
+  }catch(e){ $('#aiStatus').textContent='批量补译失败：'+e; }
 }
 
 /* ---------- 汉字库 ---------- */
@@ -1408,11 +1508,27 @@ function ragRowHTML(r,i,terms){
     </div>`;
 }
 let _ragSeq=0;
+const RAG_STAGES=['分词','召回','精排','渲染'];
+function ragProgHTML(){ return `<div class="rag-prog"><div class="stages">${
+  RAG_STAGES.map((s,i)=>`<span class="stg" data-i="${i}">${i+1}·${s}</span>`).join('')
+}</div><div class="bar"><i id="ragProgBar"></i></div></div>`; }
+function ragProgStep(i){  // i: 当前阶段下标（0-based）；-1 = 全部完成
+  document.querySelectorAll('#ragOut .rag-prog .stg').forEach(el=>{
+    const k=+el.dataset.i;
+    el.classList.toggle('on',k===i);
+    el.classList.toggle('done',i<0||k<i);
+  });
+  const bar=document.getElementById('ragProgBar');
+  if(bar) bar.style.width=(i<0?100:Math.round((i+1)/(RAG_STAGES.length+1)*100))+'%';
+}
 async function ragSearch(){
   const q=$('#ragQ').value.trim(); if(!q)return;
   const my=++_ragSeq;
   ragRecentPush(q);
-  $('#ragOut').innerHTML='<div class="muted">检索中…</div>';
+  $('#ragOut').innerHTML=ragProgHTML();   // v18 分阶段进度：后端真实 ms 会显示在概览里
+  ragProgStep(0);
+  const _t1=setTimeout(()=>{if(my===_ragSeq)ragProgStep(1)},260);
+  const _t2=setTimeout(()=>{if(my===_ragSeq)ragProgStep(2)},700);
   const body={
     q,
     limit:+($('#ragLimit').value||10),
@@ -1424,8 +1540,10 @@ async function ragSearch(){
   };
   let d;
   try{ d=await api('/api/rag/search',{method:'POST',body:JSON.stringify(body)}); }
-  catch(e){ if(my!==_ragSeq)return; $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
+  catch(e){ if(my!==_ragSeq)return; clearTimeout(_t1); clearTimeout(_t2);
+    $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
   if(my!==_ragSeq)return;
+  clearTimeout(_t1); clearTimeout(_t2); ragProgStep(3);
   const meta=d.meta||{};
   const terms=meta.terms||[];
   const hits=meta.hits||{};
