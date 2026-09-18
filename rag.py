@@ -230,10 +230,14 @@ class MultiIndex:
         self._tbm = _BM25()                       # 歌名/书名/课名
         self._wset = {c: {} for c in CHANNELS}    # doc_id -> 词元集合（覆盖度）
         self._dset = {c: {} for c in CHANNELS}    # doc_id -> 字符 bigram 集合（Dice）
+        self._dpost = {c: {} for c in CHANNELS}   # bigram -> doc_id 集合（v18 倒排，防全库 Dice 扫描）
         self._counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
         self._stamp = None
         self._built = False
         self._building = False
+        self._qcache = {}                         # 查询 LRU：ckey -> 结果（v18）
+        self._qorder = []                         # LRU 顺序（ckey 列表）
+        self._QCACHE_MAX = 64
 
     # ---------- 数据快照与构建 ----------
     def _sig(self):
@@ -280,6 +284,7 @@ class MultiIndex:
         tbm = _BM25()
         wset = {c: {} for c in CHANNELS}
         dset = {c: {} for c in CHANNELS}
+        dpost = {c: {} for c in CHANNELS}
         counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
         # —— 句子（课本链接优先，其次网络/手动语料） ——
         for r in rows:
@@ -298,7 +303,10 @@ class MultiIndex:
                          'translation': r['translation'] or ''})
             bm[ch].add(d, toks, meta)
             wset[ch][d] = set(toks)
-            dset[ch][d] = _bigrams(text)
+            _bg = _bigrams(text)
+            dset[ch][d] = _bg
+            for _g in _bg:
+                dpost[ch].setdefault(_g, set()).add(d)
             counts[ch] += 1
         # —— 歌词（逐行 + 歌名） ——
         for s in songs:
@@ -318,7 +326,10 @@ class MultiIndex:
                                 {'kind': 'line', 'id': s['id'], 'title': title,
                                  'artist': s['artist'] or '', '_text': line, 'line_no': i})
                 wset['lyric'][d] = set(lt)
-                dset['lyric'][d] = _bigrams(line)
+                _bg = _bigrams(line)
+                dset['lyric'][d] = _bg
+                for _g in _bg:
+                    dpost['lyric'].setdefault(_g, set()).add(d)
                 counts['lyric'] += 1
         # —— 课本（书名/备注/课名） ——
         for b in books:
@@ -337,15 +348,34 @@ class MultiIndex:
             self._tbm = tbm
             self._wset = wset
             self._dset = dset
+            self._dpost = dpost
             self._counts = counts
+            self._qcache = {}      # 索引重建 → 查询缓存整体失效（防脏读）
+            self._qorder = []
 
 
     # ---------- 检索 ----------
     def _dice_scan(self, ch, qgrams, threshold, topk=40):
-        """字符 bigram Dice 召回（防分词漏召回）。"""
+        """字符 bigram Dice 召回（防分词漏召回）。
+
+        v18：先用 bigram 倒排取"至少共享 1 个 bigram"的候选子集再算 Dice，
+        与全库扫描数学等价（无共享 bigram 的文档交集必为 0、不可能达标），
+        万级语料下把 O(N) 降为 O(候选)。
+        """
+        if not qgrams:
+            return []
+        post, dset = self._dpost[ch], self._dset[ch]
+        cand = set()
+        for g in qgrams:
+            s = post.get(g)
+            if s:
+                cand |= s
+        if not cand:  # 倒排未建（旧索引热升级中）→ 回退全库扫描，保证不断流
+            cand = dset.keys()
         out = []
-        for d, grams in self._dset[ch].items():
-            if not qgrams or not grams:
+        for d in cand:
+            grams = dset.get(d)
+            if not grams:
                 continue
             inter = len(qgrams & grams)
             if not inter:
@@ -355,6 +385,30 @@ class MultiIndex:
                 out.append((d, dc))
         out.sort(key=lambda x: -x[1])
         return out[:topk]
+
+    def _qcache_get(self, ckey):
+        with self._lock:
+            hit = self._qcache.get(ckey)
+            if hit is not None:
+                try:
+                    self._qorder.remove(ckey)
+                except ValueError:
+                    pass
+                self._qorder.append(ckey)
+            return hit
+
+    def _qcache_put(self, ckey, value):
+        with self._lock:
+            if ckey in self._qcache:
+                try:
+                    self._qorder.remove(ckey)
+                except ValueError:
+                    pass
+            self._qcache[ckey] = value
+            self._qorder.append(ckey)
+            while len(self._qorder) > self._QCACHE_MAX:
+                old = self._qorder.pop(0)
+                self._qcache.pop(old, None)
 
     def _rerank(self, qn, qset, qgrams, bm_s, text, words, grams):
         """综合分 ∈ [0,1]：0.40×BM25 + 0.20×Dice + 0.20×词元覆盖 + 0.20×短语包含。"""
@@ -414,6 +468,18 @@ class MultiIndex:
         pri = list(enabled)
         enabled_set = set(enabled)
         selected_books = set(_as_int_list(book_ids))
+        # v18 查询 LRU：同查询+同参数+同数据签名 → 直接命中（ms≈0）
+        ckey = (qn, limit, tuple(sources or []), per_song, per_book,
+                min_score, min_affinity, tuple(sorted(selected_books)), sort,
+                self._stamp)
+        _hit = self._qcache_get(ckey)
+        if _hit is not None:
+            _hit = dict(_hit)
+            _meta = dict(_hit.get('meta') or {})
+            _meta['ms'] = 0
+            _meta['cached'] = True
+            _hit['meta'] = _meta
+            return _hit
         with self._lock:
             bm = self._bm
             wset = self._wset
@@ -551,10 +617,12 @@ class MultiIndex:
                 'book_ids': sorted(selected_books),
                 'hits': {'lyric': len(groups['lyric']), 'textbook': len(groups['textbook']),
                          'web': len(groups['web'])}}
-        return {'rows': rows[:max(limit, 1)],
+        resp = {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
                 'results': results[:max(limit, 1)],
                 'groups': groups, 'titles': titles, 'meta': meta}
+        self._qcache_put(ckey, resp)
+        return resp
 
 
 

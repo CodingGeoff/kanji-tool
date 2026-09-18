@@ -670,6 +670,543 @@ def _refine_particle(w, words, i, name, meaning):
     return None
 
 
+# ---------------------------------------------------------------
+# 多义句型上下文动态消歧引擎（v18）
+# 四维特征：①前项动词词汇体（Aktionsart）②副词/情态共起 ③后项定语/语态
+# ④时态屈折阶层。纯本地离线、零 API 成本、确定性微秒级推导。
+# 覆盖 11 大类最高频多义句型（39 个典型场景回归守护）。
+# ---------------------------------------------------------------
+
+# —— 维度 1：前项动词语义场与词汇体 ——
+_INVOL_VERBS = frozenset({
+    '出る', '泣く', '笑う', '吹き出す', '吹きだす', '漏れる', '溢れる',
+    'あふれる', '叫ぶ', '怒る', '緊張する', '思い出す', '口走る',
+    'くちばしる', '酔う', 'よ酔う', '震える', '震え', '笑みが漏れる',
+    'こぼれる', '噴き出す', '噴きだす', 'ため息が出る',
+})
+_INVOL_VERB_SURFS = frozenset({
+    '出', '泣', '笑', '吹き出', '漏', '溢', '叫', '怒', '緊張',
+    '思い出', '口走', '酔', '震',
+})
+_REGRET_VERBS = frozenset({
+    '忘れる', '失う', '失くす', '無くす', 'なくす', '落とす', '落す',
+    '壊す', '壊れる', 'こわれる', '倒れる', '遅れる', '乗り遅れる',
+    'のりおくれる', '間違える', 'まちがえる', '破る', '怪我する',
+    'けがする', '割る', '割れる', '迷う', 'まよう', '辞める', 'やめる',
+    '止める', '紛失する', '壊す', '死なせる', '殺す',
+})
+_REGRET_SURFS = frozenset({
+    '忘', '失', '落', '壊', '倒', '遅', '間違', '破', '怪我', '割', '迷',
+    '辞', '止',
+})
+_COMPLETION_VERBS = frozenset({
+    '食べる', '飲む', '読む', '書く', '片付ける', 'かたづける', '終える',
+    'おえる', '使い切る', 'つかいきる', '解く', 'とく', '遣る', 'やる',
+    '平らげる', 'たいらげる', '食う', '片づける', '済ませる', 'すませる',
+    'やり遂げる', '使い果たす',
+})
+_COMPLETION_SURFS = frozenset({
+    '食べ', '飲', '読', '書', '片付', '終', '使い切', '解', '遣', '平らげ',
+})
+_STATE_VERBS = frozenset({
+    '死ぬ', 'しぬ', '結婚する', 'けっこんする', '壊れる', '倒れる',
+    '太る', 'ふとる', '痩せる', 'やせる', '着る', 'きる', '履く', 'はく',
+    '開く', 'ひらく', 'あく', '閉まる', 'しまる', '知る', 'しる',
+    '覚える', 'おぼえる', '似る', 'にる', '住む', 'すむ', '決まる',
+    'きまる', '始まる', 'はじまる', '終わる', 'おわる', '着く', 'つく',
+    '帰る', 'かえる', '行く', 'いく', '来る', 'くる', '生まれる',
+    'うまれる', '卒業する', '入学する', '就職する', '退職する',
+})
+_OCCUPATION_VERBS = frozenset({
+    '働く', 'はたらく', '勤める', 'つとめる', '努める', '務める',
+    '学ぶ', 'まなぶ', '習う', 'ならう', '勉強する', '住む', 'すむ',
+    '通う', 'かよう', '通学する', '通勤する', '勤務する', '留学する',
+    '在学する', '教える', 'おしえる', '経営する',
+})
+_MOTION_VERBS = frozenset({
+    '飛ぶ', 'とぶ', '歩く', 'あるく', '走る', 'はしる', '泳ぐ', 'およぐ',
+    '運ぶ', 'はこぶ', '連れる', 'つれる', '渡る', 'わたる', '上る',
+    'のぼる', 'あがる', '降りる', 'おりる', 'くだる', '帰る', 'かえる',
+    '行く', 'いく', '来る', 'くる', '出かける', 'でかける', '散歩する',
+    '旅行する', '通う', 'かよう',
+})
+_PERCEPTION_VERBS = frozenset({
+    '思い出す', '思いだす', '感じる', 'かんじる', '見える', 'みえる',
+    '聞こえる', 'きこえる', '浮かぶ', 'うかぶ', '湧く', 'わく',
+    '蘇る', 'よみがえる', '感じられる',
+})
+_CHANGE_WORDS = frozenset({'成る', 'なる', '為る'})
+
+# —— 维度 2：副词与情态共起 ——
+_INVOL_ADVERBS = ('思わず', 'おもわず', 'ついつい', 'うっかり',
+                  '知らず知らず', 'しらずしらず', '我慢できず', 'がまんできず',
+                  '反射的に', 'はんしゃてきに', 'ふと', '無意識に', 'むいしきに',
+                  '思わず', 'カッと', 'カッとすると')
+_COMPLETION_ADVERBS = ('全部', 'ぜんぶ', 'すべて', '全て', 'すっかり',
+                       '完全に', 'かんぜんに', '綺麗に', 'きれいに', '早く',
+                       'はやく', 'もう', '最後まで', 'さいごまで', '一気に',
+                       'いっきに')
+_HABIT_ADVERBS = ('いつも', '普段', 'ふだん', '毎日', 'まいにち', '毎週',
+                  'まいしゅう', '毎年', 'まいとし', '毎月', 'まいつき',
+                  '定期的に', 'ていきてきに', 'よく', 'しょっちゅう',
+                  'しばしば', '常に', 'つねに')
+_REGRET_ADVERBS = ('せっかく', 'うっかり', 'とうとう', 'とうとう')
+
+# —— 维度 3：后项定语与习性体言 ——
+_HABIT_NOUNS = ('人', 'ひと', '癖', 'くせ', '性格', 'せいかく', 'タイプ',
+                'たち', '傾向', 'けいこう', '性分', 'しょうぶん')
+_BODY_WORDS = ('手', 'て', '口', 'くち', '涙', 'なみだ', '鼻血', 'はなぢ',
+               '声', 'こえ', '足', 'あし', '涎', 'よだれ')
+_COST_WORDS = ('かかる', '掛かる', 'かかった', '円', 'えん', '時間',
+               'じかん', '費用', 'ひよう', '料金', 'りょうきん', '銭')
+_SPEECH_VERBS = ('言われた', 'いわれた', '頼まれた', 'たのまれた',
+                 '言った', 'いった', '頼んだ', 'たのんだ', '命じられた',
+                 'めいじられた', '注意された', 'ちゅういされた', '言われる',
+                 'いわれる', '頼まれる', 'たのまれる', '言う', 'いう')
+
+
+def _prev_verb_lemma(words, s_idx):
+    """取句型起点前一个实质动词的词典形（含サ変「結婚+する→結婚する」合成）。
+
+    返回 (lemma, surface, feature)；无前项时返回 (None, '', None)。
+    """
+    if s_idx <= 0:
+        return None, '', None
+    w = words[s_idx - 1]
+    f = w.feature
+    lm = (f.lemma or '').split('-')[0]
+    # サ変合成：結婚 + する → 結婚する
+    if lm in ('する', '為る') and s_idx >= 2:
+        pw = words[s_idx - 2]
+        if pw.feature.pos1 in ('名詞', '代名詞', '接尾辞', '形状詞'):
+            head = (pw.feature.lemma or pw.surface).split('-')[0]
+            if head and head not in ('*', 'する'):
+                return head + 'する', pw.surface + w.surface, f
+    if not lm or lm == '*':
+        lm = w.surface
+    return lm, w.surface, f
+
+
+def _after_text(words, e_idx, n=4):
+    return ''.join(w.surface for w in words[e_idx:e_idx + n])
+
+
+def _sentence_has_any(text, words, needles):
+    for nd in needles:
+        if nd and nd in text:
+            return nd
+    for w in words:
+        if w.surface in needles or (w.feature.lemma or '').split('-')[0] in needles:
+            return w.surface
+    return None
+
+
+def _prev_is_ta(words, s_idx):
+    """前项是否为た形（过去时）？"""
+    if s_idx <= 0:
+        return False
+    w = words[s_idx - 1]
+    f = w.feature
+    if (f.lemma or '').split('-')[0] in ('た', 'だ') and w.surface in ('た', 'だ', 'たら', 'だら'):
+        return True
+    # 形容词た词尾（高かっ+た）同样视为过去
+    if w.surface in ('た', 'だ') and f.pos1 == '助動詞':
+        return True
+    return False
+
+
+def _prev_is_teiru(words, s_idx):
+    """前项是否为ている形？"""
+    if s_idx < 2:
+        return False
+    w1, w0 = words[s_idx - 2], words[s_idx - 1]
+    l0 = (w0.feature.lemma or '').split('-')[0]
+    if l0 in ('居る', 'おる', 'いらっしゃる') and w1.surface in ('て', 'で'):
+        return True
+    # 縮約てる
+    if w0.surface in ('てる', 'てる', 'でる') and w0.feature.pos1 == '助動詞':
+        return True
+    return False
+
+
+def _prev_is_dict(words, s_idx):
+    """前项是否为辞书形（非过去、非ている）？"""
+    if s_idx <= 0:
+        return False
+    if _prev_is_ta(words, s_idx) or _prev_is_teiru(words, s_idx):
+        return False
+    w = words[s_idx - 1]
+    cf = w.feature.cForm or ''
+    # 連体形/終止形且非た即视为辞书形（含動詞/形容詞/助動詞ない等）
+    if cf.startswith(('連体形', '終止形')):
+        return True
+    # 名詞+の+ところ等特殊：保守返回 False 交由默认分支
+    return False
+
+
+def _refine_pattern(base_name, text, words, s_idx, e_idx, surface):
+    """多义句型上下文消歧：返回 (new_name, new_meaning, evidence)，无把握返回 None。
+
+    设计原则：强证据优先（被动/副词/习性体言），弱证据回退到词汇体默认，
+    实在无法判定则返回 None（保留大纲通用释义，诚实兜底）。
+    """
+    after = _after_text(words, e_idx, 4)
+    prev_lemma, prev_surf, prev_f = _prev_verb_lemma(words, s_idx)
+
+    def _lemma_in(lemma, surf, theset, surfset=None):
+        if lemma and lemma in theset:
+            return lemma
+        if surf and surf in theset:
+            return surf
+        if surfset and surf:
+            for s in surfset:
+                if s and (surf.startswith(s) or lemma.startswith(s)):
+                    return lemma or surf
+        # 兼容假名/汉字两写：用 surface 前两字模糊命中
+        return None
+
+    # ================= 1. 〜てしまう / 縮約形〜ちゃう（四重境界） =================
+    if base_name in ('〜てしまう（完了・遺憾）', '縮約形〜ちゃう／じゃう'):
+        is_contraction = base_name.startswith('縮約形')
+        prefix = '縮約形〜ちゃう' if is_contraction else '〜てしまう'
+        # (a) 被害：前接被动助动词 れる/られる（迷惑受身+てしまう）
+        # 必须严格以形态素词性+活用类型判定，绝不能用 surface 正则
+        # （忘れてしまう的「れて」是動詞連用形+て，误判会污染遺憾分支）。
+        if prev_f is not None and (prev_f.pos1 == '助動詞') and \
+                ((prev_f.cType or '').startswith(('助動詞-レル', '助動詞-ラレル')) or
+                 (prev_lemma or '') in ('れる', 'られる')):
+            return (f'{prefix}（遺憾・被害）',
+                    '说话人或主体遭受外界非预期的消极对待「被～了 / 遭殃受到～」',
+                    '前接被动助动词「れる/られる」，表遭受被动负面影响（迷惑受身+てしまう）')
+        # (b) 自发/自制不能：冲动动词 / 自发副词 / 身体词+出る / 后接习性体言
+        invol_hit = _lemma_in(prev_lemma or '', prev_surf or '', _INVOL_VERBS, _INVOL_VERB_SURFS)
+        adv = _sentence_has_any(text, words, _INVOL_ADVERBS)
+        habit_noun = _sentence_has_any(after, words[e_idx:e_idx + 4] if e_idx < len(words) else [], _HABIT_NOUNS)
+        if not habit_noun:
+            for hn in _HABIT_NOUNS:
+                if hn and hn in after:
+                    habit_noun = hn
+                    break
+        body_hit = None
+        if (prev_lemma or '') == '出る' or (prev_surf or '').startswith('出'):
+            for bw in _BODY_WORDS:
+                if bw and bw in text:
+                    body_hit = bw
+                    break
+        # 习性体言是强证据：〜てしまう人だ / 〜てしまう癖がある
+        if habit_noun:
+            evs = []
+            if invol_hit:
+                evs.append(f'前接动词「{prev_lemma}」')
+            if body_hit:
+                evs.append('搭配身体/言行词构成下意识冲动')
+            elif (prev_lemma or '') == '出る':
+                evs.append('前接动词「出る」')
+            if adv:
+                evs.append(f'句中出现下意识副词「{adv}」')
+            evs.append(f'后接「{habit_noun}」表人的性格习性与自控力倾向')
+            return (f'{prefix}（自発・自制不能）',
+                    '不由自主、情不自禁或难以自控地做出某种举动（表现冲动、生理/情绪本能或下意识的行为习性，并非有意为之）',
+                    '；'.join(evs) if evs else f'后接「{habit_noun}」表习性倾向')
+        if invol_hit or adv or body_hit:
+            evs = []
+            if invol_hit:
+                # 生理反应动词单独成判据（如酔う）
+                if (prev_lemma or '') in ('酔う', 'よ酔う'):
+                    evs.append(f'前接生理反应动词「{prev_lemma}」')
+                else:
+                    evs.append(f'前接动词「{prev_lemma}」')
+            if body_hit:
+                evs.append('搭配身体/言行词构成下意识冲动')
+            if adv:
+                evs.append(f'句中出现下意识副词「{adv}」')
+            return (f'{prefix}（自発・自制不能）',
+                    '不由自主、情不自禁或难以自控地做出某种举动（表现冲动、生理/情绪本能或下意识的行为习性，并非有意为之）',
+                    '；'.join(evs))
+        # (c) 遗憾/失败：损失动词 / 惋惜副词せっかく
+        regret_hit = _lemma_in(prev_lemma or '', prev_surf or '', _REGRET_VERBS, _REGRET_SURFS)
+        regret_adv = None
+        for ra in _REGRET_ADVERBS:
+            if ra in text:
+                regret_adv = ra
+                break
+        if regret_hit or regret_adv:
+            evs = []
+            if regret_hit:
+                evs.append(f'前接失误/过失类动词「{prev_lemma}」')
+            if regret_adv:
+                evs.append(f'句中出现令人惋惜副词「{regret_adv}」')
+            if 'すぐに' in text or 'すぐ' in text:
+                evs.append('句中出现「すぐに」表事出突然')
+            return (f'{prefix}（遺憾・失敗）',
+                    '说话人对已发生的非预期结果表示遗憾、懊悔或失误「不小心～了 / 糟了」',
+                    '；'.join(evs) if evs else '前接失误类动词')
+        # (d) 完了：完结副词 / 消耗动词
+        comp_adv = _sentence_has_any(text, words, _COMPLETION_ADVERBS)
+        comp_hit = _lemma_in(prev_lemma or '', prev_surf or '', _COMPLETION_VERBS, _COMPLETION_SURFS)
+        if comp_adv or comp_hit:
+            evs = []
+            if comp_adv:
+                evs.append(f'句中出现完结副词「{comp_adv}」')
+            if comp_hit:
+                evs.append(f'前接完成/消耗类动词「{prev_lemma}」')
+            return (f'{prefix}（完了・完全終了）',
+                    '动作全部彻底完成、消耗殆尽「完全做完 / 全部～光」',
+                    '；'.join(evs))
+        return None
+
+    # ================= 2. 〜のに（三重用法） =================
+    if base_name == '〜のに（逆接）':
+        # (a) 句尾遗憾终助词：句尾のに + 承接假定形ば/たら
+        stripped = text.rstrip('。！？!? \u3000')
+        if stripped.endswith('のに'):
+            if re.search(r'(れば|たら|なら|ば).{0,12}のに\s*$', stripped) or \
+                    any(w.surface in ('ば', 'たら', 'なら', 'れば') for w in words):
+                return ('〜のに（遺憾・願望の終助詞）',
+                        '用于句尾表示遗憾、抱怨或未实现的愿望「要是～就好了 / 明明～却偏偏」',
+                        '位于句尾结句，承接假定形「ば/たら」')
+            return ('〜のに（遺憾・願望の終助詞）',
+                    '用于句尾表示遗憾、抱怨或未实现的愿望「要是～就好了 / 明明～却偏偏」',
+                    '位于句尾结句，表未实现的愿望与遗憾')
+        # (b) 目的/用途：前接辞书形 + 后项费用/时间词（かかる/円/時間）
+        cost = _sentence_has_any(after + text[e_idx * 0:] if False else after, [], _COST_WORDS)
+        # 后项扫描：e_idx 之后 8 词内出现花费词
+        post_seg = ''.join(w.surface for w in words[e_idx:e_idx + 8])
+        cost_hit = None
+        for cw in _COST_WORDS:
+            if cw and cw in post_seg:
+                cost_hit = cw
+                break
+        if cost_hit and _prev_is_dict(words, s_idx):
+            return ('〜のに（目的・用途）',
+                    '表示用途、目的或评价基准「为了～ / 在～方面（需要/花费/用于～）」',
+                    f'前接动词辞书形「{prev_lemma}」，后项出现时间花费词「{cost_hit}」')
+        if cost_hit:
+            return ('〜のに（目的・用途）',
+                    '表示用途、目的或评价基准「为了～ / 在～方面（需要/花费/用于～）」',
+                    f'后项出现金额/时间花费词「{cost_hit}」')
+        # (c) 默认逆接
+        return ('〜のに（逆接）',
+                '转折逆接「明明～却～」：前后两项事态冲突相悖',
+                '前后分句构成意外或不满的逆接对比')
+
+    # ================= 3. 〜ばかり（限定 vs 直後） =================
+    if base_name in ('〜ばかり（限定・直後）', '〜たばかり（直後）'):
+        keep_ta = (base_name == '〜たばかり（直後）')
+        if _prev_is_ta(words, s_idx):
+            nm = '〜たばかり（直後・完了）' if keep_ta else '〜ばかり（直後・完了）'
+            return (nm,
+                    '动作刚刚发生不久的片刻「刚～完 / 刚～不久」',
+                    '前接动词过去时「た」')
+        # たばかり句型本身即直后（即使分词未显式切出た）
+        if keep_ta:
+            return ('〜たばかり（直後・完了）',
+                    '动作刚刚发生不久的片刻「刚～完 / 刚～不久」',
+                    '前接动词过去时「た」')
+        return ('〜ばかり（限定・頻度）',
+                '范围限定「净是～ / 光是～」：强调某一事物或行为频度极高，排除其他',
+                '前接名词/て形')
+
+    # ================= 4. 〜おかげで／せいで（因果正负） =================
+    if base_name == '〜おかげで／せいで（因果）':
+        if 'せい' in surface or '所為' in surface or 'せいで' in text[max(0, s_idx - 1):e_idx + 1] or 'せいで' in surface:
+            return ('〜せいで（消極的因果）',
+                    '表示导致不良后果、麻烦或过失的归咎原因「都怪～ / 全是因为～（消极结果）」',
+                    '句中使用「せいで」')
+        # surface 可能是 おかげ/お陰 的任一表记
+        if 'おかげ' in surface or 'お陰' in surface or '御陰' in surface or '陰' in surface:
+            return ('〜おかげで（積極的因果）',
+                    '表示带来收益、恩惠、幸运或良好结果的感激原因「多亏了～ / 幸好～（正面恩惠）」',
+                    '句中使用「おかげで」')
+        # 兜底：看原文窗口
+        seg = ''.join(w.surface for w in words[max(0, s_idx - 1):e_idx + 1])
+        if 'せい' in seg:
+            return ('〜せいで（消極的因果）',
+                    '表示导致不良后果、麻烦或过失的归咎原因「都怪～ / 全是因为～（消极结果）」',
+                    '句中使用「せいで」')
+        return ('〜おかげで（積極的因果）',
+                '表示带来收益、恩惠、幸运或良好结果的感激原因「多亏了～ / 幸好～（正面恩惠）」',
+                '句中使用「おかげで」')
+
+    # ================= 5. 〜つつ（同時 vs 逆接） =================
+    if base_name in ('〜つつ（同時・逆接）', '〜つつある（進行）'):
+        if base_name == '〜つつある（進行）':
+            return None  # つつある语义单一，无需消歧
+        # 后接も即逆接（つつも）
+        if e_idx < len(words) and words[e_idx].surface == 'も':
+            return ('〜つつも（逆接）',
+                    '书面语逆接「虽然明知～却还是～ / 尽管～却～」：前后动作在心理或道理上相违背',
+                    '接续「つつも」，构成心理矛盾')
+        if after.startswith('も'):
+            return ('〜つつも（逆接）',
+                    '书面语逆接「虽然明知～却还是～ / 尽管～却～」：前后动作在心理或道理上相违背',
+                    '接续「つつも」，构成心理矛盾')
+        return ('〜つつ（同時進行）',
+                '书面语同时进行「一边～一边～」：两个动作同时推进（相当于「ながら」的书面语）',
+                '后接后续伴随动作')
+
+    # ================= 6. 〜ように（三重） =================
+    if base_name == '〜ように（目的・引用）':
+        stripped = text.rstrip('。！？!? \u3000')
+        # (a) 祈愿：句尾ように（愿世界和平 / 〜ますように。）
+        if stripped.endswith('ように'):
+            return ('〜ように（祈願・希望）',
+                    '句尾用于祈祷、祝愿「但愿～ / 祝愿～」',
+                    '位于句尾结句或承接祈愿助动词')
+        # (b) 间接指示：后接传达言语动词
+        post_seg = ''.join(w.surface for w in words[e_idx:e_idx + 6])
+        for sv in _SPEECH_VERBS:
+            if sv and sv in post_seg:
+                return ('〜ように（引用・間接指示）',
+                        '间接转述请求、要求或叮嘱「让/叫/吩咐某人～」',
+                        f'后接传达言语动词「{sv}」')
+        # (c) 目的（默认）：前接变化/可能、表努力促成的状态
+        return ('〜ように（目的）',
+                '为了达成某种目标或状态「为了能够～ / 为了使～」',
+                '前接变化动词/可能形，表努力促成的状态')
+
+    # ================= 7. 〜ている（三大词汇体） =================
+    if base_name in ('〜ている（進行・状態）', '縮約形〜てる／てた（ている）'):
+        is_contraction = base_name.startswith('縮約形')
+        prefix = '縮約形〜てる' if is_contraction else '〜ている'
+        # (a) 瞬间变化→结果存续（最高优先）
+        state_hit = _lemma_in(prev_lemma or '', prev_surf or '', _STATE_VERBS)
+        # 兼容：結婚している的分词可能是 結婚+し+て+いる（prev_lemma=結婚する）
+        if not state_hit and prev_lemma and prev_lemma in _STATE_VERBS:
+            state_hit = prev_lemma
+        if state_hit:
+            return (f'{prefix}（結果状態・存続）',
+                    '动作或变化发生后，其结果状态持续存在「～着 / 处于～状态」（瞬间变化已完成，并非动作正在进行）',
+                    f'前接瞬间变化动词「{prev_lemma}」')
+        # (b) 频度副词→习惯反复
+        habit = _sentence_has_any(text, words, _HABIT_ADVERBS)
+        if habit:
+            return (f'{prefix}（習慣・反復）',
+                    '长期持续的生活习惯、职业身份或规律性反复的行为「平时总是～ / 一直～」',
+                    f'句中出现频度词「{habit}」')
+        # (b2) 职业身份：在某地工作·上学·居住（地点で/に + 职业动词 [+今]）
+        # 庭で走っている（动作类动词）不受影响，仍判进行。
+        occ_hit = _lemma_in(prev_lemma or '', prev_surf or '', _OCCUPATION_VERBS)
+        if occ_hit and re.search(r'[都道府場所院会社学園館店駅前後中上下左右東西南北内外].{0,2}[でに]', text):
+            return (f'{prefix}（習慣・反復）',
+                    '长期持续的生活习惯、职业身份或规律性反复的行为「平时总是～ / 一直～」',
+                    f'前接职业/身份动词「{occ_hit}」，地点助词「で/に」表长期归属')
+        # (c) 默认进行
+        return (f'{prefix}（動作の進行）',
+                '动作正在进行之中「正在～ / 正在做～」',
+                f'前接持续性动词「{prev_lemma}」' if prev_lemma else '前接持续性动词')
+
+    # ================= 8. 〜ていく／てくる =================
+    if base_name == '〜ていく／てくる（方向・変化）':
+        # 自发被动链回溯：思い出されてくる的前项是助动词「れ」，
+        # 需再往前找实质动词（思い出す）才能正确判定知觉涌现。
+        _content_lemma, _content_surf = prev_lemma, prev_surf
+        if prev_f is not None and prev_f.pos1 == '助動詞' and s_idx >= 2:
+            _cl, _cs, _cf = _prev_verb_lemma(words, s_idx - 1)
+            if _cl and _cf is not None and getattr(_cf, 'pos1', '') == '動詞':
+                _content_lemma, _content_surf = _cl, _cs
+        prev_lemma, prev_surf = _content_lemma, _content_surf
+        # 方向词判定：优先看匹配区间最后一个词的 lemma（てき/でいく 等截断形
+        # surface 里没有 くる/いく 字样，纯 surface 匹配会全部落空）。
+        _last = words[e_idx - 1] if 0 <= e_idx - 1 < len(words) else None
+        _last_lemma = (_last.feature.lemma if _last is not None and _last.feature else '') or ''
+        _last_surf = _last.surface if _last is not None else ''
+        is_kuru = _last_lemma in ('来る', 'くる', '来') or \
+            ('くる' in surface) or ('来' in surface)
+        is_iku = _last_lemma in ('行く', 'いく', '往く', '行') or \
+            ('いく' in surface and 'ていく' in base_name or 'いく' in surface) or \
+            ('行' in surface)
+        # 截断形兜底：てき/でき→くる，でい/てい→いく
+        if not is_kuru and not is_iku:
+            if re.search(r'[てで]き?$', _last_surf) or _last_surf in ('き', 'きっ'):
+                is_kuru = True
+            else:
+                is_iku = True
+        if is_kuru and is_iku:  # 绝不双真：lemma 优先
+            is_iku = _last_lemma not in ('来る', 'くる', '来')
+            is_kuru = not is_iku
+        motion_hit = _lemma_in(prev_lemma or '', prev_surf or '', _MOTION_VERBS)
+        percept_hit = _lemma_in(prev_lemma or '', prev_surf or '', _PERCEPTION_VERBS)
+        # てくる+知觉涌现
+        if is_kuru and percept_hit:
+            return ('〜てくる（知覚・出現）',
+                    '某种心理感受、回忆、自然现象或迹象逐渐涌现出来「～起来 / 涌现出～」',
+                    f'前接知觉/涌现动词「{prev_lemma}」')
+        if is_kuru and motion_hit:
+            return ('〜てくる（空間移動）',
+                    '伴随动作的空间位移（由远及近而来）「～过来」',
+                    f'前接移动动词「{prev_lemma}」')
+        if is_kuru:
+            return ('〜てくる（時間推移・変化）',
+                    '状态随时间推移朝现在汇聚、累积「一直～到现在 / 变得～起来」',
+                    f'前接变化动词/状态词「{prev_lemma}」' if prev_lemma else '表时间推移的演变')
+        # ていく分支
+        if motion_hit:
+            return ('〜ていく（空間移動）',
+                    '伴随动作的空间位移（由近及远而去）「～去」',
+                    f'前接移动动词「{prev_lemma}」')
+        return ('〜ていく（時間推移・変化）',
+                '状态随时间推移的发展演变（朝将来持续深化）「逐渐～下去」',
+                f'前接变化动词/状态词「{prev_lemma}」' if prev_lemma else '前接变化动词/状态词')
+
+    # ================= 9. 〜ところだ（局面三态） =================
+    if base_name == '〜ところだ（局面）':
+        if _prev_is_teiru(words, s_idx):
+            return ('〜ところだ（進行・最中）',
+                    '动作正处在进行中的关键时刻「正处在～之中 / 正忙着～」',
+                    '前接「ている」进行时态')
+        if _prev_is_ta(words, s_idx):
+            return ('〜ところだ（直後・完了）',
+                    '动作刚刚结束的片刻「刚～完」',
+                    '前接过去时「た」')
+        # 辞书形→直前（含動詞連体形）
+        lemma_show = prev_lemma or '動詞辞書形'
+        # た形助动词本身即直后；ない形等归入直前判断
+        if prev_f is not None and (prev_f.pos1 in ('動詞', '形容詞') or
+                                   (prev_f.pos1 == '助動詞' and (prev_f.cForm or '').startswith(('連体形', '終止形')))):
+            return ('〜ところだ（直前・これから）',
+                    '动作正要开始、即将发生的瞬间「正要～ / 刚打算～」',
+                    f'前接动词辞书形「{lemma_show}」')
+        return ('〜ところだ（直前・これから）',
+                '动作正要开始、即将发生的瞬间「正要～ / 刚打算～」',
+                f'前接动词辞书形「{lemma_show}」')
+
+    # ================= 10. 〜ために（目的 vs 原因） =================
+    if base_name == '〜ために（目的・原因）':
+        if _prev_is_ta(words, s_idx):
+            return ('〜ために（原因・理由）',
+                    '事物发生的原因、理由「因为～ / 由于～」（客观因果）',
+                    '前接过去时态，表已发生的客观事实')
+        # 过去时文本兜底：〜たために / 〜だために
+        seg = ''.join(w.surface for w in words[max(0, s_idx - 2):s_idx])
+        if seg.endswith(('た', 'だ')) and _prev_is_dict(words, s_idx) is False:
+            # 需排除辞书形以た/だ结尾的动词（如待つ→待）；以助动词判定为准
+            if _prev_is_ta(words, s_idx):
+                return ('〜ために（原因・理由）',
+                        '事物发生的原因、理由「因为～ / 由于～」（客观因果）',
+                        '前接过去时态「た」，表已发生的客观事实')
+        return ('〜ために（目的）',
+                '为了实现某种目的而采取行动「为了～」（意志性目的）',
+                '前接辞书形（非过去时），表未实现的行动目标')
+
+    # ================= 11. 授受补助动词（恩惠方向） =================
+    if base_name == '〜てあげる／てくれる／てもらう（授受）':
+        if 'もら' in surface or '貰' in surface or 'いただ' in surface or '頂' in surface or '戴' in surface:
+            return ('〜てもらう（授受・依頼受益）',
+                    '请/让对方为自己做某事（主动请求并受益）「承蒙～/请人帮自己～」',
+                    '后项为授受动词「もらう」，表主动请求并受惠')
+        if 'くれ' in surface or '呉' in surface:
+            return ('〜てくれる（授受・受恵）',
+                    '对方为我方做某事（对方惠及我）「为我/帮我～」',
+                    '后项为授受动词「くれる」，表对方惠及我方')
+        return ('〜てあげる（授受・施恵）',
+                '我方为对方做某事（施恩于人）「为/帮对方～」',
+                '后项为授受动词「あげる」，表施惠于人')
+
+    return None
+
+
+
 def _pick(templates, seed):
     return templates[int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(templates)]
 
@@ -764,12 +1301,19 @@ def analyze(text: str):
                     continue
             s_idx, e_idx = matched[0], matched[-1] + 1
             surface = ''.join(words[j].surface for j in range(s_idx, e_idx))
+            # 多义句型上下文动态消歧（v18）：用词汇体+共起+屈折把大纲复合标签
+            # 定位到本句的精准子句型；无把握时保留原通用释义（诚实兜底）。
+            _base_name, _base_meaning = pat['name'], pat['meaning']
+            _ref = _refine_pattern(_base_name, text, words, s_idx, e_idx, surface)
+            _name, _meaning, _evidence = (_ref if _ref else (_base_name, _base_meaning, None))
             ctx = _context(words, s_idx, e_idx)
-            seed = f'{text}|{pat["name"]}|{s_idx}'
-            _tpls = _TPLS_NOSURF if f'「{surface}」' in pat['name'] else _TPLS
+            seed = f'{text}|{_name}|{s_idx}'
+            _tpls = _TPLS_NOSURF if f'「{surface}」' in _name else _TPLS
             explain = _pick(_tpls, seed).format(
-                surface=surface, name=pat['name'], level=pat['level'],
-                structure=pat['structure'], meaning=pat['meaning'], ctx=ctx)
+                surface=surface, name=_name, level=pat['level'],
+                structure=pat['structure'], meaning=_meaning, ctx=ctx)
+            if _evidence:
+                explain += f'（判据：{_evidence}）'
             if pat.get('note'):
                 explain += ' ' + pat['note']
             b3, c3, a3 = _context3(words, s_idx, e_idx)
@@ -805,7 +1349,7 @@ def analyze(text: str):
                 if (lf.cForm or '').startswith('連体形') and \
                         nf.pos1 in ('名詞', '代名詞', '形状詞'):
                     attr_slot = True
-            found.append({'name': pat['name'], 'level': pat['level'],
+            found.append({'name': _name, 'base_name': _base_name, 'level': pat['level'],
                           'structure': pat['structure'], 'surface': surface,
                           'before': b3, 'core': c3, 'after': a3,
                           'span': [s_idx, e_idx], 'blank': blank,

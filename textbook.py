@@ -1141,16 +1141,30 @@ _TE_SET = set(_TE_RENTAI) | {'ている', 'ていく', 'てくる', 'ちゃう',
 # names：组内可作答案的句型名；options：组内标准形（含可作干扰项的非答案形如 たら/だけ/しか）
 _CLOZE_GROUPS = [
     {'names': {'〜ので（原因）', '〜ために（目的・原因）', '〜おかげで／せいで（因果）',
-               '〜ゆえに（原因）'},
+               '〜ゆえに（原因）',
+               # v18 消歧子句型（与大纲通用名同组，保证挖空干扰项不断流）
+               '〜ために（目的）', '〜ために（原因・理由）',
+               '〜おかげで（積極的因果）', '〜せいで（消極的因果）'},
      'options': ['ので', 'から', 'ために', 'おかげで', 'せいで']},
     {'names': {'条件「ば」', '条件「と」', '条件「なら」', '条件「たら」'},
      'options': ['ば', 'たら', 'と', 'なら']},
     {'names': {'〜ている（進行・状態）', '〜てある（結果状態）', '〜ておく（準備）',
                '〜てしまう（完了・遺憾）', '〜てみる（嘗試）', '〜ていく／てくる（方向・変化）',
-               '縮約形〜ちゃう／じゃう', '縮約形〜とく', '縮約形〜てる／てた（ている）'},
+               '縮約形〜ちゃう／じゃう', '縮約形〜とく', '縮約形〜てる／てた（ている）',
+               # v18 消歧子句型
+               '〜ている（結果状態・存続）', '〜ている（習慣・反復）', '〜ている（動作の進行）',
+               '縮約形〜てる（結果状態・存続）', '縮約形〜てる（習慣・反復）', '縮約形〜てる（動作の進行）',
+               '〜てしまう（自発・自制不能）', '〜てしまう（遺憾・失敗）',
+               '〜てしまう（遺憾・被害）', '〜てしまう（完了・完全終了）',
+               '縮約形〜ちゃう（自発・自制不能）', '縮約形〜ちゃう（遺憾・失敗）',
+               '縮約形〜ちゃう（遺憾・被害）', '縮約形〜ちゃう（完了・完全終了）',
+               '〜ていく（空間移動）', '〜ていく（時間推移・変化）',
+               '〜てくる（知覚・出現）', '〜てくる（空間移動）', '〜てくる（時間推移・変化）'},
      'options': ['ている', 'てある', 'ておく', 'てしまう', 'てみる', 'ていく', 'てくる',
                  'ちゃう', 'てる', 'とく']},
-    {'names': {'〜てあげる／てくれる／てもらう（授受）', '〜てほしい（願望）'},
+    {'names': {'〜てあげる／てくれる／てもらう（授受）', '〜てほしい（願望）',
+               # v18 消歧子句型
+               '〜てあげる（授受・施恵）', '〜てくれる（授受・受恵）', '〜てもらう（授受・依頼受益）'},
      'options': ['てあげる', 'てくれる', 'てもらう', 'てほしい']},
     # たい接动词词干（食べたい），与接て形的授受组严格分开、二者不可互作干扰项
     {'names': {'〜たい（願望）'},
@@ -1173,7 +1187,8 @@ _CLOZE_GROUPS = [
                '〜ざるを得ない（不可避）', '〜わけにはいかない（不可）'},
      'options': ['なければならない', 'なくてはならない', 'ないといけない', 'てはいけない',
                  'てもいい', 'べきだ', 'ざるを得ない']},
-    {'names': {'〜ばかり（限定・直後）', '〜たばかり（直後）'},
+    {'names': {'〜ばかり（限定・直後）', '〜たばかり（直後）',
+               '〜ばかり（限定・頻度）', '〜ばかり（直後・完了）', '〜たばかり（直後・完了）'},
      'options': ['ばかり', 'だけ', 'しか', 'のみ', 'きり']},
     {'names': {'〜ほど', },  # 占位：ほど为单词类，暂无句型答案，保留组以便干扰项复用
      'options': ['ほど', 'くらい', 'ぐらい']},
@@ -1181,10 +1196,12 @@ _CLOZE_GROUPS = [
                '〜かねない（危険性）', '〜っぽい（傾向）', '〜がち（頻度傾向）'},
      'options': ['すぎる', 'やすい', 'にくい', 'がたい', 'かねる', 'かねない', 'っぽい']},
     {'names': {'〜ながら（同時）', '〜たり〜たり（列挙）', '〜し（並列理由）',
-               '〜つつ（同時・逆接）', '〜つつある（進行）'},
+               '〜つつ（同時・逆接）', '〜つつある（進行）',
+               '〜つつ（同時進行）', '〜つつも（逆接）'},
      'options': ['ながら', 'つつ', 'つつある', 'し', 'たり', 'だり']},
     {'names': {'〜のに（逆接）', '〜ものの（逆接）', '〜にもかかわらず（逆接）',
-               '〜ものを（...）', '〜てもいい（許可）'},
+               '〜ものを（...）', '〜てもいい（許可）',
+               '〜のに（目的・用途）', '〜のに（遺憾・願望の終助詞）'},
      'options': ['のに', 'ものの', 'にもかかわらず', 'けれど', 'が', 'ても']},
     {'names': {'〜んです／のです（説明）', '〜わけだ／わけではない', '〜はずだ（確信）',
                '〜ものだ（本性・感慨）', '〜ものか（反語）'},
@@ -1193,7 +1210,8 @@ _CLOZE_GROUPS = [
                '〜ずに（否定状態）'},
      'options': ['てください', 'ないでください', 'ないで', 'なくて', 'ずに',
                  'なさい', 'ちょうだい', 'もらえ', 'くれ', 'てくれ']},
-    {'names': {'〜ように（目的・引用）'},
+    {'names': {'〜ように（目的・引用）',
+               '〜ように（祈願・希望）', '〜ように（引用・間接指示）', '〜ように（目的）'},
      'options': ['ように', 'ために', 'みたいに', 'そうに']},
     {'names': {'〜たびに（反復）', '〜うちに（時間帯）'},
      'options': ['たびに', 'うちに', 'ごとに', '最中に', 'ところで']},
@@ -1203,7 +1221,8 @@ _CLOZE_GROUPS = [
     {'names': {'〜かどうか（不確定）', '〜ば〜ほど（比例）',
                '〜ようとする（意志・寸前）'},
      'options': ['かどうか', 'ものか', 'ことか', 'とする', 'と思う']},
-    {'names': {'〜まま（放任）', '〜ところだ（局面）', '〜最中', },
+    {'names': {'〜まま（放任）', '〜ところだ（局面）', '〜最中',
+               '〜ところだ（直前・これから）', '〜ところだ（進行・最中）', '〜ところだ（直後・完了）'},
      'options': ['まま', 'ところ', 'ところだ', 'とおり', '最中', '途中']},
     {'names': {'〜について（対象）', '〜に対して（対象・対比）', '〜に関して（関連）',
                '〜にとって（立場）', '〜として（資格）', '〜によって／による（手段・原因・依拠）',
@@ -3339,16 +3358,23 @@ def _cloze_sentence_ok(text):
     return True
 
 
-def _cloze_group_options(name):
-    """答案句型所属混淆组的标准干扰项（保持组内顺序，不含答案本身由调用方过滤）"""
+def _cloze_group_options(name, base_name=None):
+    """答案句型所属混淆组的标准干扰项（保持组内顺序，不含答案本身由调用方过滤）。
+
+    v18 兼容：先按消歧后的精准子句型名匹配，找不到再回退到大纲通用名
+    （base_name），确保消歧前后挖空干扰项都不中断。"""
     for g in _CLOZE_GROUPS:
         if name in g['names']:
             return list(g['options'])
+    if base_name:
+        for g in _CLOZE_GROUPS:
+            if base_name in g['names']:
+                return list(g['options'])
     return []
 
 
 def _cloze_distractors(name, answer, level, pool_by_level, after='',
-                       attr=False, before=''):
+                       attr=False, before='', base_name=None):
     """干扰项优先级：断定槽位词干 → 定语槽位（按左接续三选一）→ 同组混淆项
     （义近形近）→ 同级长度相近项 → 兜底项；去重、等价互斥、前后重叠排除、
     清浊匹配、左右接续校验，取 3 个。"""
@@ -3433,7 +3459,7 @@ def _cloze_distractors(name, answer, level, pool_by_level, after='',
         elif answer in _TE_SET:
             if _drain(_TE_RENTAI):
                 return out
-    for s in _cloze_group_options(name):
+    for s in _cloze_group_options(name, base_name):
         _push(s)
         if len(out) >= 3:
             return out
@@ -3510,6 +3536,7 @@ def _cloze_candidates(text, min_o, meta=None):
             continue
         out.append(dict(meta or {}, text=text, name=name, level=g['level'],
                         structure=g['structure'], explain=g['explain'],
+                        base_name=g.get('base_name') or name,
                         answer=surf, before=before, after=after, blank=[b0, b1],
                         attr=bool(g.get('attr_slot'))))
     return out
@@ -3581,7 +3608,8 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
                 continue
             opts = [p['answer']] + _cloze_distractors(
                 p['name'], p['answer'], p['level'], pool_by_level,
-                after=p['after'], attr=p.get('attr'), before=p['before'])
+                after=p['after'], attr=p.get('attr'), before=p['before'],
+                base_name=p.get('base_name'))
             opts = opts[:4]
             if len(opts) < 4 or len(set(opts)) < 4 or p['answer'] not in opts:
                 continue                             # 凑不够 4 个有效选项就弃题
@@ -4074,7 +4102,8 @@ def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
                     continue
                 opts = [p['answer']] + _cloze_distractors(
                     p['name'], p['answer'], p['level'], pool_by_level,
-                    after=p['after'], attr=p.get('attr'), before=p['before'])
+                    after=p['after'], attr=p.get('attr'), before=p['before'],
+                    base_name=p.get('base_name'))
                 opts = opts[:4]
                 if len(opts) < 4 or len(set(opts)) < 4 or p['answer'] not in opts:
                     continue
@@ -4142,7 +4171,8 @@ def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
                 continue
             opts = [p['answer']] + _cloze_distractors(
                 p['name'], p['answer'], p['level'], pool_by_level,
-                after=p['after'], attr=p.get('attr'), before=p['before'])
+                after=p['after'], attr=p.get('attr'), before=p['before'],
+                base_name=p.get('base_name'))
             opts = opts[:4]
             if len(opts) < 4 or len(set(opts)) < 4 or p['answer'] not in opts:
                 continue
