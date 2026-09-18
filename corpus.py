@@ -16,6 +16,81 @@ import furigana
 UA = {'User-Agent': 'Mozilla/5.0 (KanjiLearningTool/1.0; personal study use)'}
 _SENT_SPLIT = re.compile(r'(?<=[。！？!?])')
 
+# ---------------- 引用标记感知的分句 ----------------
+# 「...」『...』内嵌的句末标点不作为分句边界
+_QUOTE_PAIRS = [('「', '」'), ('『', '』')]
+
+
+def _split_sentences(text: str):
+    """引用感知分句：「...。」内的句末标点不切断；分句后修复残留碎片。
+
+    算法：
+    1. 扫描文本，标记所有「...」『...』引用区间。
+    2. 仅在引用区间之外的句末标点处切分。
+    3. 后处理：以 」 开头的碎片 → 向前合并；以 「 结尾且无配对 」 → 向后合并。
+    """
+    if not text:
+        return []
+    # 1. 找出所有引用区间 [start, end)（闭区间含引号本身）
+    quotes = []
+    for oq, cq in _QUOTE_PAIRS:
+        i = 0
+        while True:
+            s = text.find(oq, i)
+            if s < 0:
+                break
+            e = text.find(cq, s + 1)
+            if e < 0:
+                # 未闭合的引用：视为到文本末尾
+                quotes.append((s, len(text) - 1))
+                break
+            quotes.append((s, e))
+            i = e + 1
+    quotes.sort()
+
+    def _in_quote(pos):
+        """判断 pos 是否在引用区间内（含引号本身）"""
+        for s, e in quotes:
+            if s <= pos <= e:
+                return True
+            if s > pos:
+                break
+        return False
+
+    # 2. 在引用区间外的句末标点处切分
+    sent_end = re.compile(r'[。！？!?]')
+    cuts = [0]
+    for m in sent_end.finditer(text):
+        pos = m.end()  # 切在标点之后
+        if not _in_quote(m.start()):
+            cuts.append(pos)
+    cuts.append(len(text))
+
+    parts = []
+    for i in range(len(cuts) - 1):
+        seg = text[cuts[i]:cuts[i + 1]].strip()
+        if seg:
+            parts.append(seg)
+
+    # 3. 后处理：修复引用碎片
+    merged = []
+    for seg in parts:
+        if not merged:
+            merged.append(seg)
+            continue
+        # 以 」 或 』 开头 → 合并到前一句
+        if seg and seg[0] in ('」', '』'):
+            merged[-1] += seg
+            continue
+        # 前一句以 「 或 『 结尾且无配对闭合 → 合并到前一句
+        prev = merged[-1]
+        if prev and prev[-1] in ('「', '『'):
+            merged[-1] += seg
+            continue
+        merged.append(seg)
+
+    return merged
+
 
 def _clean(s):
     s = re.sub(r'\s+', '', s)
@@ -123,6 +198,15 @@ def _good_sentence(s):
         return False
     if re.search(r'[<>{}\[\]=|]', s):
         return False
+    # 引用碎片防御：以 」 或 』 开头的句子是分句残留，拒绝入库
+    if s and s[0] in ('」', '』'):
+        return False
+    # 引用标记严重不平衡（只有开引号无闭引号，或反过来）→ 疑似断句错误
+    for oq, cq in _QUOTE_PAIRS:
+        opens = s.count(oq)
+        closes = s.count(cq)
+        if abs(opens - closes) >= 2:
+            return False
     # 传记资料句（中西立太（なかにしりった、1934年3月18日-2009年…））：生卒日期括注
     # 兼容夹注纪年写法：1880年〈明治13年〉7月16日-1942年（月日- 连排）、1880年-1942年（年份区间）
     if re.search(r'\d+年\d+月\d+日\s*[-−–—]', s) or \
@@ -195,7 +279,7 @@ def _fetch_wiki_api(api, source, batches=1, per=5, results=None):
             extract = p.get('extract') or ''
             title = p.get('title', '')
             url = f"{api.split('/w/')[0]}/wiki/{title}"
-            for sent in _SENT_SPLIT.split(extract)[:6]:
+            for sent in _split_sentences(extract)[:8]:
                 _store(sent, None, source, url, results)
     return results
 

@@ -789,7 +789,10 @@ def api_book_reindex(bid):
 
 @app.route('/api/books/units')
 def api_book_units():
-    """选中的一本/多本书的「字」或「词」总表（学习界面数据源；含 SRS 进度）"""
+    """选中的一本/多本书的「字」或「词」总表（学习界面数据源；含 SRS 进度）。
+
+    词汇模式额外返回 tokens（furigana.annotate 结果），前端用 rubyHTML() 渲染
+    规范的汉字上方假名注音（而非 <small> 并排）。"""
     ids = [int(x) for x in (request.args.get('ids') or '').split(',') if x.strip().isdigit()]
     if not ids:
         ids = [b['id'] for b in db.list_books() if b.get('active')]
@@ -813,6 +816,11 @@ def api_book_units():
                         a['freq'] += w['freq']
             total = len(order)
             rows = [agg[w] for w in order[(page - 1) * per: page * per]]
+        # 为每个词生成 furigana tokens，前端用 rubyHTML 渲染规范注音
+        for r in rows:
+            word = r.get('word', '')
+            if word:
+                r['tokens'] = furigana.annotate(word)
         return jsonify({'total': total, 'rows': rows, 'ids': ids})
     filter_ = request.args.get('filter', 'all')
     total, rows = db.list_book_kanji(None, filter_=filter_, q=q, book_ids=ids, page=page, per=per)
@@ -1444,6 +1452,51 @@ def api_translate_batch_missing():
     stat['source'] = cfg.source_tag
     stat['missing_left'] = ai_translate.count_missing()
     return jsonify(stat)
+
+
+@app.route('/api/translate/batch-stream', methods=['POST'])
+def api_translate_batch_stream():
+    """SSE 流式批量补译：前端用 EventSource 接收逐条进度事件。
+
+    每翻译完一条就推送 {done, total, text, translation, ok} 事件，
+    最后推送 {type: 'complete'} 汇总。
+    """
+    d = request.json or {}
+    limit = _num(d.get('limit'), 20, 1, 200)
+    cfg = ai_translate.load_config()
+    if cfg.provider != 'mock' and not cfg.api_key:
+        return jsonify({'ok': False,
+                        'error': f'{cfg.provider} 未配置 API Key'}), 400
+
+    def generate():
+        for evt in ai_translate.batch_translate_stream(limit=limit, config=cfg):
+            yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
+        db.log('ai_translate', f'SSE批量补译完成（{cfg.source_tag}）')
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/books/<int:bid>/translate-lesson', methods=['POST'])
+def api_book_translate_lesson(bid, ):
+    """翻译指定课程的全部缺译句子（或指定句子列表）。"""
+    d = request.json or {}
+    lesson_id = d.get('lesson_id')
+    sids = d.get('sentence_ids') or []
+    cfg = ai_translate.load_config()
+    if cfg.provider != 'mock' and not cfg.api_key:
+        return jsonify({'ok': False,
+                        'error': f'{cfg.provider} 未配置 API Key（请先在 AI 翻译面板填写）'}), 400
+    if not sids and lesson_id:
+        _, rows = db.list_book_sentences(bid, lesson_id=lesson_id, per=200)
+        sids = [r['id'] for r in rows if not (r.get('translation') or '').strip()]
+    if not sids:
+        return jsonify({'ok': True, 'translated': 0, 'message': '无需翻译'})
+    results = ai_translate.translate_sentence_ids(sids, config=cfg)
+    translated = sum(1 for r in results if r.get('ok') and not r.get('skipped'))
+    db.log('ai_translate', f'课本 #{bid} 翻译 {translated}/{len(sids)} 句（{cfg.source_tag}）')
+    return jsonify({'ok': True, 'translated': translated, 'total': len(sids),
+                    'results': results, 'source': cfg.source_tag})
 
 
 if __name__ == '__main__':

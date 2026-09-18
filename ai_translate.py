@@ -312,3 +312,71 @@ def batch_translate_missing(limit=20, config=None, progress_cb=None, _http_post=
                 pass
     return {'total': total, 'done': done, 'failed': failed,
             'skipped': 0, 'errors': errors[:20]}
+
+
+def batch_translate_stream(limit=20, config=None, _http_post=None):
+    """生成器：逐条翻译并 yield SSE 事件（前端用 EventSource 消费）。
+
+    事件类型:
+    - progress: {done, total, current_id, current_text, current_translation, ok, error}
+    - complete: {total, done, failed, missing_left}
+    """
+    cfg = config if isinstance(config, AIConfig) else AIConfig.from_dict(config)
+    rows = list_missing(limit)
+    total = len(rows)
+    done, failed = 0, 0
+    for i, r in enumerate(rows):
+        res = translate_text(r['text'], cfg, _http_post=_http_post)
+        saved = False
+        if res.ok:
+            saved = save_translation(r['id'], res.text, res.source)
+            if saved:
+                done += 1
+            else:
+                failed += 1
+        else:
+            failed += 1
+        evt = {
+            'type': 'progress',
+            'done': done, 'total': total, 'failed': failed,
+            'index': i + 1,
+            'sid': r['id'],
+            'text': r['text'][:80],
+            'translation': res.text if res.ok else '',
+            'ok': res.ok and saved,
+            'error': res.error if not res.ok else ('写入失败' if not saved else ''),
+        }
+        yield evt
+    # 最终事件
+    try:
+        import db as _db
+        left = count_missing()
+    except Exception:
+        left = -1
+    yield {'type': 'complete', 'total': total, 'done': done,
+           'failed': failed, 'missing_left': left}
+
+
+def translate_sentence_ids(sid_list, config=None, _http_post=None):
+    """批量翻译指定的句子 ID 列表（课本句子用），返回逐条结果。"""
+    cfg = config if isinstance(config, AIConfig) else AIConfig.from_dict(config)
+    import db as _db
+    results = []
+    with _db.get_conn() as c:
+        for sid in sid_list:
+            r = c.execute('SELECT id, text, translation FROM sentences WHERE id=?', (sid,)).fetchone()
+            if not r:
+                continue
+            # 已有翻译的跳过
+            if r['translation'] and r['translation'].strip():
+                results.append({'sid': sid, 'ok': True, 'text': r['text'],
+                                'translation': r['translation'], 'skipped': True})
+                continue
+            res = translate_text(r['text'], cfg, _http_post=_http_post)
+            if res.ok and save_translation(sid, res.text, res.source):
+                results.append({'sid': sid, 'ok': True, 'text': r['text'],
+                                'translation': res.text, 'skipped': False})
+            else:
+                results.append({'sid': sid, 'ok': False, 'text': r['text'],
+                                'error': res.error if not res.ok else '写入失败'})
+    return results
