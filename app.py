@@ -156,6 +156,9 @@ def api_add_sentence():
         return jsonify({'error': '句子不能为空'}), 400
     if corpus.is_junk(text):
         return jsonify({'error': '文本包含垃圾字符（下划线/时间戳/测试标记），已拒绝入库'}), 400
+    chk = grammar.check_sentence_grammar(text, strict_mode=False)
+    if not chk['ok']:
+        return jsonify({'error': f'句子未通过基本语法检查：{"; ".join(chk["errors"])}', 'grammar_check': chk}), 400
     text, n_fix = corpus.repair_inline_furigana(text)
     text, orig = corpus.modernize_old_kana(text)
     tokens = furigana.annotate(text)
@@ -164,7 +167,7 @@ def api_add_sentence():
     if sid is None:
         return jsonify({'error': '该句子已存在'}), 409
     db.log('add', f'手动添加语料：{text[:30]}')
-    return jsonify({'id': sid, 'repaired': n_fix >= 2, 'text': text})
+    return jsonify({'id': sid, 'repaired': n_fix >= 2, 'text': text, 'grammar_check': chk})
 
 
 @app.route('/api/sentences/<int:sid>', methods=['PUT'])
@@ -959,6 +962,28 @@ def api_book_grammar():
     return jsonify({'rows': textbook.book_grammar(
         ids, min_level=request.args.get('min_level') or None,
         per=_num(request.args.get('per'), 40, 1, 200))})
+
+
+@app.route('/api/grammar/check', methods=['POST'])
+def api_grammar_check():
+    """单句/批量基础语法质检"""
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    strict = bool(d.get('strict', False))
+    if 'sentences' in d and isinstance(d['sentences'], list):
+        results = [grammar.check_sentence_grammar(s, strict_mode=strict) for s in d['sentences'][:100]]
+        return jsonify({'total': len(results), 'rows': results})
+    if not text:
+        return jsonify({'error': '文本不能为空'}), 400
+    res = grammar.check_sentence_grammar(text, strict_mode=strict)
+    return jsonify(res)
+
+
+@app.route('/api/books/<int:bid>/grammar-check', methods=['GET', 'POST'])
+def api_book_grammar_check(bid):
+    """课本书内句子语法审计"""
+    res = textbook.check_book_grammar(bid)
+    return jsonify(res)
 
 
 @app.route('/api/books/cloze', methods=['POST'])

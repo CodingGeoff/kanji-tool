@@ -84,6 +84,12 @@ def _is_noise(s: str) -> bool:
         return True
     if corpus.is_junk(s):
         return True
+    # 纯书目版权/引用行（如 （『日本人の法則』株式会社ヤック企画））过滤
+    s_str = s.strip()
+    if re.match(r'^[（(【\[『「].*[）)】\]』」]$', s_str) and any(
+        k in s_str for k in ('書', '著', '社', '刊', '号', '企画', '新聞', 'シリーズ', '加筆', '出典', '引用')
+    ):
+        return True
     return False
 
 
@@ -340,20 +346,36 @@ def extract_units(text, tokens=None):
 
 
 def analyze(text, lesson_size=AUTO_LESSON_SIZE, sample=150):
-    """导入前预览（不写库）：拆出几本书、多少课/句，以及字/词规模与重复情况。"""
+    """导入前预览（不写库）：拆出几本书、多少课/句，以及字/词规模与重复情况、语法合规分析。"""
     books = parse_books(text, lesson_size)
     all_sents = [s for b in books for s in b['sentences']]
     dup = 0
     kanji, words = {}, {}
+    valid_grammar, invalid_grammar = 0, 0
+    grammar_issues = []
     for i, s in enumerate(all_sents):
         if db.sentence_exists(s):
             dup += 1
         if i < sample:                      # 长文本只抽样分析，保证预览秒回
+            chk = grammar.check_sentence_grammar(s, strict_mode=False)
+            if chk['ok']:
+                valid_grammar += 1
+            else:
+                invalid_grammar += 1
+                if len(grammar_issues) < 10:
+                    grammar_issues.append({
+                        'text': s,
+                        'errors': chk['errors'],
+                        'warnings': chk['warnings'],
+                        'score': chk['score']
+                    })
             k_rows, w_rows = extract_units(s)
             for k, _w, _r in k_rows:
                 kanji[k] = kanji.get(k, 0) + 1
             for w, _r, _k, _pos in w_rows:
                 words[w] = words.get(w, 0) + 1
+    total_checked = valid_grammar + invalid_grammar
+    grammar_rate = round((valid_grammar / max(1, total_checked)) * 100, 1)
     return {
         'books': [{'title': b['title'], 'author': b['author'], 'lessons': len(b['lessons']),
                    'sentences': len(b['sentences']), 'excerpt': b['sentences'][:3]} for b in books],
@@ -365,6 +387,13 @@ def analyze(text, lesson_size=AUTO_LESSON_SIZE, sample=150):
         'sampled': len(all_sents) > sample, 'sample_size': min(sample, len(all_sents)),
         'top_kanji': [{'kanji': k, 'n': n} for k, n in
                       sorted(kanji.items(), key=lambda x: -x[1])[:20]],
+        'grammar_check': {
+            'valid': valid_grammar,
+            'invalid': invalid_grammar,
+            'rate': grammar_rate,
+            'issues': grammar_issues,
+            'sampled': len(all_sents) > sample,
+        },
     }
 
 
@@ -1027,6 +1056,8 @@ def book_grammar(book_ids=None, min_level='N3', per=40, sample=120):
             ids + [max(1, min(int(sample), 400))]).fetchall()
     agg = {}
     for r in rows:
+        if not grammar.is_sentence_grammatically_sound(r['text']):
+            continue
         try:
             pts = grammar.analyze(r['text'])
         except Exception:
@@ -1045,6 +1076,36 @@ def book_grammar(book_ids=None, min_level='N3', per=40, sample=120):
                 a['count'] += 1
     items = sorted(agg.values(), key=lambda x: (-_lv(x['level']), -x['count']))
     return items[:max(1, min(int(per or 40), 100))]
+
+
+def check_book_grammar(bid):
+    """对指定课本的全量句子进行基础语法审计"""
+    _tot, rows = db.list_book_sentences(bid, per=100000)
+    valid, invalid = 0, 0
+    issues = []
+    for r in rows:
+        text = r.get('text', '')
+        chk = grammar.check_sentence_grammar(text, strict_mode=False)
+        if chk['ok']:
+            valid += 1
+        else:
+            invalid += 1
+            issues.append({
+                'sid': r.get('sentence_id') or r.get('id'),
+                'bs_idx': r.get('bs_idx'),
+                'text': text,
+                'errors': chk['errors'],
+                'warnings': chk['warnings'],
+                'score': chk['score']
+            })
+    return {
+        'book_id': bid,
+        'total': len(rows),
+        'valid': valid,
+        'invalid': invalid,
+        'rate': round((valid / max(1, len(rows))) * 100, 1),
+        'issues': issues
+    }
 
 
 # 挖空禁挖名单：挖掉后题干不可答、或配不出合格干扰项的句型
@@ -3257,7 +3318,8 @@ _END_PUNCT = ('。', '！', '？', '!', '?')
 
 def _cloze_sentence_ok(text):
     """挖空题干质检：必须是单句完整日语句子。
-    拒绝：无句末标点/句中有分句标点（多句拼接）、过短过长、无汉字无假名、垃圾字符。"""
+    拒绝：无句末标点/句中有分句标点（多句拼接）、过短过长、无汉字无假名、垃圾字符、
+    以及未通过基本语法检查（文末格助词/接续悬空/无谓语/非法助词连用/敬体断裂/伪假名串）的语病句。"""
     if not text or not (8 <= len(text) <= 80):
         return False
     if not text.endswith(_END_PUNCT):
@@ -3271,6 +3333,8 @@ def _cloze_sentence_ok(text):
     if corpus.is_junk(text):
         return False
     if re.search(r'[{}\[\]_＿http]|\\d{7,}', text):
+        return False
+    if not grammar.is_sentence_grammatically_sound(text, strict_mode=True):
         return False
     return True
 

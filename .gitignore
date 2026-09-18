@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 audio_cache/
 .DS_Store
+*.db-wal
+*.db-shm
