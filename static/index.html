@@ -1630,7 +1630,7 @@ async function ragSearch(){
       · 排序：<b>${esc(meta.sort==='score'?'相关性优先（来源加权）':'按来源优先级分档')}</b>
       · 命中 歌词 ${hits.lyric||0} / 课本 ${hits.textbook||0} / 语料 ${hits.web||0}
       ${meta.book_ids&&meta.book_ids.length?` · 限定 ${meta.book_ids.map(id=>esc((ragBooks.find(b=>b.id===id)||{}).title||('#'+id))).join(' / ')}`:''}
-      ${meta.ms!=null?` · ${meta.ms} ms`:''}</div>
+      ${meta.ms!=null?` · ⏱ ${meta.ms} ms${meta.timing?` <span title="召回${meta.timing.recall_ms}ms · 精排${meta.timing.rerank_ms}ms · 合并${meta.timing.merge_ms}ms" style="cursor:help;border-bottom:1px dotted var(--sub)">(召回${meta.timing.recall_ms}+精排${meta.timing.rerank_ms}+合并${meta.timing.merge_ms})</span>`:''}`:''}</div>
   </div>`;
   // 句子成分分析（整句输入时）
   if(d.struct){

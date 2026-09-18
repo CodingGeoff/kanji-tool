@@ -231,6 +231,7 @@ class MultiIndex:
         self._wset = {c: {} for c in CHANNELS}    # doc_id -> 词元集合（覆盖度）
         self._dset = {c: {} for c in CHANNELS}    # doc_id -> 字符 bigram 集合（Dice）
         self._dpost = {c: {} for c in CHANNELS}   # bigram -> doc_id 集合（v18 倒排，防全库 Dice 扫描）
+        self._nset = {c: {} for c in CHANNELS}    # v19: doc_id -> 归一化文本（精排免重算）
         self._counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
         self._stamp = None
         self._built = False
@@ -285,6 +286,7 @@ class MultiIndex:
         wset = {c: {} for c in CHANNELS}
         dset = {c: {} for c in CHANNELS}
         dpost = {c: {} for c in CHANNELS}
+        nset = {c: {} for c in CHANNELS}          # v19: 预计算归一化文本（精排免重复 normalize）
         counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
         # —— 句子（课本链接优先，其次网络/手动语料） ——
         for r in rows:
@@ -305,6 +307,7 @@ class MultiIndex:
             wset[ch][d] = set(toks)
             _bg = _bigrams(text)
             dset[ch][d] = _bg
+            nset[ch][d] = normalize(text)
             for _g in _bg:
                 dpost[ch].setdefault(_g, set()).add(d)
             counts[ch] += 1
@@ -320,7 +323,6 @@ class MultiIndex:
                 if not line or ktv.is_latin_line(line):
                     continue
                 d = ('l', s['id'], i)
-                d = ('l', s['id'], i)
                 lt = _tokens(line)
                 bm['lyric'].add(d, lt,
                                 {'kind': 'line', 'id': s['id'], 'title': title,
@@ -328,6 +330,7 @@ class MultiIndex:
                 wset['lyric'][d] = set(lt)
                 _bg = _bigrams(line)
                 dset['lyric'][d] = _bg
+                nset['lyric'][d] = normalize(line)
                 for _g in _bg:
                     dpost['lyric'].setdefault(_g, set()).add(d)
                 counts['lyric'] += 1
@@ -349,6 +352,7 @@ class MultiIndex:
             self._wset = wset
             self._dset = dset
             self._dpost = dpost
+            self._nset = nset
             self._counts = counts
             self._qcache = {}      # 索引重建 → 查询缓存整体失效（防脏读）
             self._qorder = []
@@ -410,14 +414,19 @@ class MultiIndex:
                 old = self._qorder.pop(0)
                 self._qcache.pop(old, None)
 
-    def _rerank(self, qn, qset, qgrams, bm_s, text, words, grams):
-        """综合分 ∈ [0,1]：0.40×BM25 + 0.20×Dice + 0.20×词元覆盖 + 0.20×短语包含。"""
-        phrase = 1.0 if qn and qn in text else 0.0
+    def _rerank(self, qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n, words, grams):
+        """综合分 ∈ [0,1]：0.40×BM25 + 0.20×Dice + 0.20×词元覆盖 + 0.20×短语包含。
+
+        优化：所有参数已在外层预计算（归一化文本、查询长度、bigram 数量），
+        本函数只做纯数值运算，无字符串分配或集合构建。"""
+        phrase = 1.0 if qn and qn_len <= len(text_n) and qn in text_n else 0.0
         cov = (len(qset & words) / len(qset)) if qset and words else 0.0
-        dice = (2.0 * len(qgrams & grams) / (len(qgrams) + len(grams))) if qgrams and grams else 0.0
+        inter = len(qgrams & grams)
+        dice = (2.0 * inter / (qgrams_len + len(grams))) if qgrams_len and grams and inter else 0.0
         s = 0.40 * bm_s + 0.20 * dice + 0.20 * cov + 0.20 * phrase
-        if s > 0 and qn and text:
-            lr = min(len(qn), len(text)) / max(len(qn), len(text), 1)
+        if s > 0:
+            tl = len(text_n)
+            lr = min(qn_len, tl) / max(qn_len, tl, 1)
             s *= (0.8 + 0.2 * lr)                 # 长度悬殊轻惩罚
         return s
 
@@ -484,32 +493,46 @@ class MultiIndex:
             bm = self._bm
             wset = self._wset
             dset = self._dset
+            nset = self._nset
             counts = dict(self._counts)
+        # v19: 预计算查询侧常量（避免精排循环内重复计算）
+        qn_len = len(qn)
+        qgrams_len = len(qgrams)
+        t_recall = time.time()
         # 1) 双路召回（BM25 + Dice）→ 2) 精排
         scored = {c: [] for c in CHANNELS}
         for ch in CHANNELS:
             if ch not in enabled_set:
                 continue
             cand = {}
-            for s, d in bm[ch].search(qtoks, topk=max(limit * 5, 50)):
+            for s, d in bm[ch].search(qtoks, topk=max(limit * 4, 40)):
                 cand[d] = s
             th = min(0.14, max(0.10, min_affinity or 0.14))
             for d, dc in self._dice_scan(ch, qgrams, th):
                 if d not in cand:
                     cand[d] = 0.0
+            # v19: 使用预计算的归一化文本，避免精排循环内重复 normalize
+            _nset_ch = nset.get(ch, {})
+            _wset_ch = wset.get(ch, {})
+            _dset_ch = dset.get(ch, {})
+            _bm_docs = bm[ch].docs
             for d, bm_s in cand.items():
-                m = bm[ch].docs[d]
+                m = _bm_docs.get(d)
+                if not m:
+                    continue
                 if ch == 'textbook' and selected_books:
                     bid = m.get('book_id') or m.get('id')
                     if bid not in selected_books:
                         continue
-                s = self._rerank(qn, qset, qgrams, bm_s, m.get('_text') or m.get('title') or '',
-                                 wset[ch].get(d) or set(), dset[ch].get(d) or set())
+                text_n = _nset_ch.get(d) or normalize(m.get('_text') or m.get('title') or '')
+                s = self._rerank(qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n,
+                                 _wset_ch.get(d) or set(), _dset_ch.get(d) or set())
                 if ch == 'textbook' and selected_books and (m.get('book_id') in selected_books):
                     s = min(1.0, s + 0.08)
                 if s >= 0.10:
                     scored[ch].append((s, d))
             scored[ch].sort(key=lambda x: -x[0])
+        t_rerank = time.time()
         # 3) 优先级加权 → 4) 融合去重 + 配额
         def boost(ch):
             return 1.0 + 0.22 * (len(pri) - 1 - pri.index(ch))
@@ -612,11 +635,15 @@ class MultiIndex:
             ordered = sorted(pool_all, key=lambda r: (_pri_idx.get(r['channel'], len(pri)),
                                                       -r['score'], -len(r.get('text') or '')))
         results = ordered
+        t_done = time.time()
         meta = {'counts': counts, 'terms': key_terms(q), 'qvars': qv,
-                'prior': pri, 'qnorm': qn, 'sort': sort, 'ms': round((time.time() - t0) * 1000),
+                'prior': pri, 'qnorm': qn, 'sort': sort, 'ms': round((t_done - t0) * 1000),
                 'book_ids': sorted(selected_books),
                 'hits': {'lyric': len(groups['lyric']), 'textbook': len(groups['textbook']),
-                         'web': len(groups['web'])}}
+                         'web': len(groups['web'])},
+                'timing': {'recall_ms': round((t_recall - t0) * 1000),
+                           'rerank_ms': round((t_rerank - t_recall) * 1000),
+                           'merge_ms': round((t_done - t_rerank) * 1000)}}
         resp = {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
                 'results': results[:max(limit, 1)],
