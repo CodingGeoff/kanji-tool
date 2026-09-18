@@ -11,10 +11,22 @@
 8. 课本书内 check_book_grammar 审计接口
 9. /api/grammar/check 接口契约
 """
+import os
+import shutil
 import sys
+import tempfile
 import unittest
+
+import db
 import grammar
 import textbook
+
+# 接口测试一律跑在临时库上：直接动真正的 kanji.db 会留下「テスト課本」课本与历史记录，
+# 污染要提交上云的数据库（其它 test_*.py 也是这么做的）。
+_TMPDIR = tempfile.mkdtemp(prefix='grammar_check_')
+db.DB_PATH = os.path.join(_TMPDIR, 'kanji.db')
+shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanji.db'),
+            db.DB_PATH)
 import app as appmod
 
 FAILS = []
@@ -196,6 +208,7 @@ r_api4 = client.post('/api/grammar/check', json={'text': '   '})
 check(r_api4.status_code == 400, '空文本返回 400')
 
 print()
+shutil.rmtree(_TMPDIR, ignore_errors=True)
 if FAILS:
     print(f'===== 测试失败 {len(FAILS)} 项 =====')
     for f in FAILS:

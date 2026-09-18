@@ -28,7 +28,10 @@ git branch -M main
 git push -u origin main
 ```
 
-> 💡 **可选技巧**：`kanji.db` 默认会一起推上去——这是好事！部署后你的语料库和学习进度会作为初始数据带上云端。若不想带，在 `.gitignore` 里加一行 `kanji.db`。
+> ⚠️ **`kanji.db` 必须一起推上去，而且不要把它加进 `.gitignore`**。
+> Render 构建时克隆仓库、直接读这个文件当初始数据（语料 / 课本 / 复习进度）。
+> 一旦它脱离版本控制，云端就只剩空库——详见 [`DATABASE.md`](DATABASE.md)。
+> 数据库相关的日常操作请统一使用 `python dbtool.py ...`（备份 / 合并 / 安全拉取 / 发布）。
 
 ### 第 2 步：注册并创建服务
 
@@ -56,14 +59,36 @@ git push -u origin main
 
 ### 之后怎么更新
 
-本地改完代码，`git add . && git commit -m "更新" && git push` —— Render 检测到推送会**自动重新部署**。
+**改代码**：本地改完代码，`git add . && git commit -m "更新" && git push` —— Render 检测到推送会**自动重新部署**。
+
+**改数据（数据库）**：不要手写 git 命令，用 `dbtool.py` 一条命令完成
+「checkpoint → 只提交 kanji.db → 推送」：
+
+```bash
+# 先关掉本地正在运行的服务（start.bat 窗口 / Ctrl+C），否则数据库被占用
+python dbtool.py publish -m "更新数据库"
+```
+
+推送后 Render 自动重新部署，1~3 分钟后新数据生效（Logs 出现 `Booting worker`）。
+拉取远端更新时也用托管命令，避免 pull 覆盖本地数据库：
+
+```bash
+python dbtool.py pull     # 备份 → 清理本地库改动 → pull → 把本地数据并回新仓库版
+```
+
+> 完整原理、合并规则、FAQ 见 [`DATABASE.md`](DATABASE.md)。
 
 ### Free 套餐的两个限制（重要）
 
 1. **15 分钟无访问会休眠**，下次打开要等约 1 分钟冷启动——个人学习工具完全够用
 2. **磁盘不持久**：重新部署/重启后，云端新增的数据会回到仓库里 `kanji.db` 的状态。对策：
    - 语料会被后台线程自动重新抓取，损失不大
-   - 学习进度定期备份：打开 `语料库 → 💾备份数据库` 下载 `kanji_backup.db`，改名 `kanji.db` 放回仓库提交，进度就"存档"了
+   - 学习进度定期备份：打开 `语料库 → 💾备份数据库` 下载 `kanji_backup.db`；想推回仓库请用 `python dbtool.py publish`
+     （它提交前会做 checkpoint，保证把 WAL 里的最新数据一起写进 kanji.db）
+   - 想**长期保留**：网页「📥 导出备份」下载 JSON（或「💾 备份数据库」下载 `kanji_backup.db`），
+     在本地「📥 导入备份」合并进本地库，再 `python dbtool.py publish -m "更新数据库"` 推回云端；
+     这样「云端 → 本地 → 仓库 → 云端」就形成了闭环存档
+   - 记住：**云端磁盘算草稿纸，仓库里的 `kanji.db` 才是正式存档**（详见 `DATABASE.md`）
    - 或升级 Render 付费盘（$7/月起）实现真持久化
 
 ---

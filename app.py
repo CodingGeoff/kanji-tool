@@ -1204,6 +1204,11 @@ def api_edu_reset():
 # ---------- 数据备份：完整导出 / 导入（JSON，跨库合并） ----------
 @app.route('/api/backup')
 def api_backup():
+    # 先把 WAL 里的最新写入折回 kanji.db，否则下载到的备份会缺最后一笔数据
+    try:
+        db.checkpoint()
+    except Exception:
+        pass
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'kanji.db',
                                as_attachment=True, download_name='kanji_backup.db')
 

@@ -2,7 +2,24 @@ __pycache__/
 *.pyc
 audio_cache/
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# SQLite 运行时边车文件（WAL / SHM / journal）：不是数据本体，绝不提交。
+# 被 Git 跟踪时，pull 会报
+#   “The following files would be overwritten by merge: kanji.db-shm kanji.db-wal”
+# 而且每次连接数据库都会改动它们，永远处于“已修改”状态。
 *.db-wal
 *.db-shm
-*.db
+*.db-journal
+
+# 本地数据库备份 / 快照目录（由 dbtool.py 管理：local / stash / snapshots / merged）
 _dbbackup/
+# 合并过程的临时目录（正常会自动清理，异常中断时可能残留）
+.dbtool_merge_*/
+
+# ---------------------------------------------------------------------------
+# 千万别写 *.db 去忽略数据库！
+# 根目录的 kanji.db 是要跟着 Git 一起上 Render 的“初始数据源”——
+# Render 构建时克隆仓库、直接读这个文件；忽略掉它，云端只会拿到空库
+# （语料/课本/复习进度全部丢失）。正确做法见 DATABASE.md。
+!kanji.db

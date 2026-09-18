@@ -96,6 +96,17 @@ def get_conn():
     return conn
 
 
+def checkpoint():
+    """把 WAL 里的最新写入折回 kanji.db 本体（提交/备份数据库前必做）。
+
+    WAL 模式下刚写入的数据可能还压在 kanji.db-wal 里：只复制/提交 kanji.db
+    会得到「少了最后一次写入」的旧数据。dbtool.py 与「备份数据库」都会先调它。
+    """
+    with get_conn() as c:
+        c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
+    return True
+
+
 def init_db():
     with get_conn() as c:
         c.executescript('''

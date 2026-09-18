@@ -77,6 +77,21 @@ python3 app.py        # 打开 http://localhost:5000
 推荐 **Render 免费部署**（GitHub 直连，全程点鼠标），备选 Hugging Face Spaces / Fly.io，
 仓库已含 `requirements.txt` / `Dockerfile` / `render.yaml`，推上去即用。
 
+**数据库与 Git（重要）**：`kanji.db` 是要跟着仓库上 Render 的初始数据源，
+所以它必须被跟踪、`.gitignore` 里**不能**写 `*.db`；而 WAL 边车文件
+（`kanji.db-wal` / `kanji.db-shm`）必须忽略，否则 pull 必报 would be overwritten。
+日常四件事都用托管命令，别再手写 git：
+
+```bash
+python dbtool.py status     # 体检：数据量 / WAL 状态 / 与 HEAD 的差异
+python dbtool.py save       # 备份本地库（快照 + 只增不减的并集）
+python dbtool.py pull       # 安全拉取：备份 → 清理 → pull → 数据并回来
+python dbtool.py publish    # 提交 + 推送 kanji.db（Render 自动重新部署）
+python dbtool.py verify     # 合并/提交后校验：完整性、孤儿索引、有没有比备份少
+```
+
+完整原理、合并规则与 FAQ 见 **`DATABASE.md`**；回归测试：`python test_dbtool.py`。
+
 ## 文件结构
 - `app.py` — Flask 后端 + 后台抓取线程
 - `furigana.py` — 注音引擎（可独立运行 `python3 furigana.py` 自测）
@@ -85,9 +100,11 @@ python3 app.py        # 打开 http://localhost:5000
 - `grammar.py` — JLPT语法点解析引擎（高级模式）
 - `rag.py` — TF-IDF 语义检索引擎
 - `DEPLOY.md` — 部署指南（Render/HF Spaces/Fly.io）
+- `DATABASE.md` — 数据库与 Git 协作指南（备份/合并/发布/Render 数据流）
+- `dbtool.py` — 数据库工具：status / save / merge / pull / publish / verify / setup
 - `db.py` — 数据库层
 - `static/index.html` — 前端界面
-- `kanji.db` — 本地数据（自动生成）
+- `kanji.db` — 本地数据（**必须提交，Render 靠它拿初始数据**）
 
 ## KTV 歌词模式（v2 新增）
 

@@ -1,0 +1,11 @@
+# SQLite 数据库是二进制文件：行式 diff / 文本合并毫无意义，
+# 并且会让 git 在合并时把库改坏。
+#   -diff -text   → 当作二进制，不做文本 diff / 不做 CRLF 转换
+#   merge=kanjidb → 交给 dbtool.py 的并集合并驱动（见 DATABASE.md）
+# 驱动配置由 `python dbtool.py setup` 写入本地 .git/config。
+kanji.db -diff -text merge=kanjidb
+v1/kanji.db -diff -text
+
+# 备份 / 快照目录里的库同样按二进制处理（这些文件本身不进版本库）
+_dbbackup/**/*.db -diff -text
+# SQLite 二进制数据库：行式 diff / 文本合并没有意义，改用 dbtool.py 的并集合并驱动
