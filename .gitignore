@@ -4,3 +4,5 @@ audio_cache/
 .DS_Store
 *.db-wal
 *.db-shm
+*.db
+_dbbackup/
