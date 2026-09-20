@@ -2068,7 +2068,7 @@ function bkRenderPlan(p){
     const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
     const q=jsArg(it.kanji);
     const ruby=it.reading?`<ruby>${esc(it.kanji)}<rt>${esc(it.reading)}</rt></ruby>`:esc(it.kanji);
-    return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked)"> ${ruby}</span>`;
+    return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）；勾选后自动纳入艾宾浩斯复习" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked,${jsArg(w?'words':'kanji')},${jsArg(it.reading||'')})"> ${ruby}</span>`;
   };
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
@@ -2080,7 +2080,7 @@ function bkRenderPlan(p){
     </div>
     <div class="progressbar"><i style="width:${pct}%"></i></div>
     ${today&&today.new.length?`
-      <div class="muted" style="margin-top:6px;font-size:12.5px">勾选 = 标记完成；点击字/词 = 查看本书＋全库例句</div>
+      <div class="muted" style="margin-top:6px;font-size:12.5px">勾选 = 完成并纳入艾宾浩斯复习；点击字/词 = 查看本书＋全库例句</div>
       <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:6px">
         ${today.new.map(chip).join('')}
       </div>`:''}
@@ -2094,8 +2094,8 @@ function bkRenderPlan(p){
       ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
     </details>`;
 }
-async function bkTaskDone(k,done){
-  await api('/api/books/plan/done',{method:'POST',body:JSON.stringify({kanji:k,done})});
+async function bkTaskDone(k,done,kind,reading){
+  await api('/api/books/plan/done',{method:'POST',body:JSON.stringify({kanji:k,done,kind,reading})});
   const p=await api('/api/books/plan');bkPlanCache=p;bkRenderPlan(p);bkBadge(p);
 }
 async function bkOpen(id){

@@ -727,6 +727,31 @@ def _fresh_words(book_ids, stages):
     return out
 
 
+def _interleave(kanji_fresh, words_fresh):
+    """把「字」与「词」交错排列，让每日新学里字、词混合出现。
+
+    保持各自的原始教学顺序不变，只按两者剩余比例轮转拼接，
+    避免「先把全部字排完、词全部挤到后几天」的突击式安排。
+    """
+    kanji_fresh = list(kanji_fresh)
+    words_fresh = list(words_fresh)
+    nk, nw = len(kanji_fresh), len(words_fresh)
+    if nk == 0:
+        return words_fresh
+    if nw == 0:
+        return kanji_fresh
+    out, ki, wi = [], 0, 0
+    while ki < nk or wi < nw:
+        # 谁的整体完成度更低谁先补，使字词沿整条序列近似均匀分布
+        if wi >= nw or (ki < nk and ki / nk <= wi / nw):
+            out.append(kanji_fresh[ki])
+            ki += 1
+        else:
+            out.append(words_fresh[wi])
+            wi += 1
+    return out
+
+
 def _existing_load(horizon, day0_ts):
     """已学汉字（全库，不只本书）未来每天的复习次数预估 —— 排程前给它们占好容量。"""
     with db.get_conn() as c:
@@ -811,7 +836,7 @@ def build_plan(book_ids=None, start=None, deadline=None, minutes_per_day=None,
     content = content if content in ('both', 'kanji', 'words') else 'both'
     kanji_fresh = _fresh_kanji(book_ids, stages) if content in ('both', 'kanji') else []
     words_fresh = _fresh_words(book_ids, stages) if content in ('both', 'words') else []
-    fresh = kanji_fresh + words_fresh
+    fresh = _interleave(kanji_fresh, words_fresh)
     existing = _existing_load(horizon, _day_ts(_iso(start_d)))
     new_of_day, load, rev_of_day, rev_count, unplaced = _simulate(
         fresh, existing, cap_sec, horizon, last_intro, target, max_new_per_day or 0)

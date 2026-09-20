@@ -869,11 +869,23 @@ def api_book_curve():
 
 @app.route('/api/books/plan/done', methods=['POST'])
 def api_book_plan_done():
-    """勾选/取消某天（或某个字）的计划完成状态"""
+    """勾选/取消某天（或某个字/词）的计划完成状态。
+
+    勾选「完成」时自动把该字/词加入全局艾宾浩斯复习（SRS），
+    字/词双轨都生效 —— 之后会按遗忘曲线在「今日复习」里推送。
+    取消勾选不删除 SRS 进度（已复习过的记录不受影响）。
+    """
     d = request.json or {}
     ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    kanji = d.get('kanji') or None
+    done = 1 if d.get('done', True) else 0
     n = db.set_plan_done(ids or None, day=d.get('day') or None,
-                         kanji=d.get('kanji') or None, done=1 if d.get('done', True) else 0)
+                         kanji=kanji, done=done)
+    if done and kanji:
+        kind = d.get('kind') or ('words' if len(kanji) > 1 else 'kanji')
+        if kind not in ('kanji', 'words'):
+            kind = 'words' if len(kanji) > 1 else 'kanji'
+        srs.add_kanji(kanji, kind=kind, reading=d.get('reading') or '')
     return jsonify({'ok': True, 'updated': n})
 
 
