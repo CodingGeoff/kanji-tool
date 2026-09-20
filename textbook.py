@@ -312,10 +312,15 @@ def _clean_lemma(lemma, surface):
 
 def extract_units(text, tokens=None):
     """返回 (kanji_rows, word_rows)
-       kanji_rows: [(汉字, 所属词, 词读音)]（与界面注音同源）
+       kanji_rows: [(汉字, 所属词, 字读音)]（单字假名标注：读作该字本身的音，而非整词读音）
        word_rows:  [(词, 读音, 含汉字, 词性)]"""
     tokens = tokens if tokens is not None else furigana.annotate(text)
-    kanji_rows = furigana.extract_kanji_words(tokens)
+    # 字读音：优先该字在词中的单字读音（token.r 对齐 + nbest/音读字素对齐），
+    # 拿不到时退回词读音兜底（至少保留读音显示，不至于空白）。
+    char_r = {}
+    for ch, cr in furigana.extract_char_readings(tokens):
+        char_r.setdefault(ch, cr)
+    kanji_rows = [(k, w, char_r.get(k) or wr) for k, w, wr in furigana.extract_kanji_words(tokens)]
     fb = _furigana_by_offset(text, tokens)
     word_rows, seen = [], set()
     for off, w in _offset_words(text):
