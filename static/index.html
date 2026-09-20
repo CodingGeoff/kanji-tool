@@ -2067,7 +2067,8 @@ function bkRenderPlan(p){
   const chip=it=>{
     const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
     const q=jsArg(it.kanji);
-    return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked)"> ${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;
+    const ruby=it.reading?`<ruby>${esc(it.kanji)}<rt>${esc(it.reading)}</rt></ruby>`:esc(it.kanji);
+    return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked)"> ${ruby}</span>`;
   };
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
@@ -2087,7 +2088,8 @@ function bkRenderPlan(p){
     ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学项到期复习，点击可查例句）</summary><div style="margin-top:4px">${today.review.map(it=>{
       const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
       const q=jsArg(it.kanji);
-      return `<span class="wordchip" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}${esc(it.kanji)}<small>${esc(it.reading||'')}</small></span>`;}).join('')}</div></details>`:''}
+      const ruby=it.reading?`<ruby>${esc(it.kanji)}<rt>${esc(it.reading)}</rt></ruby>`:esc(it.kanji);
+      return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}${ruby}</span>`;}).join('')}</div></details>`:''}
     <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">随后几天（共 ${p.per_day.length} 天）</summary>
       ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
     </details>`;
