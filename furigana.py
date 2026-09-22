@@ -540,13 +540,13 @@ def annotate(text: str):
                                        'w': whole, 'wr': whole_r, 'c': 'mid'})
                     i = j + 2
                     continue
-            if is_digit:
+            if is_digit and not has_kanji(merged_surface):
                 # 纯阿拉伯数字（无匹配助数词）：不含汉字，无需注音
                 tokens.append({'s': merged_surface, 'r': None, 'w': None, 'wr': None})
                 i = j + 1
                 continue
             if j > i and num is not None:
-                # 已合并的汉字数词（一万）：整体给普通读法
+                # 已合并的「数字+单位」混合数词（一万 / 1万 / 1万6千中的1万）：整体给普通读法
                 r = num_to_kana(num)
                 tokens.append({'s': merged_surface, 'r': r, 'w': merged_surface,
                                'wr': r, 'c': 'mid'})
