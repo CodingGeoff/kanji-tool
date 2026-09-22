@@ -463,23 +463,37 @@ ATEJI = {
     # 计量单位国字（几乎只作单位，单字无其他常用义）
     '哩': 'まいる', '呎': 'ふぃーと', '吋': 'いんち',
     '瓩': 'きろぐらむ', '瓲': 'とん', '粁': 'きろめーとる',
+    # 敬语称呼 / 固定表达（熟字訓・音便，整词读音固定，不拆分）
+    'お早う': 'おはよう',
+    'お父さん': 'おとうさん', '父さん': 'とうさん',
+    'お母さん': 'おかあさん', '母さん': 'かあさん',
+    'お兄さん': 'おにいさん', '兄さん': 'にいさん',
+    'お姉さん': 'おねえさん', '姉さん': 'ねえさん',
+    'お祖父さん': 'おじいさん', '祖父さん': 'じいさん',
+    'お祖母さん': 'おばあさん', '祖母さん': 'ばあさん',
+    '奥さん': 'おくさん',
 }
 
 
+def _apply_fixed(text, positions, merges, idiom, reading, no_split):
+    """命中固定词 → 强制整词读音（覆盖引擎裁决）；no_split 表示整词不拆分"""
+    start = text.find(idiom)
+    while start != -1:
+        end = start + len(idiom)
+        idxs = [j for j, (s2, e2) in enumerate(positions) if s2 >= start and e2 <= end]
+        if idxs and positions[idxs[0]][0] == start and positions[idxs[-1]][1] == end:
+            merges[idxs[0]] = (idxs[-1] + 1, reading, reading, no_split)
+            for j in idxs[1:]:
+                merges.pop(j, None)
+        start = text.find(idiom, end)
+
+
 def _idiom_merges(text, positions, merges):
-    """四字熟语 / 当て字命中 → 强制整词读音（覆盖引擎裁决）"""
-    table = dict(IDIOMS)
-    table.update(ATEJI)
-    for idiom, reading in table.items():
-        start = text.find(idiom)
-        while start != -1:
-            end = start + len(idiom)
-            idxs = [j for j, (s2, e2) in enumerate(positions) if s2 >= start and e2 <= end]
-            if idxs and positions[idxs[0]][0] == start and positions[idxs[-1]][1] == end:
-                merges[idxs[0]] = (idxs[-1] + 1, reading, reading)
-                for j in idxs[1:]:
-                    merges.pop(j, None)
-            start = text.find(idiom, end)
+    """四字熟语（可拆分）/ 当て字（整词不拆分）命中 → 强制整词读音"""
+    for idiom, reading in IDIOMS.items():
+        _apply_fixed(text, positions, merges, idiom, reading, no_split=False)
+    for idiom, reading in ATEJI.items():
+        _apply_fixed(text, positions, merges, idiom, reading, no_split=True)
 
 
 # ================================================================
@@ -513,14 +527,19 @@ def annotate(text: str):
 
         # ---- 第4层增强：词典级复合词整词仲裁 ----
         if i in merges:
-            end, sr, mecab_concat = merges[i]
+            end, sr, mecab_concat = merges[i][:3]
+            no_split = len(merges[i]) > 3 and merges[i][3]
             whole = ''.join(words[j].surface for j in range(i, end))
-            aligned = _align(whole, sr)
             # 词典级整词读音获胜；若与MeCab拼读仅清浊之差则视为一致（无需警示）
             if mecab_concat == sr or is_rendaku_variant(mecab_concat, sr):
                 extra = {'c': 'high'}
             else:
                 extra = {'c': 'mid', 'alt': [mecab_concat]}
+            if no_split:
+                tokens.append({'s': whole, 'r': sr, 'w': whole, 'wr': sr, **extra})
+                i = end
+                continue
+            aligned = _align(whole, sr)
             if aligned is None:
                 tokens.append({'s': whole, 'r': sr, 'w': whole, 'wr': sr, **extra})
             else:
