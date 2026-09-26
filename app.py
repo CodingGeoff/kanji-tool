@@ -18,6 +18,11 @@ import textbook
 import edu_psychology
 import ai_translate
 import sentence_builder
+import proficiency_exam
+import performance_tasks
+import assessment_bank
+import corpus_shards
+import federated_search
 
 app = Flask(__name__, static_folder='static')
 
@@ -230,6 +235,25 @@ def api_delete_sentence(sid):
     db.delete_sentence(sid)
     db.log('delete', f'删除语料 #{sid}')
     return jsonify({'ok': True})
+
+
+# ---------- 多数据库联合语料检索 ----------
+@app.route('/api/corpus/federated-search')
+def api_corpus_federated_search():
+    """同时检索 kanji.db 与全部只读内容寻址语料分片。"""
+    return jsonify(federated_search.search(
+        request.args.get('q', ''),
+        limit=_num(request.args.get('limit'), 30, 1, 200),
+        source=request.args.get('source') or None,
+        include_primary=request.args.get('primary', '1') != '0',
+        include_shards=request.args.get('shards', '1') != '0'))
+
+
+@app.route('/api/corpus/shards/status')
+def api_corpus_shards_status():
+    """扫描重建分片清单；verify=1 时额外逐文件计算 SHA-256。"""
+    return jsonify({'ok': True, 'manifest': corpus_shards.rebuild_manifest(
+        verify=request.args.get('verify') == '1'), 'policies': corpus_shards.SOURCES})
 
 
 # ---------- 汉字 ----------
@@ -1163,6 +1187,107 @@ def api_builder_stats():
     """最近 N 天组句练习统计"""
     days = _num(request.args.get('days'), 14, 1, 90)
     return jsonify({'ok': True, 'stats': sentence_builder.builder_stats(days)})
+
+
+# ================================================================
+# 综合能力测评（证据中心设计；保留原挖空/组句作为基础模式）
+# ================================================================
+
+@app.route('/api/exam/blueprints')
+def api_exam_blueprints():
+    return jsonify({'ok': True, 'blueprints': {
+        k: proficiency_exam.blueprint(k) for k in proficiency_exam.BLUEPRINTS}})
+
+
+@app.route('/api/exam/generate', methods=['POST'])
+def api_exam_generate():
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    seed = d.get('seed')
+    try:
+        seed = int(seed) if seed is not None else None
+    except (TypeError, ValueError):
+        seed = None
+    return jsonify(proficiency_exam.make_exam(
+        mode=d.get('mode', 'proficiency'), level=d.get('level'),
+        count=_num(d.get('count'), 12, 3, 40), seed=seed, book_ids=ids or None))
+
+
+@app.route('/api/exam/score', methods=['POST'])
+def api_exam_score():
+    """兼容旧的本地练习计分；正式会话请使用 start/submit 服务端判卷。"""
+    return jsonify(proficiency_exam.score_exam((request.json or {}).get('answers') or []))
+
+
+@app.route('/api/exam/start', methods=['POST'])
+def api_exam_start():
+    d = request.json or {}
+    ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
+    seed = d.get('seed')
+    try:
+        seed = int(seed) if seed is not None else None
+    except (TypeError, ValueError):
+        seed = None
+    return jsonify(proficiency_exam.start_exam(
+        mode=d.get('mode', 'proficiency'), level=d.get('level'),
+        count=_num(d.get('count'), 12, 3, 40), seed=seed, book_ids=ids or None))
+
+
+@app.route('/api/exam/submit', methods=['POST'])
+def api_exam_submit():
+    d = request.json or {}
+    if not d.get('session_id'):
+        return jsonify({'ok': False, 'error': 'session_id required'}), 400
+    result = proficiency_exam.submit_exam(d['session_id'], d.get('answers') or [])
+    return jsonify(result), (200 if result.get('ok') else 409)
+
+
+@app.route('/api/exam/item-analysis')
+def api_exam_item_analysis():
+    return jsonify(proficiency_exam.item_analysis(
+        _num(request.args.get('min_attempts'), 1, 1, 10000)))
+
+
+@app.route('/api/performance/tasks')
+def api_performance_tasks():
+    return jsonify({'ok': True, 'tasks': performance_tasks.list_tasks(
+        request.args.get('skill'), request.args.get('level'))})
+
+
+@app.route('/api/performance/generate', methods=['POST'])
+def api_performance_generate():
+    d = request.json or {}
+    return jsonify(performance_tasks.make_task(d.get('skill'), d.get('level'), d.get('seed')))
+
+
+@app.route('/api/performance/rate', methods=['POST'])
+def api_performance_rate():
+    d = request.json or {}
+    result = performance_tasks.record_rating(
+        d.get('task_id'), d.get('instance_id'), d.get('skill'), d.get('ratings'),
+        d.get('rater', 'self'), d.get('notes', ''))
+    return jsonify(result), (200 if result.get('ok') else 400)
+
+
+@app.route('/api/assessment/passages')
+def api_assessment_passages():
+    return jsonify({'ok': True, 'passages': assessment_bank.list_passages(
+        request.args.get('level'), request.args.get('status'))})
+
+
+@app.route('/api/assessment/passages/generate', methods=['POST'])
+def api_assessment_passage_generate():
+    d = request.json or {}
+    return jsonify(assessment_bank.generate(d.get('level'), d.get('status', 'approved'),
+                                             d.get('seed'), bool(d.get('include_answers'))))
+
+
+@app.route('/api/assessment/passages/<passage_id>/review', methods=['POST'])
+def api_assessment_passage_review(passage_id):
+    d = request.json or {}
+    result = assessment_bank.review(passage_id, d.get('status', 'reviewed'),
+                                    d.get('reviewer'), d.get('checklist'), d.get('notes', ''))
+    return jsonify(result), (200 if result.get('ok') else 400)
 
 
 # ================================================================

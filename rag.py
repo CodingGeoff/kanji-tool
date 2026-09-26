@@ -27,6 +27,8 @@ import time
 import db
 import furigana
 import ktv
+import corpus_shards
+import federated_search
 
 CHANNELS = ('lyric', 'textbook', 'web')
 _CH_PRIOR = {'lyric': 0.03, 'textbook': 0.02, 'web': 0.0}   # 歌词优先、课本次之
@@ -478,9 +480,15 @@ class MultiIndex:
         enabled_set = set(enabled)
         selected_books = set(_as_int_list(book_ids))
         # v18 查询 LRU：同查询+同参数+同数据签名 → 直接命中（ms≈0）
+        # 不可变语料分片加入缓存签名；新增/删除分片后旧查询自动失效。
+        try:
+            shard_sig = tuple(sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
+                              for p in corpus_shards.SHARD_DIR.glob('corpus-*.db')))
+        except OSError:
+            shard_sig = ()
         ckey = (qn, limit, tuple(sources or []), per_song, per_book,
                 min_score, min_affinity, tuple(sorted(selected_books)), sort,
-                self._stamp)
+                self._stamp, shard_sig)
         _hit = self._qcache_get(ckey)
         if _hit is not None:
             _hit = dict(_hit)
@@ -644,6 +652,36 @@ class MultiIndex:
                 'timing': {'recall_ms': round((t_recall - t0) * 1000),
                            'rerank_ms': round((t_rerank - t_recall) * 1000),
                            'merge_ms': round((t_done - t_rerank) * 1000)}}
+        # 6) 大型只读分片按需召回，不把数百万文档常驻内存。作为 web 通道参与
+        # 统一去重与排序；kanji.db 中已有同文时保留可编辑的主库版本。
+        if 'web' in enabled_set and shard_sig:
+            try:
+                fed = federated_search.search(q, limit=max(limit * 3, 30),
+                                              include_primary=False, include_shards=True)
+                existing_text = {r.get('text') for r in results}
+                shard_rows = []
+                for x in fed.get('rows', []):
+                    if not x.get('text') or x['text'] in existing_text:
+                        continue
+                    existing_text.add(x['text'])
+                    sr = {'type':'web','channel':'web','kind':'sentence','id':None,
+                          'uid':x.get('uid'),'title':x.get('source') or '开放语料分片',
+                          'text':x['text'],'translation':x.get('translation') or '',
+                          'score':x.get('score',0),'rank':x.get('score',0),
+                          'source':x.get('source'),'url':x.get('url'),
+                          'license':x.get('license'),'attribution':x.get('attribution'),
+                          'read_only':True,'storage':'shard'}
+                    if sr['score'] >= max(.08, min_score): shard_rows.append(sr)
+                groups['web'].extend(shard_rows); rows.extend(shard_rows); results.extend(shard_rows)
+                if sort == 'score': results.sort(key=lambda r:-r.get('rank',r.get('score',0)))
+                else: results.sort(key=lambda r:(_pri_idx.get(r['channel'],len(pri)),
+                                                  -r.get('score',0)))
+                rows.sort(key=lambda r:-r.get('score',0))
+                meta['shards']={'count':fed.get('shards',0),'hits':len(shard_rows),
+                                'candidates':fed.get('total_candidates',0)}
+                meta['hits']['web']=len(groups['web'])
+            except Exception as exc:
+                meta['shards']={'count':len(shard_sig),'hits':0,'error':str(exc)[:160]}
         resp = {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
                 'results': results[:max(limit, 1)],
