@@ -219,6 +219,25 @@ def _migrate():
             pass
         # 自建课本表（v11 老库升级补建）
         c.executescript(BOOK_DDL)
+        # AI 起草题目（v21）：LLM 辅助起草的听力/阅读理解题，一律 status='draft'
+        # 落库，严禁跳过人工复核直接进入正式组卷——见 QUESTION_SOURCE_POLICY.md。
+        c.execute('''CREATE TABLE IF NOT EXISTS ai_draft_items(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill TEXT NOT NULL,
+            level TEXT,
+            genre TEXT DEFAULT '',
+            status TEXT DEFAULT 'draft',
+            payload TEXT NOT NULL,
+            based_on_sid INTEGER,
+            based_on_source TEXT DEFAULT '',
+            provider TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            reviewer TEXT DEFAULT '',
+            review_notes TEXT DEFAULT '',
+            created_at REAL,
+            reviewed_at REAL
+        )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ai_draft_status ON ai_draft_items(skill, status)')
 
 
 _migrate()
@@ -240,6 +259,80 @@ def log(type_, detail):
     with _lock, get_conn() as c:
         c.execute('INSERT INTO history(ts,type,detail) VALUES(?,?,?)',
                   (time.time(), type_, detail))
+
+
+# ---------- AI 起草题目（v21：听力/阅读理解自动起草 + 人工复核） ----------
+
+def add_ai_draft(skill, payload, level=None, genre='', based_on_sid=None,
+                 based_on_source='', provider='', model=''):
+    """落库一条 AI 起草题（status 固定从 'draft' 开始，不接受调用方指定）。"""
+    with _lock, get_conn() as c:
+        cur = c.execute(
+            'INSERT INTO ai_draft_items(skill,level,genre,status,payload,based_on_sid,'
+            'based_on_source,provider,model,created_at) VALUES(?,?,?,\'draft\',?,?,?,?,?,?)',
+            (skill, level or '', genre or '', json.dumps(payload, ensure_ascii=False),
+             based_on_sid, based_on_source or '', provider or '', model or '', time.time()))
+        return cur.lastrowid
+
+
+def list_ai_drafts(skill=None, status=None, limit=200):
+    q = 'SELECT * FROM ai_draft_items WHERE 1=1'
+    args = []
+    if skill:
+        q += ' AND skill=?'
+        args.append(skill)
+    if status:
+        q += ' AND status=?'
+        args.append(status)
+    q += ' ORDER BY id DESC LIMIT ?'
+    args.append(int(limit))
+    with get_conn() as c:
+        rows = [dict(r) for r in c.execute(q, args).fetchall()]
+    for r in rows:
+        try:
+            r['payload'] = json.loads(r['payload'])
+        except Exception:
+            r['payload'] = None
+    return rows
+
+
+def get_ai_draft(draft_id):
+    with get_conn() as c:
+        r = c.execute('SELECT * FROM ai_draft_items WHERE id=?', (draft_id,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    try:
+        d['payload'] = json.loads(d['payload'])
+    except Exception:
+        d['payload'] = None
+    return d
+
+
+def review_ai_draft(draft_id, status, reviewer='', notes=''):
+    with _lock, get_conn() as c:
+        cur = c.execute(
+            'UPDATE ai_draft_items SET status=?, reviewer=?, review_notes=?, reviewed_at=? WHERE id=?',
+            (status, str(reviewer or '')[:100], str(notes or '')[:1000], time.time(), draft_id))
+        return cur.rowcount > 0
+
+
+def delete_ai_draft(draft_id):
+    with _lock, get_conn() as c:
+        cur = c.execute('DELETE FROM ai_draft_items WHERE id=?', (draft_id,))
+        return cur.rowcount > 0
+
+
+def count_ai_drafts(skill=None):
+    q = 'SELECT status, COUNT(*) n FROM ai_draft_items'
+    args = []
+    if skill:
+        q += ' WHERE skill=?'
+        args.append(skill)
+    q += ' GROUP BY status'
+    with get_conn() as c:
+        rows = c.execute(q, args).fetchall()
+    return {r['status']: r['n'] for r in rows}
 
 
 # ---------- 语料 CRUD ----------

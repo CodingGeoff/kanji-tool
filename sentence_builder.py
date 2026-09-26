@@ -1073,26 +1073,20 @@ def _sentence_level(text):
     return lv, gs
 
 
-def _fetch_pool(scope, book_ids, need):
+def _fetch_pool(scope, ids, need):
+    """按（已解析好的）scope + book id 列表取候选句子池。
+
+    注意：scope/ids 必须先经过 textbook.resolve_book_scope() 解析——本函数不再
+    自己判断“book_ids 为空就悄悄改用全库语料”，避免题源被静默替换却不回报真实
+    scope 的问题（v20 修复：见 make_quiz 与 QUESTION_SOURCE_POLICY.md）。
+    """
+    import textbook
     rows = []
-    ids = [int(b) for b in (book_ids or [])]
     if scope in ('book', 'mixed') and ids:
-        ph = ','.join('?' * len(ids))
-        try:
-            with db.get_conn() as c:
-                rows += [dict(r) for r in c.execute(
-                    f'SELECT s.id sid, s.text text, s.translation translation, '
-                    f's.source source, b.title book_title, l.title lesson_title '
-                    f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
-                    f'JOIN books b ON b.id=bs.book_id '
-                    f'LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
-                    f'WHERE bs.book_id IN ({ph}) ORDER BY RANDOM() LIMIT ?',
-                    ids + [need]).fetchall()]
-        except Exception:
-            pass
+        rows += textbook.fetch_book_sentence_rows(ids, need)
     if scope == 'lyric':
         rows += _lyric_pool(need)
-    if scope == 'corpus' or scope == 'mixed' or (scope == 'book' and not ids):
+    if scope == 'corpus' or scope == 'mixed':
         try:
             with db.get_conn() as c:
                 rows += [dict(r) for r in c.execute(
@@ -1302,7 +1296,10 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
     n_pairs = int(round(count * t['pairs'] / ts)) if ts else 0
     n_arr = count - n_pairs
 
-    rows = _fetch_pool(scope, book_ids, need=min(max(n_arr * 30, 120), 500))
+    import textbook
+    resolved = textbook.resolve_book_scope(scope, book_ids)
+    scope, resolved_ids = resolved['scope'], resolved['ids']
+    rows = _fetch_pool(scope, resolved_ids, need=min(max(n_arr * 30, 120), 500))
     questions, used_sid = [], set()
     relax_note = False
 
@@ -1339,6 +1336,8 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
     for i, q in enumerate(questions):
         q['qid'] = f'q{i}'
     return {'ok': True, 'mode': mode, 'level': level, 'scope': scope,
+            'book_ids': resolved_ids, 'scope_auto_all': resolved['auto_all'],
+            'scope_note': resolved['note'],
             'count': len(questions), 'questions': questions,
             'n_arrange': len(questions) - made_pairs, 'n_pairs': made_pairs,
             'level_relaxed': relax_note,

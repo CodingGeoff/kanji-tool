@@ -18,6 +18,8 @@ import textbook
 import edu_psychology
 import ai_translate
 import sentence_builder
+import listening
+import ai_item_writer
 import proficiency_exam
 import performance_tasks
 import assessment_bank
@@ -1187,6 +1189,91 @@ def api_builder_stats():
     """最近 N 天组句练习统计"""
     days = _num(request.args.get('days'), 14, 1, 90)
     return jsonify({'ok': True, 'stats': sentence_builder.builder_stats(days)})
+
+
+# ================================================================
+# 听力练习（v21：听后选义 / 听音辨句，规则引擎自动出题，零人工介入）
+# ================================================================
+
+@app.route('/api/listening/cfg')
+def api_listening_cfg_get():
+    cfg = listening.listening_cfg()
+    return jsonify({'ok': True, 'cfg': cfg, 'stats': listening.listening_stats()})
+
+
+@app.route('/api/listening/cfg', methods=['POST'])
+def api_listening_cfg_set():
+    cfg = listening.save_listening_cfg(request.json or {})
+    return jsonify({'ok': True, 'cfg': cfg})
+
+
+@app.route('/api/listening/quiz', methods=['POST'])
+def api_listening_quiz():
+    d = request.json or {}
+    return jsonify(listening.make_quiz(
+        book_ids=d.get('book_ids'), count=d.get('count'),
+        level=d.get('level'), scope=d.get('scope')))
+
+
+@app.route('/api/listening/answer', methods=['POST'])
+def api_listening_answer():
+    d = request.json or {}
+    return jsonify(listening.record_results(d.get('results') or []))
+
+
+@app.route('/api/listening/stats')
+def api_listening_stats():
+    days = _num(request.args.get('days'), 14, 1, 90)
+    return jsonify({'ok': True, 'stats': listening.listening_stats(days)})
+
+
+# ================================================================
+# AI 起草题目（v21）：LLM 辅助起草听力/阅读理解题 + 人工复核队列
+# 复用 ai_translate.py 已配置的 Provider/Key；起草结果一律 status=draft，
+# 不经复核绝不会出现在任何正式组卷路径里——见 QUESTION_SOURCE_POLICY.md。
+# ================================================================
+
+@app.route('/api/ai-items/draft', methods=['POST'])
+def api_ai_items_draft():
+    d = request.json or {}
+    return jsonify(ai_item_writer.draft_batch(
+        n=d.get('n'), kind=d.get('kind', 'sentence'), skill=d.get('skill', 'listening'),
+        level=d.get('level'), scope=d.get('scope', 'corpus'), book_ids=d.get('book_ids')))
+
+
+@app.route('/api/ai-items/drafts')
+def api_ai_items_list():
+    rows = ai_item_writer.list_drafts(skill=request.args.get('skill'),
+                                      status=request.args.get('status'))
+    return jsonify({'ok': True, 'rows': rows, 'stats': ai_item_writer.stats()})
+
+
+@app.route('/api/ai-items/drafts/<int:draft_id>')
+def api_ai_items_get(draft_id):
+    d = ai_item_writer.get_draft(draft_id)
+    if not d:
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    return jsonify({'ok': True, 'draft': d})
+
+
+@app.route('/api/ai-items/drafts/<int:draft_id>/review', methods=['POST'])
+def api_ai_items_review(draft_id):
+    d = request.json or {}
+    return jsonify(ai_item_writer.review_draft(
+        draft_id, d.get('status', 'reviewed'), d.get('reviewer', ''),
+        checklist=d.get('checklist'), notes=d.get('notes', '')))
+
+
+@app.route('/api/ai-items/drafts/<int:draft_id>', methods=['DELETE'])
+def api_ai_items_delete(draft_id):
+    return jsonify(ai_item_writer.delete_draft(draft_id))
+
+
+@app.route('/api/ai-items/approved')
+def api_ai_items_approved():
+    rows = ai_item_writer.approved_items(skill=request.args.get('skill'),
+                                         level=request.args.get('level'))
+    return jsonify({'ok': True, 'rows': rows})
 
 
 # ================================================================

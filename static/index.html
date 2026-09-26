@@ -551,6 +551,9 @@ body.ktv-song.showhdr header{display:flex;position:static}
           <button class="btn" onclick="bkQuizOpen()" title="从本书或全库句子挖空，考察语法点（难度可配）">📝 挖空练习</button>
           <button class="btn" onclick="sbOpen()" title="多邻国式组句：把句子拆成词块重新排序；初级=纯净词块+语料换词变体，高级=带混淆干扰；多种语法正确语序均判对">🧩 组句练习</button>
           <button class="btn" onclick="sbCfgOpen()" title="组句练习完整配置：初级/高级模式、N级难度（两轴独立）、题型占比、干扰块、换词、判卷严格度">🧩 组句配置</button>
+          <button class="btn" onclick="lsOpen()" title="听后选义/听音辨句：播放语料/课本/歌词录音再作答，语速可调难度">🎧 听力练习</button>
+          <button class="btn" onclick="lsCfgOpen()" title="听力练习配置：题源、N级难度、语速、题型占比">🎧 听力配置</button>
+          <button class="btn" onclick="aiItemsOpen()" title="AI 起草听力/阅读理解题草稿箱：批量生成 + 人工复核后才能进入练习">🤖 AI 出题草稿箱</button>
           <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
           <button class="btn primary" onclick="bkToggleImport()">＋ 制作课本</button>
@@ -2463,9 +2466,10 @@ async function bkCfgOpen(){
       <span class="muted">例句数量</span><input id="cfgExN" type="number" min="1" max="30" value="${c.example_limit||6}" style="width:90px">
       <span class="muted">语法抽取难度下限</span><select id="cfgGmin">${_LV.map(l=>`<option value="${l}" ${((!c.grammar_min_level&&l==='N3')||c.grammar_min_level===l)?'selected':''}>${l} 及更难</option>`).join('')}</select>
       <span class="muted">挖空测验</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="cfgClozeOn" ${c.cloze_enabled!==false?'checked':''}><span>在学习曲线中穿插</span></label>
-      <span class="muted">挖空题源</span><select id="cfgClozeScope">
+      <span class="muted">挖空题源</span><div><select id="cfgClozeScope">
         <option value="book" ${c.cloze_scope==='book'?'selected':''}>仅本书句子</option>
         <option value="corpus" ${(!c.cloze_scope||c.cloze_scope==='corpus')?'selected':''}>全库语料</option></select>
+        <div class="muted" style="font-size:12px;margin-top:4px">「仅本书」在某本书详情页内只用这本书；在书架页未勾选课本时自动用全部启用中的课本，一本课本都没有才退回全库语料。</div></div>
       <span class="muted">每次题数</span><input id="cfgClozeN" type="number" min="1" max="20" value="${c.cloze_per_day||5}" style="width:90px">
       <span class="muted">挖空难度下限</span><select id="cfgClozeMin">${_LV.map(l=>`<option value="${l}" ${((!c.cloze_min_level&&l==='N4')||c.cloze_min_level===l)?'selected':''}>${l} 及更难</option>`).join('')}</select>
     </div>
@@ -2531,7 +2535,8 @@ async function bkQuizOpen(){
   bkQuizShow();
   const v=$('#bkQuizView');
   v.innerHTML='<div class="card"><div class="muted">📝 出题中（完整题干质检＋语法定位＋混淆项匹配…）</div></div>';
-  const body=bkSel.size?{book_ids:[...bkSel]}:{};
+  const bIds=bkCur?[bkCur.id]:[...bkSel];
+  const body=bIds.length?{book_ids:bIds}:{};
   let d;
   try{ d=await api('/api/books/cloze',{method:'POST',body:JSON.stringify(body)}); }
   catch(e){ d={ok:false}; }
@@ -2544,6 +2549,11 @@ async function bkQuizOpen(){
       <div class="quiz-nav"><button class="btn" onclick="bkCfgOpen()">⚙ 学习配置</button></div>
     </div>`;
     return;
+  }
+  if(d.scope_note==='no_books_fallback_corpus'){
+    toast('⚠️ 书架里还没有课本，"仅本书" 已自动改用全库语料出题');
+  }else if(d.scope_auto_all&&d.scope==='book'){
+    toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
   }
   bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,min:d.min_level,short:!!d.short,picked:null};
   bkQuizRender();
@@ -2707,7 +2717,12 @@ async function sbOpen(opts){
   const v=$('#bkQuizView');
   v.innerHTML='<div class="card"><div class="muted">🧩 出题中（文节切块＋合法语序枚举＋逐句语法质检…）</div></div>';
   await sbCfgLoad();
-  const body=window.bkSel&&bkSel.size?{book_ids:[...bkSel]}:{};
+  // 与其它出题入口（挖空练习等）保持一致：在具体某本书页面内打开时，
+  // 默认只用当前这本书；否则退回书架勾选框；两者都没有时不传 book_ids，
+  // 由服务端 textbook.resolve_book_scope 决定（scope=book/mixed 会自动使用
+  // 书架里全部启用中的课本，而不是静默改用全库语料——这是 v20 修复的重点）。
+  const bIds=(window.bkCur&&bkCur.id)?[bkCur.id]:(window.bkSel&&bkSel.size?[...bkSel]:[]);
+  const body=bIds.length?{book_ids:bIds}:{};
   if(opts&&opts.scope) body.scope=opts.scope;   // KTV 歌词组句等定向题源
   window._sbLastOpts=opts||null;
   let d;
@@ -2721,14 +2736,24 @@ async function sbOpen(opts){
     </div>`;
     return;
   }
-  sbQuiz={qs:d.questions,i:0,ok:0,ans:[],mode:d.mode,level:d.level,sel:[],checked:false,
+  if(d.scope_note==='no_books_fallback_corpus'){
+    toast('⚠️ 书架里还没有课本，"仅课本" 已自动改用全库语料出题');
+  }else if(d.scope_auto_all&&(d.scope==='book'||d.scope==='mixed')){
+    toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
+  }
+  sbQuiz={qs:d.questions,i:0,ok:0,ans:[],mode:d.mode,level:d.level,
+          scope:d.scope,scopeAutoAll:!!d.scope_auto_all,scopeNote:d.scope_note,
+          bookIds:d.book_ids||[],sel:[],checked:false,
           pairSel:null,pairErr:0,pairDone:0};
   sbRender();
 }
+const SB_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
 function sbModeBadge(){
   const m=sbQuiz.mode;
+  const sl=SB_SCOPE_LABEL[sbQuiz.scope]||'';
   return `<span class="sb-mode ${m==='basic'?'basic':'adv'}">${m==='basic'?'初级·纯净词块':'高级·带混淆'}</span>
-    <span class="tag">难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}</span>`;
+    <span class="tag">难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}</span>
+    ${sl?`<span class="tag" title="实际题源（如与你的配置不符，说明已按规则自动调整，鼠标悬停查看原因）">${sl}${sbQuiz.scopeAutoAll?`·全部${sbQuiz.bookIds.length}本`:''}</span>`:''}`;
 }
 function sbRender(){
   const v=$('#bkQuizView'),q=sbQuiz.qs[sbQuiz.i],n=sbQuiz.qs.length;
@@ -2904,11 +2929,12 @@ async function sbCfgOpen(){
         <option value="advanced" ${c.mode==='advanced'?'selected':''}>高级 —— 混入干扰词块（时态变形/句外词/换助词）</option></select>
       <span class="muted">难度（句子选材）</span><select id="sbcLevel">
         ${SB_LV.map(l=>`<option value="${l}" ${c.level===l?'selected':''}>${l==='any'?'不限（随机）':l+' 级语法句'}</option>`).join('')}</select>
-      <span class="muted">题源</span><select id="sbcScope">
+      <span class="muted">题源</span><div><select id="sbcScope">
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
         <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
+        <div class="muted" style="font-size:12px;margin-top:4px">「仅课本/课本＋语料」：在某本书详情页内打开练习只用这本书；在书架页且没有勾选课本时，自动使用书架里<b>全部启用中的课本</b>（不会悄悄换成语料库）；一本课本都没有时才会诚实退回全库语料。练习界面右上角的题源标签会标出实际用了什么。</div></div>
       <span class="muted">每组题数</span><input id="sbcN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
       <span class="muted">题型占比</span><div class="row" style="gap:8px">组句 <input id="sbcTArr" type="number" min="0" max="100" value="${(c.types||{}).arrange??80}" style="width:64px">% ／ 配对 <input id="sbcTPair" type="number" min="0" max="100" value="${(c.types||{}).pairs??20}" style="width:64px">%</div>
       <span class="muted">词块数范围</span><div class="row" style="gap:8px"><input id="sbcMinT" type="number" min="2" max="6" value="${c.min_tiles||3}" style="width:64px"> ～ <input id="sbcMaxT" type="number" min="3" max="14" value="${c.max_tiles||9}" style="width:64px"> 块</div>
@@ -2942,6 +2968,281 @@ async function sbCfgSave(){
     const r=await api('/api/builder/cfg',{method:'POST',body:JSON.stringify(body)});
     sbCfgCache=r.cfg;bkModalClose();toast('组句配置已保存');
   }catch(e){toast('保存失败：'+e);}
+}
+
+/* ---------- v21 听力练习（听后选义 / 听音辨句：先听录音再作答） ---------- */
+let lsQuiz=null, lsCfgCache=null, _lsAudio=null, _lsPlays=0;
+const LS_LV=['any','N5','N4','N3','N2','N1'];
+const LS_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
+async function lsCfgLoad(force){
+  if(!lsCfgCache||force){
+    try{const d=await api('/api/listening/cfg');lsCfgCache=d.cfg;lsCfgCache._stats=d.stats||[];}
+    catch(e){lsCfgCache=null;}
+  }
+  return lsCfgCache||{};
+}
+async function lsPlay(text,rate){
+  const box=$('#lsPlayBox');
+  if(_lsAudio){try{_lsAudio.pause()}catch(_){}; if(_lsAudio._url)URL.revokeObjectURL(_lsAudio._url);_lsAudio=null;}
+  try{speechSynthesis.cancel()}catch(_){}
+  if(box)box.textContent='🔊 播放中…';
+  try{
+    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,voice:localStorage.voice||'',rate:rate||'normal'})});
+    if(!r.ok)throw new Error('tts');
+    const url=URL.createObjectURL(await r.blob());
+    _lsAudio=new Audio(url);_lsAudio._url=url;
+    _lsAudio.onended=()=>{if(box)box.textContent='🔁 重播这句';};
+    await _lsAudio.play();
+  }catch(e){
+    // 服务端 TTS 不可用（如无外网）时退回浏览器本地语音，速率轴按比例换算成 speechSynthesis 的 rate
+    try{
+      const rateNum={slower:0.7,slow:0.85,normal:1,fast:1.2}[rate]||1;
+      const u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';u.rate=rateNum;
+      const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ja'));
+      if(v)u.voice=v;
+      if(box)box.textContent='🔊 播放中…（本地语音，服务端朗读不可用）';
+      u.onend=()=>{if(box)box.textContent='🔁 重播这句';};
+      speechSynthesis.speak(u);
+    }catch(e2){
+      if(box)box.textContent='⚠️ 朗读失败，点击重试';
+      toast('听力音频播放失败，且浏览器本地语音也不可用');
+    }
+  }
+}
+async function lsOpen(){
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">🎧 出题中（选材质检＋换词/换义干扰生成…）</div></div>';
+  await lsCfgLoad();
+  const bIds=(window.bkCur&&bkCur.id)?[bkCur.id]:(window.bkSel&&bkSel.size?[...bkSel]:[]);
+  const body=bIds.length?{book_ids:bIds}:{};
+  let d;
+  try{ d=await api('/api/listening/quiz',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ d={ok:false}; }
+  if(!d.ok||!d.questions||!d.questions.length){
+    v.innerHTML=`<div class="card quiz-wrap">
+      <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🎧 听力练习</b></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：meaning 题型需要句子已有译文，discriminate 题型需要语料里有足够多同类名词可换——可在 🎧 听力配置里切换题源/放宽难度，或去语料库/AI翻译补充更多带译文的句子。'}</div>
+      <div class="quiz-nav"><button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button></div>
+    </div>`;
+    return;
+  }
+  if(d.scope_note==='no_books_fallback_corpus'){
+    toast('⚠️ 书架里还没有课本，"仅课本" 已自动改用全库语料出题');
+  }else if(d.scope_auto_all&&(d.scope==='book'||d.scope==='mixed')){
+    toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
+  }
+  lsQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,scopeAutoAll:!!d.scope_auto_all,
+         bookIds:d.book_ids||[],picked:null,checked:false};
+  lsRender();
+}
+function lsRender(){
+  const v=$('#bkQuizView'),q=lsQuiz.qs[lsQuiz.i],n=lsQuiz.qs.length;
+  lsQuiz.picked=null;lsQuiz.checked=false;_lsPlays=0;
+  const sl=LS_SCOPE_LABEL[lsQuiz.scope]||'';
+  const qtypeLabel=q.qtype==='meaning'?'听后选义':'听音辨句';
+  const top=`<div class="quiz-top">
+      <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
+      <span class="quiz-prog">🎧 听力 ${lsQuiz.i+1} / ${n}</span>
+      <span class="sb-badges"><span class="tag">${qtypeLabel}</span>${sl?`<span class="tag">${sl}${lsQuiz.scopeAutoAll?`·全部${lsQuiz.bookIds.length}本`:''}</span>`:''}<span class="tag">${esc(q.origin||'')}</span></span>
+      <span style="flex:1"></span>
+      <span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
+    </div>
+    <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
+  const hint=q.qtype==='meaning'?'听录音，选出正确的中文/英文释义':'听录音，选出与录音完全一致的那句话';
+  v.innerHTML=`<div class="card quiz-wrap">${top}
+    <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
+    <div style="margin-top:12px;text-align:center">
+      <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
+      <div id="lsPlayBox" class="muted" style="margin-top:6px;font-size:12.5px">还没有播放过</div>
+    </div>
+    <div class="sb-area jp" id="lsOpts" style="margin-top:16px">
+      ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})">${esc(o)}</button>`).join('')}
+    </div>
+    <div class="quiz-nav">
+      <button class="btn primary" id="lsCheckBtn" onclick="lsCheck()" disabled>检查</button>
+    </div>
+    <div id="lsQuizExp"></div>
+  </div>`;
+}
+function lsPlayTap(){
+  const q=lsQuiz.qs[lsQuiz.i];
+  if(q.max_plays&&_lsPlays>=q.max_plays){toast(`本题最多重播 ${q.max_plays} 次`);return;}
+  _lsPlays++;
+  lsPlay(q.text,q.rate);
+}
+function lsPick(k){
+  if(lsQuiz.checked)return;
+  lsQuiz.picked=k;
+  document.querySelectorAll('.ls-opt').forEach((b,i)=>b.classList.toggle('sel',i===k));
+  $('#lsCheckBtn').disabled=false;
+}
+async function lsCheck(){
+  if(lsQuiz.checked||lsQuiz.picked==null)return;
+  const q=lsQuiz.qs[lsQuiz.i];
+  const pick=q.options[lsQuiz.picked];
+  const ok=pick===q.answer;
+  lsQuiz.checked=true;
+  if(ok)lsQuiz.ok++;
+  lsQuiz.ans.push({qtype:q.qtype,level:q.level||'-',ok});
+  document.querySelectorAll('.ls-opt').forEach((b,i)=>{
+    b.classList.remove('sel');
+    if(q.options[i]===q.answer)b.classList.add('ok');
+    else if(i===lsQuiz.picked)b.classList.add('ng');
+  });
+  const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+  const swapNote=q.swapped?`<div class="muted" style="font-size:13px;margin-top:6px">🔁 干扰项把「${esc(q.swapped.from)}」换成了语料里真实出现过的「${esc(q.swapped.to.join('／'))}」——不是编造出来的假词</div>`:'';
+  document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
+    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
+    <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
+    ${swapNote}
+    <div class="quiz-nav">
+      <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      ${q.sid?`<button class="btn" onclick="favToggle(${q.sid},this)">☆收藏</button>`:''}
+    </div>
+  </div>`;
+}
+function lsNext(){
+  if(!lsQuiz||lsQuiz.i>=lsQuiz.qs.length)return;
+  const t=Date.now(); if(t-(lsQuiz._nt||0)<400)return; lsQuiz._nt=t;
+  lsQuiz.i++;
+  if(lsQuiz.i>=lsQuiz.qs.length)lsFinish();
+  else{lsRender();window.scrollTo(0,0);}
+}
+async function lsFinish(){
+  let d=null;
+  try{ d=await api('/api/listening/answer',{method:'POST',body:JSON.stringify({results:lsQuiz.ans})}); }catch(e){}
+  const v=$('#bkQuizView'),n=lsQuiz.qs.length,pct=n?Math.round(100*lsQuiz.ok/n):0;
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🎧 听力练习完成</b></div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${lsQuiz.ok}</b> / ${n}（${pct}%）
+      <div class="muted" style="font-size:13px;margin-top:4px">题源：${LS_SCOPE_LABEL[lsQuiz.scope]||lsQuiz.scope}${d&&d.ok?' · 已计入统计':''}</div></div>
+    <div class="quiz-nav" style="justify-content:center">
+      <button class="btn primary" onclick="lsOpen()">再来一组</button>
+      <button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button>
+      <button class="btn" onclick="bkQuizQuit()">返回书架</button>
+    </div>
+  </div>`;
+  window.scrollTo(0,0);
+}
+async function lsCfgOpen(){
+  const c=await lsCfgLoad(true);
+  const st=(c._stats||[]).slice(-7);
+  const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
+  bkModal(`
+    <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从换了一个真实语料词的相似句里挑出原句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
+    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+      <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
+      <span class="muted">难度（句子选材）</span><select id="lscLevel">
+        ${LS_LV.map(l=>`<option value="${l}" ${c.level===l?'selected':''}>${l==='any'?'不限（随机）':l+' 级语法句'}</option>`).join('')}</select>
+      <span class="muted">题源</span><div><select id="lscScope">
+        <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
+        <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
+        <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option></select>
+        <div class="muted" style="font-size:12px;margin-top:4px">规则与组句练习一致：未勾选具体课本时自动用书架里全部启用中的课本，绝不会悄悄换成语料库。</div></div>
+      <span class="muted">语速（听力难度轴）</span><select id="lscRate">
+        <option value="slower" ${c.rate==='slower'?'selected':''}>更慢（入门）</option>
+        <option value="slow" ${c.rate==='slow'?'selected':''}>慢速</option>
+        <option value="normal" ${(!c.rate||c.rate==='normal')?'selected':''}>正常语速</option>
+        <option value="fast" ${c.rate==='fast'?'selected':''}>较快（挑战）</option></select>
+      <span class="muted">每组题数</span><input id="lscN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
+      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??60}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??40}" style="width:64px">%</div>
+      <span class="muted">每题最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
+    </div>
+    ${stHTML}
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="lsCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`,640);
+}
+async function lsCfgSave(){
+  const body={enabled:$('#lscOn').checked,level:$('#lscLevel').value,scope:$('#lscScope').value,
+    rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
+    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0},
+    max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};
+  try{
+    const r=await api('/api/listening/cfg',{method:'POST',body:JSON.stringify(body)});
+    lsCfgCache=r.cfg;bkModalClose();toast('听力配置已保存');
+  }catch(e){toast('保存失败：'+e);}
+}
+
+/* ---------- v21 AI 出题草稿箱（LLM 起草听力/阅读理解题 + 人工复核） ---------- */
+async function aiItemsOpen(){
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">🤖 加载草稿箱…</div></div>';
+  let d;
+  try{ d=await api('/api/ai-items/drafts'); }catch(e){ d={ok:false}; }
+  const rows=(d&&d.rows)||[];
+  const stats=(d&&d.stats)||{};
+  const statLine=Object.entries(stats).map(([sk,byStatus])=>
+    `${sk}: ${Object.entries(byStatus).map(([st,n])=>`${st} ${n}`).join('／')||'空'}`).join('　·　');
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🤖 AI 出题草稿箱</b></div>
+    <div class="muted" style="margin-top:8px;line-height:1.8">规则引擎出不了「主旨/推断/前后呼应」这类真正的理解题——这需要模型先"读懂"文本。这里用你在 ⚙ AI 翻译面板配置的同一把 Key 起草题目，<b>起草结果一律是 draft，不会自动进入练习</b>；只有你逐题复核勾选「内容正确/确有原文依据/难度匹配/表达自然」并批准后，才会出现在听力/阅读练习里。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">${esc(statLine||'暂无草稿')}</div>
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="btn primary" onclick="aiItemsDraft('sentence')">✍️ 起草单句理解题 ×5</button>
+      <button class="btn primary" onclick="aiItemsDraft('passage')">📖 起草课文/歌词段落理解题 ×3</button>
+      <button class="btn" onclick="aiItemsOpen()">🔄 刷新</button>
+    </div>
+    <div id="aiItemsList" style="margin-top:16px">${aiItemsListHTML(rows)}</div>
+  </div>`;
+}
+function aiItemsListHTML(rows){
+  if(!rows.length)return '<div class="muted">还没有草稿，点上面的按钮起草几道试试。</div>';
+  return rows.map(r=>{
+    const items=(r.payload&&r.payload.items)||[];
+    const statusColor={draft:'var(--gold)',reviewed:'var(--accent)',approved:'var(--accent2)',retired:'var(--muted)'}[r.status]||'';
+    return `<div class="quiz-rev" style="border-left:3px solid ${statusColor}">
+      <div class="row" style="justify-content:space-between">
+        <div><span class="tag">${esc(r.skill)}</span><span class="tag">${esc(r.genre||'')}</span><span class="tag" style="color:${statusColor}">${esc(r.status)}</span>${r.level?`<span class="lv lv-${r.level}">${esc(r.level)}</span>`:''}</div>
+        <div class="muted" style="font-size:11.5px">${esc(r.provider||'')}/${esc(r.model||'')}</div>
+      </div>
+      <div class="jp" style="margin-top:6px;font-size:15px;white-space:pre-wrap">${esc((r.payload&&(r.payload.text||r.payload.labeled_text))||'')}</div>
+      ${items.map(it=>`<div style="margin-top:8px;font-size:14px">
+        <b>${esc(it.prompt)}</b>
+        <div style="margin-top:4px">${(it.options||[]).map((o,i)=>`<div style="${i===it.answer?'color:var(--accent2);font-weight:600':''}">${i===it.answer?'✅':'　'} ${esc(o)}</div>`).join('')}</div>
+        <div class="muted" style="font-size:12.5px;margin-top:2px">依据：${esc(it.rationale||'')}</div>
+      </div>`).join('')}
+      ${r.status==='draft'||r.status==='reviewed'?`<div class="row" style="margin-top:10px;gap:6px">
+        <button class="btn mini primary" onclick="aiItemsApprove(${r.id})">✅ 复核通过并批准</button>
+        <button class="btn mini" onclick="aiItemsReject(${r.id})">🗑 驳回并删除</button>
+      </div>`:`<div class="muted" style="font-size:12px;margin-top:6px">复核人：${esc(r.reviewer||'')}</div>`}
+    </div>`;
+  }).join('');
+}
+async function aiItemsDraft(kind){
+  toast('🤖 正在起草，可能需要几秒到几十秒…');
+  let d;
+  const body={n:kind==='sentence'?5:3,kind};
+  if(kind==='passage')body.skill='reading';
+  try{ d=await api('/api/ai-items/draft',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ d={ok:false,error:String(e)}; }
+  if(!d.ok){
+    toast('起草失败：'+(d.error||'未知错误')+'（请检查 ⚙ AI 翻译面板里的 Provider/Key 配置）');
+  }else{
+    toast(`✅ 成功起草 ${d.generated} 道（失败 ${d.failed}）`);
+  }
+  aiItemsOpen();
+}
+async function aiItemsApprove(id){
+  const checks=['content_correct 内容正确','grounded_in_source 确有原文依据','level_fit 难度匹配','language_natural 表达自然'];
+  if(!confirm(`确认这道题满足以下全部条件再批准：\n\n${checks.join('\n')}\n\n（这是你作为唯一复核人的判断，AI 起草不代表已经正确）`))return;
+  const reviewer=localStorage.getItem('aiReviewerName')||prompt('复核人署名（用于留痕）：','me')||'me';
+  localStorage.setItem('aiReviewerName',reviewer);
+  try{
+    const r=await api(`/api/ai-items/drafts/${id}/review`,{method:'POST',body:JSON.stringify({
+      status:'approved',reviewer,
+      checklist:{content_correct:true,grounded_in_source:true,level_fit:true,language_natural:true}})});
+    if(r.ok)toast('✅ 已批准，可用于练习');else toast('批准失败：'+(r.error||''));
+  }catch(e){toast('批准失败：'+e);}
+  aiItemsOpen();
+}
+async function aiItemsReject(id){
+  if(!confirm('确认驳回并删除这道草稿？'))return;
+  try{ await api(`/api/ai-items/drafts/${id}`,{method:'DELETE'}); }catch(e){}
+  aiItemsOpen();
 }
 
 /* ---------- v15 出题配置面板（多源占比+自动调节+记忆+难度过滤+预览+导入导出） ---------- */
