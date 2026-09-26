@@ -55,6 +55,11 @@ def _gzip_response(resp):
         pass                          # 压缩失败绝不影响正常响应
     return resp
 db.init_db()
+try:
+    # 一次性数据迁移：词条索引升级为完整词典展示形（旧库的截断词条平滑改键，幂等）
+    textbook.ensure_word_index_migration()
+except Exception as _mig_e:
+    print('[app] 词条索引迁移未完成（不影响启动）：', _mig_e)
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
 APP_VERSION = 'v18'

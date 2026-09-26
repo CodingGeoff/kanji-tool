@@ -144,12 +144,14 @@ details.rag-fold .rag-grid{margin-top:10px}
 .tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--sub)}
 .hidden{display:none!important}
 .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px}
-.wordchip{display:inline-block;background:#f2efe7;border-radius:8px;padding:3px 10px;margin:3px;font-size:15px}
+/* 词条胶囊：white-space:nowrap 保证「标签+勾选框+词」永远单行排列 ——
+   即使个别词条缺少主体/读音，也不会折行撑成方形大色块、破坏整行对齐 */
+.wordchip{display:inline-block;background:#f2efe7;border-radius:8px;padding:3px 10px;margin:3px;font-size:15px;white-space:nowrap;vertical-align:middle}
 .wordchip small{color:var(--accent);margin-left:5px}
 /* 词汇 ruby 注音：chip 内的 ruby 用稍大注音，不再挤在右侧 */
 .wordchip.word-ruby{line-height:2.0;padding:4px 10px 6px}
-.wordchip.word-ruby ruby{ruby-position:over}
-.wordchip.word-ruby rt{font-size:.55em;color:var(--accent);font-weight:500;letter-spacing:.01em}
+.wordchip.word-ruby ruby{ruby-position:over;ruby-align:center}
+.wordchip.word-ruby rt{font-size:.55em;color:var(--accent);font-weight:500;letter-spacing:.01em;white-space:nowrap}
 .hist-item{padding:8px 4px;border-bottom:1px dashed var(--line);font-size:13px;display:flex;gap:12px}
 .hist-item .t{color:var(--sub);white-space:nowrap}
 .reveal-area{min-height:60px}
@@ -802,6 +804,15 @@ const api=(u,opt)=>fetch(u,opt?Object.assign({headers:{'Content-Type':'applicati
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
 function esc(s){return (s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function jsArg(s){return JSON.stringify(s??'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}
+function kataToHira(s){return (s??'').toString().replace(/[\u30a1-\u30f6]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60))}
+/* 计划/复习词条统一渲染：主体永远是完整词形；注音只在提供额外信息时显示
+   （纯假名词、片假名外来语的读音与主体等价 → 不再重复标注，卡片保持紧凑胶囊形） */
+function unitRubyHTML(base,reading){
+  base=(base??'').toString();reading=(reading??'').toString();
+  if(!base)return esc(reading);                       // 兜底：无主体时至少显示读音
+  const informative=reading&&kataToHira(reading)!==kataToHira(base);
+  return informative?`<ruby>${esc(base)}<rt>${esc(reading)}</rt></ruby>`:esc(base);
+}
 window.addEventListener('unhandledrejection',e=>{console.warn('请求失败:',e.reason);toast('请求失败，请检查网络后重试')});
 function rubyHTML(tokens,hi,terms){
   // hi：单个高亮词（旧接口）；terms：关键词数组（RAG 结果高亮，匹配表记/词形/读音）
@@ -2136,9 +2147,10 @@ function bkRenderPlan(p){
     w:today.new.filter(x=>(x.kind==='words')||(x.kanji&&x.kanji.length>1)).length}:{k:0,w:0};
   const chip=it=>{
     const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
-    const q=jsArg(it.kanji);
-    const ruby=it.reading?`<ruby>${esc(it.kanji)}<rt>${esc(it.reading)}</rt></ruby>`:esc(it.kanji);
-    return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）；勾选后自动纳入艾宾浩斯复习" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked,${jsArg(w?'words':'kanji')},${jsArg(it.reading||'')})"> ${ruby}</span>`;
+    const base=it.kanji||it.word||it.reading||'';       // 完整计划项（单字或完整词形）
+    const q=jsArg(base);
+    const ruby=unitRubyHTML(base,it.reading);
+    return `<span class="wordchip word-ruby" style="cursor:pointer;${it.done?'opacity:.45;text-decoration:line-through':''}" title="点击查看例句（本书＋全库）；勾选后自动纳入艾宾浩斯复习" onclick="if(event.target.tagName!=='INPUT')bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}<input type="checkbox" ${it.done?'checked':''} style="margin-right:4px;vertical-align:-2px" onclick="event.stopPropagation()" onchange="bkTaskDone(${q},this.checked,${jsArg(w?'words':'kanji')},${jsArg(it.reading||'')})"> ${ruby}</span>`;
   };
   box.innerHTML=`
     <div class="row" style="justify-content:space-between">
@@ -2158,9 +2170,10 @@ function bkRenderPlan(p){
     <div class="muted" style="margin-top:6px">${today?`今天新学 ${today.new.length} 项（${cntNew.k} 字＋${cntNew.w} 词） · ${today.review.length} 项复习${today.total?` · 完成 ${Math.round(100*today.done_n/today.total)}%`:''}`:'今天没有排程任务 🎉'}</div>
     ${today&&today.review.length?`<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">今日复习明细（含已学项到期复习，点击可查例句）</summary><div style="margin-top:4px">${today.review.map(it=>{
       const w=(it.kind==='words')||(it.kanji&&it.kanji.length>1);
-      const q=jsArg(it.kanji);
-      const ruby=it.reading?`<ruby>${esc(it.kanji)}<rt>${esc(it.reading)}</rt></ruby>`:esc(it.kanji);
-      return `<span class="wordchip${it.reading?' word-ruby':''}" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}${ruby}</span>`;}).join('')}</div></details>`:''}
+      const base=it.kanji||it.word||it.reading||'';
+      const q=jsArg(base);
+      const ruby=unitRubyHTML(base,it.reading);
+      return `<span class="wordchip word-ruby" style="cursor:pointer;${it.done?'opacity:.45':''}" onclick="bkExamplesUnit('${w?'word':'kanji'}',${q})">${bkKindBadge(it)}${ruby}</span>`;}).join('')}</div></details>`:''}
     <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">随后几天（共 ${p.per_day.length} 天）</summary>
       ${up.map(d=>`<div style="margin-top:4px;font-size:13px">${d.day}：新 ${d.new.length} · 复习 ${d.review.length}${d.total&&d.done_n===d.total?' ✅':''}</div>`).join('')||'<span class="muted">没有更多排程</span>'}
     </details>`;
@@ -2357,7 +2370,7 @@ async function bkUnitsTab(mode){
     box.innerHTML=d.rows.map(r=>{
       const wordHtml = (r.tokens && r.tokens.length)
         ? rubyHTML(r.tokens)
-        : (esc(r.word) + (r.reading ? `<small>${esc(r.reading)}</small>` : ''));
+        : unitRubyHTML(r.word, r.reading);
       return `<span class="wordchip word-ruby" style="cursor:pointer" title="${esc(r.pos||'')} · 出现${r.freq}次 · 点击学习" onclick="if(!event.target.closest('.spkbtn'))bkWordMenu(${jsArg(r.word)},${jsArg(r.reading||'')})">${wordHtml}${spkBtn(r.word)}</span>`;
     }).join('')||'<span class="muted">本书还没有词汇</span>';
   }
