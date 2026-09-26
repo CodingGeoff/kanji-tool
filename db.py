@@ -849,6 +849,58 @@ def clear_book_plan(book_ids):
         return cur.rowcount
 
 
+def remap_word_keys(book_id, mapping):
+    """词条键迁移（旧 lemma 形 → 新词典展示形）：同步 book_plan / book_progress / srs。
+
+    重建索引把词条从「此れ/箇月/ヨサノ」这类旧键升级为「これ/一ヶ月/与謝野晶子」时，
+    既有计划行、进度标记与全局 SRS 记录跟着改键，勾选/复习状态原样保留；
+    目标键已存在（多个旧键合并成同一个新词）时合并去重，done/进度取两者较优。"""
+    if not mapping:
+        return 0
+    n = 0
+    with _lock, get_conn() as c:
+        for old, new in mapping.items():
+            if not old or not new or old == new:
+                continue
+            # --- book_plan：UNIQUE(book_id, day, kanji, is_new)，冲突则合并 ---
+            for r in c.execute('SELECT id, day, is_new, done FROM book_plan '
+                               'WHERE book_id=? AND kanji=?', (book_id, old)).fetchall():
+                dup = c.execute('SELECT id, done FROM book_plan '
+                                'WHERE book_id=? AND day=? AND kanji=? AND is_new=?',
+                                (book_id, r['day'], new, r['is_new'])).fetchone()
+                if dup:
+                    if r['done'] and not dup['done']:
+                        c.execute('UPDATE book_plan SET done=1 WHERE id=?', (dup['id'],))
+                    c.execute('DELETE FROM book_plan WHERE id=?', (r['id'],))
+                else:
+                    c.execute("UPDATE book_plan SET kanji=?, kind='words' WHERE id=?",
+                              (new, r['id']))
+                n += 1
+            # --- book_progress：UNIQUE(book_id, kanji)，冲突保留已有目标行 ---
+            r = c.execute('SELECT rowid FROM book_progress WHERE book_id=? AND kanji=?',
+                          (book_id, old)).fetchone()
+            if r:
+                dup = c.execute('SELECT rowid FROM book_progress WHERE book_id=? AND kanji=?',
+                                (book_id, new)).fetchone()
+                if dup:
+                    c.execute('DELETE FROM book_progress WHERE rowid=?', (r['rowid'],))
+                else:
+                    c.execute("UPDATE book_progress SET kanji=?, kind='words' WHERE rowid=?",
+                              (new, r['rowid']))
+                n += 1
+            # --- srs：kanji 为主键（全局表，只迁移词条），冲突保留已有目标行 ---
+            r = c.execute("SELECT kanji FROM srs WHERE kanji=? AND kind='words'",
+                          (old,)).fetchone()
+            if r:
+                dup = c.execute('SELECT kanji FROM srs WHERE kanji=?', (new,)).fetchone()
+                if dup:
+                    c.execute('DELETE FROM srs WHERE kanji=?', (old,))
+                else:
+                    c.execute('UPDATE srs SET kanji=? WHERE kanji=?', (new, old))
+                n += 1
+    return n
+
+
 def set_plan_done(book_ids, day=None, kanji=None, done=1):
     """标记计划的某天（或某个字/词）为已完成/未完成；book_ids 为空 = 作用于全部书"""
     ids = list(book_ids or [])

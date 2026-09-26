@@ -524,14 +524,21 @@ def check_arrangement(spec, order_tile_ids):
     unknown = [t for t in order_tile_ids if t not in tile_map]
     if unknown:
         return {'ok': False, 'feedback': '包含未知词块', 'your_text': '', **base}
-    # 2) 干扰块
+    # 2) 干扰块（指名道姓 + 保留用户拼出的句子，反馈可核查）
+    tsurf = {str(k): v for k, v in (spec.get('tile_surface') or {}).items()}
     used_fake = [t for t in order_tile_ids if tile_map[t] == -1]
     if used_fake:
-        return {'ok': False, 'feedback': '用到了干扰词块（这些词不属于本句）',
-                'your_text': '', **base}
+        fakes = [s for s in (tsurf.get(t, '') for t in used_fake) if s]
+        your_text = ''.join(tsurf.get(t, surfaces[tile_map[t]]
+                                      if 0 <= tile_map[t] < n else '')
+                            for t in order_tile_ids) + (spec.get('punct') or '')
+        return {'ok': False,
+                'feedback': '用到了干扰词块' +
+                            ('：' + '、'.join(fakes[:3]) if fakes else '') +
+                            '（这些词不属于本句）',
+                'your_text': your_text, **base}
     idx_order = [tile_map[t] for t in order_tile_ids]
     # 拼出用户句子：优先用词块自身表面（可互换名词块与槽位原块表面不同）
-    tsurf = {str(k): v for k, v in (spec.get('tile_surface') or {}).items()}
     your_text = ''.join(tsurf.get(t, surfaces[tile_map[t]] if 0 <= tile_map[t] < n else '')
                         for t in order_tile_ids) + (spec.get('punct') or '')
     base['your_text'] = your_text
@@ -844,6 +851,36 @@ def _attested_words(parsed, text):
 # ================================================================
 # 5. 干扰块生成（advanced 混淆）
 # ================================================================
+# 可自由插入句中的词类：插入后句子通常依然合法、语义与译文不冲突，
+# 拿来当干扰块会冤枉正确的日语（如否定句 + 「全然」）。
+# 形状詞也整类拦截：其中「大変/結構」等有副词用法（大変＋形容词＝とても），
+# 与「好き/静か」等无法靠词性细分 —— 宁可过严弃用候选，绝不冒冤案风险。
+_INSERTABLE_P1 = {'副詞', '接続詞', '感動詞', '連体詞', '形状詞', '助詞', '助動詞'}
+
+
+def _freely_insertable(w):
+    """判断词 w 是否属于「可自由插入」词类（副词/接续词/連体詞/副詞可能名词等）。
+
+    这类词是状语性修饰成分，几乎可以插进任何句子的区边界而不破坏语法，
+    且语义增量往往与译文兼容（全然→加强否定、今日→补时间、決して→加强禁止），
+    译文这个「语义预言机」钉不死它们 —— 一律不得做句外词干扰块。
+    注意 UniDic 的「副詞可能」标在 pos2 或 pos3（今日/結局/絶対/全部…），两层都查。
+    解析失败时按可插入处理（宁可弃用候选，绝不冒判错冤案的风险）。"""
+    try:
+        toks = _tag(w)
+    except Exception:
+        return True
+    if not toks:
+        return True
+    for t in toks:
+        if t['p1'] in _INSERTABLE_P1:
+            return True
+        if t['p1'] == '名詞' and ('副詞可能' in (t['p2'], t['p3'])
+                                  or '数詞' in (t['p2'], t['p3'])):
+            return True
+    return False
+
+
 def _verb_form_variants(chunk):
     """谓语块的时态/礼貌体/极性变形（surface 变换，语义必然偏离译文）"""
     s = chunk['surface']
@@ -860,15 +897,49 @@ def _verb_form_variants(chunk):
         out += [s[:-2] + 'でした']
     elif s.endswith(('た', 'だ')):
         toks = chunk['toks']
-        # 平体タ形 → 辞书形：定位最后一个动词，用 orthBase 重建
-        for k in range(len(toks) - 1, -1, -1):
-            if toks[k]['p1'] == '動詞':
-                prefix = ''.join(t['s'] for t in toks[:k])
-                base = toks[k]['ob']
-                if base and re.search(r'[うくぐすつぬぶむる]$', base):
-                    out.append(prefix + base)
-                break
+        # 平体タ形 → 辞书形。判据必须用 token 层：句尾须是过去助动词
+        # （lemma='た'，浊音便「だ」也归并到它）且直接前驱是动词 ——
+        # 名词谓语的断定「だ」（lemma='だ'，如「仕事だ」）绝不能误入此分支，
+        # 否则会从块中间拽出动词拼成病态残缺块（わくわくさせる仕事だ→わくわくする）。
+        if (len(toks) >= 2 and toks[-1]['p1'] == '助動詞'
+                and toks[-1]['lemma'] == 'た' and toks[-2]['p1'] == '動詞'):
+            prefix = ''.join(t['s'] for t in toks[:-2])
+            base = toks[-2]['ob']
+            if base and re.search(r'[うくぐすつぬぶむる]$', base):
+                out.append(prefix + base)
     return [v for v in out if v and v != s]
+
+
+# 移动/离脱动词：格助词兼容性极强（家を出る＝家から出る、電車を降りる＝
+# 電車から降りる、駅に行く＝駅まで行く…），换助词后往往仍是合法等义句，
+# 而语料实证反查覆盖有限（语料没有 ≠ 搭配不成立）—— 这类谓语一律放弃换助词干扰。
+_MOTION_PREDS = {'出る', '飛び出す', '飛び出る', '出かける', '出発する', '帰る',
+                 '戻る', '向かう', '着く', '到着する', '移る', '移動する',
+                 '逃げる', '逃げ出す', '離れる', '渡る', '通る', '通う', '進む',
+                 '登る', '上る', '下る', '降りる', '走る', '歩く', '泳ぐ', '飛ぶ',
+                 '引っ越す', '旅立つ', '抜ける', '抜け出す', '去る', '発つ',
+                 '駆ける', '駆け出す', '卒業する', '出場する', '退く'}
+
+
+def _chunk_pred_key(parsed, ci):
+    """定位名词块 ci 的支配谓语键（换助词干扰的实证反查用）。
+
+    返回 None 表示「不可依赖」：谓语是泛化动词（行く/来る/する…与多数
+    「名词+助词」都能合法搭配）或移动/离脱动词（を↔から↔まで 常等义），
+    或后续找不到动词谓语 —— 调用方应放弃该块的换助词干扰，宁缺毋滥。"""
+    chunks = parsed['chunks']
+    for cj in range(ci + 1, len(chunks)):
+        ctoks = chunks[cj]['toks']
+        for j, t in enumerate(ctoks):
+            if t['p1'] == '動詞':
+                key = _pred_key(ctoks, j)
+                # lemma 与 orthBase 双查：UniDic 会把异表记归并到同一 lemma
+                # （降りる→下りる），只查一层会漏拦移动动词
+                forms = {key, t['lemma'], t['ob']}
+                if forms & _GENERIC_PREDS or forms & _MOTION_PREDS:
+                    return None
+                return key
+    return None
 
 
 def _particle_variants(chunk):
@@ -890,7 +961,13 @@ def _particle_variants(chunk):
 
 
 def _vocab_distractors(n, exclude_text):
-    """语料随机高频实词（不在本句中出现）"""
+    """语料随机高频实词（不在本句中出现）。
+
+    公平性关键过滤 —— 「可自由插入」的词类一律不得做句外词干扰块：
+    副词（全然/決して/突然…）、副詞可能名词（今日/絶対/結局…）、接続詞、
+    連体詞等插进句子后往往**依然语法成立、语义与译文不冲突**
+    （典型冤案：否定句里插「全然」只是加强否定，与译文完全兼容却被判错）。
+    只保留裸插必然破坏语法或明显偏离译文语义的实词（普通名词/动词/形容词）。"""
     out = []
     try:
         with db.get_conn() as c:
@@ -907,7 +984,8 @@ def _vocab_distractors(n, exclude_text):
         for t in toks:
             w = t.get('w')
             if (w and w not in seen and w not in exclude_text
-                    and 1 < len(w) <= 5 and re.search(r'[一-龥]', w)):
+                    and 1 < len(w) <= 5 and re.search(r'[一-龥]', w)
+                    and not _freely_insertable(w)):
                 seen.add(w)
                 out.append(w)
         if len(out) >= n * 3:
@@ -923,8 +1001,11 @@ def make_distractors(parsed, text, cfg, extra_exclude=()):
     译文是语义预言机，钉死了唯一正确语义；干扰块三类的语义均偏离译文：
       verb_form  时态/礼貌体/极性变形 —— 与译文时态/极性必然不符；
       particle   非等价换助词 —— 意义保持对（は↔が、に↔へ…）已在源头禁用；
-      vocab      句外词 —— 额外经过**语料实证反查**：凡是与本句任一槽位
-                 （同助词+同谓语）在语料中真实共现过的词一律不做干扰块，
+      vocab      句外词 —— 双重防线：①**词类防线**：副词/副詞可能名词/
+                 接続詞/連体詞等「可自由插入」词类一律不选（插入后句子仍
+                 合法且语义与译文兼容，如否定句+「全然」，判错是冤案）；
+                 ②**语料实证反查**：凡是与本句任一槽位（同助词+同谓语）
+                 在语料中真实共现过的词一律不做干扰块，
                  因为它其实能合法替入槽位（多答案领域），判错会不公平。
     结构性保证：判卷要求所需词块恰好全用，用任一干扰块必错；
     干扰块 surface 与所需块/可互换块均不同、不是句内子串。"""
@@ -948,15 +1029,28 @@ def make_distractors(parsed, text, cfg, extra_exclude=()):
         mov = [i for z in zones for i in z['mov']]
         random.shuffle(mov)
         for i in mov:
-            for v in _particle_variants(chunks[i]):
-                # 换助词后的整句若与原句等价则弃（双保险，理论上等价对已禁）
+            variants = _particle_variants(chunks[i])
+            if not variants:
+                continue
+            # 公平性防线：支配谓语泛化（駅に/から/まで行く 均合法）或无法定位
+            # → 换任何助词都可能拼出合法句，整块放弃换助词干扰，宁缺毋滥
+            pred = _chunk_pred_key(parsed, i)
+            if pred is None:
+                continue
+            noun = ''.join(t['s'] for t in chunks[i]['toks'][:-1])
+            for v in variants:
+                alt = v[len(noun):]
+                # 语料实证反查：「名词+新助词」与本句谓语真实共现过
+                # （如 家から+飛び出す）→ 换后其实是合法搭配，判错不公平，弃用
+                if noun and alt and any(w == noun for w, _n in _colloc_nouns(alt, pred)):
+                    continue
                 _push(v)
             if len(out) >= want:
                 break
     if kinds.get('vocab', True) and len(out) < want:
         attested = _attested_words(parsed, text)   # 语料实证反查：可替入词禁用
         for v in _vocab_distractors(want - len(out), text + ''.join(out)):
-            if v in attested:
+            if v in attested or _freely_insertable(v):   # 双保险：可插入词绝不放行
                 continue
             _push(v)
     random.shuffle(out)

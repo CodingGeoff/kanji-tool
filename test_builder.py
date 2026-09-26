@@ -251,6 +251,70 @@ tail = sb.parse_sentence('彼は学校へ行った。')
 if tail:
     vf2 = sb._verb_form_variants(tail['chunks'][-1])
     check('行く' in vf2, f'タ形→辞书形变形：{vf2}')
+# タ形分支判据回归：断定「だ」（名词谓语）不得误入，否则会从块中间拽出动词
+# 拼成病态残缺干扰块（わくわくさせる仕事だ → わくわくする）
+_p_da = sb.parse_sentence('映画作りは人をわくわくさせる仕事だ。')
+if _p_da:
+    _vf_da = sb._verb_form_variants(_p_da['chunks'][-1])
+    check(_vf_da == [], f'断定だ谓语块不生成タ形变形：{_vf_da}')
+_p_nd = sb.parse_sentence('本を読んだ。')
+if _p_nd:
+    check('読む' in sb._verb_form_variants(_p_nd['chunks'][-1]),
+          '浊音便だ（lemma=た）照常变形')
+
+# —— 公平性铁律：可自由插入词类绝不做句外词干扰块 ——
+# 冤案回归防护：否定句「いつ寝首を掻かれるかわかったものではありません」曾把
+# 副词「全然」放进干扰块；用户答「…か全然わかったものでは…」语法语义双正确却被判错。
+for w in ('全然', '決して', '突然', '結局', '絶対', '今日', '昨日', '全部',
+          '一番', '大変', '多分', '実際', '三人'):
+    check(sb._freely_insertable(w), f'可插入词必须拦截：{w}')
+for w in ('学校', '食べる', '高い', '先生', '研究者', '本当'):
+    check(not sb._freely_insertable(w), f'合格干扰词不应误拦：{w}')
+_txt_np = 'いつ寝首を掻かれるかわかったものではありません。'
+_p_np = sb.parse_sentence(_txt_np)
+if _p_np:
+    _cfg_np = dict(sb.builder_cfg(), distractors=6)
+    _req_np = {c['surface'] for c in _p_np['chunks']}
+    for _seed in range(30):
+        random.seed(_seed)
+        for d in sb.make_distractors(_p_np, _txt_np, _cfg_np):
+            # 句内谓语变形（あります等）结构上无法与必需块共存成句 → 天然公平，
+            # 只有「句外词」必须通过可插入性检查
+            _is_variant = any(d.startswith(s[:2]) and abs(len(d) - len(s)) <= 3
+                              for s in _req_np)
+            if not _is_variant:
+                check(not sb._freely_insertable(d),
+                      f'句外词干扰块泄漏可插入词（seed={_seed}）：{d}')
+    random.seed()
+
+# 判卷反馈透明化：用了干扰块时指名道姓 + 保留用户句子
+_spec_np = {'chunks': [c['surface'] for c in _p_np['chunks']], 'zones': _p_np['zones'],
+            'punct': '。', 'tile_map': {str(i): i for i in range(len(_p_np['chunks']))},
+            'tile_surface': {str(i): c['surface'] for i, c in enumerate(_p_np['chunks'])}}
+_spec_np['tile_map']['f0'] = -1
+_spec_np['tile_surface']['f0'] = '全然'
+_r_np = sb.check_arrangement(_spec_np, ['0', '1', '2', 'f0', '3', '4'])
+check(not _r_np['ok'] and '全然' in _r_np['feedback'],
+      f'干扰块反馈应指名道姓：{_r_np["feedback"]}')
+check(_r_np['your_text'] == 'いつ寝首を掻かれるか全然わかったものではありません。',
+      f'干扰块反馈应保留用户句子：{_r_np["your_text"]}')
+
+# —— 公平性铁律：移动/泛化谓语不得生成换助词干扰 ——
+# （家を飛び出す＝家から飛び出す、駅に行く＝駅まで行く、電車を降りる＝電車から
+#  降りる —— 换后仍是合法等义句，判错不公平；降りる 还需 lemma 归并双查 下りる）
+for _t_mv, _expect_none in (('彼は家を飛び出した。', True), ('私は駅に行きました。', True),
+                            ('彼女は電車を降りた。', True),
+                            ('彼女はその小包にしっかりと紐をかけた。', False)):
+    _p_mv = sb.parse_sentence(_t_mv)
+    if not _p_mv:
+        continue
+    _ci = next((i for i, c in enumerate(_p_mv['chunks'])
+                if len(c['toks']) >= 2 and c['toks'][-1]['p2'] == '格助詞'), None)
+    if _ci is None:
+        continue
+    _pk = sb._chunk_pred_key(_p_mv, _ci)
+    check((_pk is None) == _expect_none,
+          f'换助词防线（{_t_mv}）：谓语键={_pk}，期望 None={_expect_none}')
 
 # —— 公平性铁律：无译文的句子 advanced 也不得放干扰块（译文=语义预言机）——
 _row_tr = {'sid': 90001, 'text': '彼女は毎日図書館で本を読んでいる。',

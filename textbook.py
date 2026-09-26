@@ -310,11 +310,41 @@ def _clean_lemma(lemma, surface):
     return lemma
 
 
-def extract_units(text, tokens=None):
+def _base_form(feature, surface):
+    """词典展示形：优先 UniDic 书字形出发形 orthBase（保持原文用字并还原活用：
+    でき→できる、ござい→ござる、まさに→まさに、チャレンジ→チャレンジ），
+    避免 lemma 的旧字形规范（此れ/其々/正に/箇月）；拿不到再退回 lemma 清洗、原样 surface。"""
+    ob = getattr(feature, 'orthBase', None)
+    if ob and ob != '*':
+        return ob
+    return _clean_lemma(getattr(feature, 'lemma', None), surface) or surface
+
+
+def _base_reading(feature):
+    """词典形的读音（平假名）：kanaBase = 出发形读音（フリカエル→ふりかえる），
+    没有时退回表层读音 kana。"""
+    kb = getattr(feature, 'kanaBase', None)
+    if kb and kb != '*':
+        return furigana.kata_to_hira(kb)
+    kana = getattr(feature, 'kana', None)
+    return furigana.kata_to_hira(kana) if kana and kana != '*' else ''
+
+
+def extract_units(text, tokens=None, legacy_map=None):
     """返回 (kanji_rows, word_rows)
        kanji_rows: [(汉字, 所属词, 字读音)]（单字假名标注：读作该字本身的音，而非整词读音）
-       word_rows:  [(词, 读音, 含汉字, 词性)]"""
-    tokens = tokens if tokens is not None else furigana.annotate(text)
+       word_rows:  [(词, 读音, 含汉字首字, 词性)]
+
+    词条主体一律取「完整的词典展示形」，与界面注音的分词保持一致：
+    - 注音引擎给出词典形（dw/dr，活用还原）时优先：振り返っ→振り返る、優し→優しい；
+    - 注音整词跨多个 MeCab 词（专名/数量词/接尾辞合并）时取整词：
+      与謝野晶子、一ヶ月、研究者、同級生（被并入整词的子词不再单独提取）；
+    - 其余用 UniDic orthBase：まさに 不写成 正に、それぞれ 不写成 其々、
+      チャレンジ 保持片假名、ござい 还原为 ござる。
+    「含汉字」取词条首个汉字（一ヶ月→一，纯假名词为空），供 SRS 关联。
+    legacy_map: 传入 dict 时，旧版词条键（lemma 形）→ 新词条 的映射会写入其中，
+    供既有计划/进度/SRS 的键迁移使用。"""
+    tokens = tokens or furigana.annotate(text)
     # 字读音：优先该字在词中的单字读音（token.r 对齐 + nbest/音读字素对齐），
     # 拿不到时退回词读音兜底（至少保留读音显示，不至于空白）。
     char_r = {}
@@ -323,25 +353,45 @@ def extract_units(text, tokens=None):
     kanji_rows = [(k, w, char_r.get(k) or wr) for k, w, wr in furigana.extract_kanji_words(tokens)]
     fb = _furigana_by_offset(text, tokens)
     word_rows, seen = [], set()
+    span_end, span_word = -1, ''          # 整词合并跨度：终点偏移 + 该整词
     for off, w in _offset_words(text):
         f = w.feature
         pos1 = getattr(f, 'pos1', '') or ''
+        surface = w.surface
+        if off < span_end and off + len(surface) <= span_end:
+            # 已并入上一个整词条（如 晶子 并入 与謝野晶子、者 并入 研究者）
+            if legacy_map is not None and pos1 in _CONTENT_POS and span_word:
+                legacy_map.setdefault(_clean_lemma(getattr(f, 'lemma', None), surface), span_word)
+            continue
         if pos1 not in _CONTENT_POS:
             continue
         if pos1 == '名詞' and (getattr(f, 'pos2', '') or '') == '数詞':
             continue                      # 数词不进词汇表
-        surface = w.surface
         if _is_noise(surface):
             continue
-        word = _clean_lemma(getattr(f, 'lemma', None), surface)
-        t = fb.get(off)
-        reading = ''
-        if t:
-            reading = t.get('dr') or t.get('wr') or t.get('r') or ''
-        if not reading:
-            kana = getattr(f, 'kana', None)
-            reading = furigana.kata_to_hira(kana) if kana and kana != '*' else ''
-        kch = [c for c in surface if furigana.is_kanji(c) and c not in _KANJI_EXTRA]
+        t = fb.get(off) or {}
+        span = t.get('w') or ''
+        if span and (surface not in span):
+            span = ''                                     # 跨度与当前词无包含关系：不可信，忽略
+        word, reading = '', ''
+        if t.get('dw'):                                   # ① 注音引擎的词典形（活用还原）
+            word = t['dw']
+            reading = t.get('dr') or t.get('wr') or ''
+        elif span and span != surface:                    # ② 整词跨多个 MeCab 词：取整词
+            word = span
+            reading = t.get('wr') or ''
+        if span and len(span) > len(surface):             # 记录合并跨度，后续子词不再重复提取
+            i = text.find(span, max(0, off - len(span) + 1))
+            if 0 <= i <= off:
+                span_end, span_word = i + len(span), (word or span)
+        if not word:                                      # ③ UniDic 出发形（纯假名/片假名词等）
+            word = _base_form(f, surface)
+            reading = _base_reading(f) or t.get('wr') or t.get('r') or ''
+        if not word:
+            continue
+        if legacy_map is not None:
+            legacy_map.setdefault(_clean_lemma(getattr(f, 'lemma', None), surface), word)
+        kch = [c for c in word if furigana.is_kanji(c) and c not in _KANJI_EXTRA]
         key = (word, reading)
         if key in seen:
             continue
@@ -459,7 +509,7 @@ def import_book(book, deadline=None, minutes_per_day=30, target_stage=7,
 def rebuild_book_index(book_id):
     """按课本顺序重建「字 / 词」索引：字按首次出现排序（= 教材教学顺序），词同理。"""
     _total, rows = db.list_book_sentences(book_id, per=1000000)
-    kanji_agg, word_agg = {}, {}
+    kanji_agg, word_agg, legacy = {}, {}, {}
     for r in rows:
         tokens = r.get('tokens')
         if isinstance(tokens, str):
@@ -467,7 +517,7 @@ def rebuild_book_index(book_id):
                 tokens = json.loads(tokens)
             except Exception:
                 tokens = []
-        k_rows, w_rows = extract_units(r['text'], tokens or [])
+        k_rows, w_rows = extract_units(r['text'], tokens or None, legacy_map=legacy)
         pos_idx = r.get('bs_idx') if r.get('bs_idx') is not None else r['id']
         for k, word, reading in k_rows:
             a = kanji_agg.get(k)
@@ -487,7 +537,42 @@ def rebuild_book_index(book_id):
     word_rows = [(w, v['reading'], v['kanji'], v['pos'], v['freq'], v['first'])
                  for w, v in sorted(word_agg.items(), key=lambda x: (x[1]['first'], x[0]))]
     db.replace_book_index(book_id, kanji_rows, word_rows)
+    # 旧词条键平滑迁移：老计划/进度/SRS 里的 lemma 形（此れ/箇月/ヨサノ/出来る…）
+    # 映射到新的词典展示形（これ/一ヶ月/与謝野晶子/できる），勾选状态原样保留。
+    new_words = {w for w, *_rest in word_rows}
+    moves = {o: n for o, n in legacy.items() if o and n and o != n and o not in new_words}
+    if moves:
+        db.remap_word_keys(book_id, moves)
     return {'kanji': len(kanji_rows), 'words': len(word_rows)}
+
+
+WORD_INDEX_VERSION = '2'      # 词条展示形版本：2 = 词典展示形（orthBase/整词合并）
+
+
+def ensure_word_index_migration():
+    """一次性迁移：把旧版「UniDic lemma 词条」（旧字形 此れ/其々、词干截断 箇月/ヨサノ、
+    读音错位 出来る/でき）升级为「完整词典展示形」。
+
+    重建所有课本的字词索引，并把既有计划/进度/SRS 里的旧词条键映射到新词形
+    （勾选完成状态原样保留）。幂等：迁移完成后写入版本号，之后启动直接跳过。"""
+    try:
+        if db.get_setting('word_index_version') == WORD_INDEX_VERSION:
+            return False
+        books = db.list_books()
+    except Exception:
+        return False
+    n_ok = 0
+    for b in books:
+        try:
+            rebuild_book_index(b['id'])
+            n_ok += 1
+        except Exception as e:
+            print(f'[textbook] 词条索引迁移失败（书 {b.get("id")}）：{e}')
+    db.set_setting('word_index_version', WORD_INDEX_VERSION)
+    if n_ok:
+        db.log('book', f'词条索引升级到 v{WORD_INDEX_VERSION}：重建 {n_ok} 本书的字词索引，'
+                       f'旧词条键已平滑迁移（计划勾选状态保留）')
+    return True
 # ================================================================
 # 3. 课本进度（自动识别既有学习进度）
 # ================================================================
@@ -779,8 +864,11 @@ def _meta_map(book_ids):
             f'WHERE bk.book_id IN ({ph}) GROUP BY bk.kanji', ids).fetchall()
     m = {r['kanji']: dict(r) for r in rows}
     with db.get_conn() as c:
+        # 注意：词条的关联汉字取别名 link_kanji，绝不能叫 kanji ——
+        # 否则会在计划项合并时覆盖完整词形（曾导致今日任务里「振り返る」只显示「振」、
+        # 纯假名词整个主体消失的截断 bug）。
         rows = c.execute(
-            f'SELECT bw.word word, MIN(bw.reading) reading, MIN(bw.kanji) kanji, '
+            f'SELECT bw.word word, MIN(bw.reading) reading, MIN(bw.kanji) link_kanji, '
             f'MAX(b.title) book_title '
             f'FROM book_words bw JOIN books b ON b.id=bw.book_id '
             f'WHERE bw.book_id IN ({ph}) GROUP BY bw.word', ids).fetchall()
@@ -864,11 +952,13 @@ def build_plan(book_ids=None, start=None, deadline=None, minutes_per_day=None,
         d_iso = _iso(start_d + timedelta(days=i))
         per_day.append({
             'day': d_iso,
-            'new': [{'kanji': k, 'kind': kd, 'book_id': b, 'book': book_titles.get(b),
-                     **(meta.get(k) or {})}
+            # meta 先展开、计划键后写入：保证 kanji 字段永远是完整的计划项
+            # （单字或完整词形），不被元数据里的关联字段覆盖
+            'new': [{**(meta.get(k) or {}), 'kanji': k, 'kind': kd, 'book_id': b,
+                     'book': book_titles.get(b)}
                     for k, b, kd in new_of_day[i]],
-            'review_items': [{'kanji': k, 'kind': kd, 'book_id': b, 'book': book_titles.get(b),
-                              **(meta.get(k) or {})}
+            'review_items': [{**(meta.get(k) or {}), 'kanji': k, 'kind': kd, 'book_id': b,
+                              'book': book_titles.get(b)}
                              for k, b, kd in rev_of_day[i]],
             'review_count': rev_count[i],          # 含既有全局复习
             'load_min': round(load[i] / 60.0, 1),
@@ -931,10 +1021,13 @@ def load_plan(book_ids=None):
     per_day = {}
     for r in rows:
         d = per_day.setdefault(r['day'], {'day': r['day'], 'new': [], 'review': []})
-        it = {'kanji': r['kanji'], 'kind': r.get('kind') or
+        # meta 先展开、计划键后写入：kanji 字段必须保持完整计划项（词条=完整词形），
+        # 曾因 meta 的单字关联字段后展开覆盖，导致今日任务词条被截断成单个汉字
+        it = {**(meta.get(r['kanji']) or {}),
+              'kanji': r['kanji'], 'kind': r.get('kind') or
               ('words' if len(r['kanji'] or '') > 1 else 'kanji'),
               'manual_done': bool(r['done']),
-              'stage': stages.get(r['kanji']), **(meta.get(r['kanji']) or {})}
+              'stage': stages.get(r['kanji'])}
         (d['new'] if r['is_new'] else d['review']).append(it)
     out_days = []
     for key in sorted(per_day):

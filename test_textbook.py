@@ -33,6 +33,11 @@ with sqlite3.connect(api_db) as c0:
             c0.execute(f'DELETE FROM {t}')
         except sqlite3.OperationalError:
             pass
+    # 学习配置/挖空统计存在 settings 里：真实库带的统计数据不能泄漏进测试沙盘
+    try:
+        c0.execute("DELETE FROM settings WHERE key IN ('book_study_cfg', 'book_cloze_stats')")
+    except sqlite3.OperationalError:
+        pass
 db.DB_PATH = api_db
 import textbook
 import app as appmod
@@ -77,6 +82,38 @@ check(len(auto[0]['lessons']) == exp_lessons,
 kj, wd = textbook.extract_units('今日は良い天気ですね。')
 check(any(k == '今' and w == '今日' for k, w, _r in kj), f'字提取，实际 {kj}')
 check(any(w == '天気' and r == 'てんき' for w, r, _k, _p in wd), f'词提取，实际 {wd}')
+
+# 词条必须是「完整的词典展示形」（曾出现整词被截断成单字/纯假名词主体消失的 bug）
+def _words_of(s):
+    return {w: (r, k) for w, r, k, _p in textbook.extract_units(s)[1]}
+
+wmap = _words_of('若い皆さんの人生を振り返って、過去の軌跡を思い出してください。')
+check('振り返る' in wmap and wmap['振り返る'][0] == 'ふりかえる', f'活用还原成词典形，实际 {wmap}')
+check('思い出す' in wmap and '軌跡' in wmap and '過去' in wmap, f'多字词完整保留，实际 {wmap}')
+wmap = _words_of('与謝野晶子は研究者で、同級生はまさに優しい人でした。')
+check('与謝野晶子' in wmap and wmap['与謝野晶子'][0] == 'よさのあきこ', f'专名整词合并，实际 {wmap}')
+check('研究者' in wmap and '同級生' in wmap, f'接尾辞合并成整词，实际 {wmap}')
+check('まさに' in wmap and 'ヨサノ' not in wmap and '正に' not in wmap,
+      f'纯假名词保持原文用字（不用 lemma 旧字形），实际 {wmap}')
+wmap = _words_of('一ヶ月チャレンジしてしまいました。それぞれできるだけ。')
+check('一ヶ月' in wmap and wmap['一ヶ月'] == ('いっかげつ', '一'),
+      f'数量词整词合并且关联字取词首，实际 {wmap}')
+check('チャレンジ' in wmap, f'外来语保持片假名主体，实际 {wmap}')
+check('それぞれ' in wmap and 'できる' in wmap and '其々' not in wmap and '出来る' not in wmap,
+      f'orthBase 展示形，实际 {wmap}')
+wmap = _words_of('ありがとうございます。')
+check('ござる' in wmap and 'ござい' not in wmap, f'活用词干还原词典形，实际 {wmap}')
+# 所有词条：主体非空、词条不含读音假名以外的截断（词≥1字且读音为空或含假名）
+for s in ('高校で一番変わるものはない。', 'こちらは静かな町です。'):
+    for w, r, k, _p in textbook.extract_units(s)[1]:
+        check(bool(w), f'词条主体不得为空（{s}）')
+        check(not k or (k in w), f'关联字必须取自词条本身：{k} ∉ {w}')
+# 旧词条键迁移映射（老库平滑升级用）
+_legacy = {}
+textbook.extract_units('一ヶ月それぞれ与謝野晶子。', legacy_map=_legacy)
+check(_legacy.get('箇月') == '一ヶ月' and _legacy.get('其々') == 'それぞれ'
+      and _legacy.get('ヨサノ') == '与謝野晶子' and _legacy.get('アキコ') == '与謝野晶子',
+      f'旧键映射，实际 {_legacy}')
 curve10_days = sum(srs_mod.INTERVALS_MIN) // 1440      # 10 阶段全程 ≈ 2个月曲线的累计天数
 check(textbook.curve_days(1) == 0 and textbook.curve_days(10) == curve10_days,
       f'curve_days 边界: curve_days(10)={textbook.curve_days(10)} 应为 {curve10_days}')
@@ -253,8 +290,23 @@ check(act[idA] == 1 and act[idB] == 0, f'active 状态 {act}')
 r = client.post('/api/books/plan', json={'deadline': '2026-10-15', 'minutes_per_day': 30, 'target_stage': 5})
 p4 = r.get_json()
 check([b['id'] for b in p4['books']] == [idA], f'默认计划只含 active 书 {p4["books"]}')
-check(p4['content'] == 'both' and p4['new_kanji'] == 12 and p4['new_words'] == 9,
-      f'默认双轨：12 字 + 9 词，实际 {p4.get("new_kanji")}+{p4.get("new_words")}')
+# 14 字 − 2（§6 /api/learn 学过）− 2（§7 勾选完成自动纳入 SRS）= 10 新字
+check(p4['content'] == 'both' and p4['new_kanji'] == 10 and p4['new_words'] == 9,
+      f'默认双轨：10 字 + 9 词，实际 {p4.get("new_kanji")}+{p4.get("new_words")}')
+# 今日任务词条完整性：计划项 kanji 字段必须是完整词形，绝不能被
+# 词表的关联单字（link_kanji）覆盖成单个汉字/空字符串（历史截断 bug 回归防护）
+wit_build = [it for d0 in p4['per_day'] for it in d0['new'] if it.get('kind') == 'words']
+r = client.get('/api/books/plan')
+lpw = r.get_json()
+wit_load = [it for d0 in lpw['per_day'] for it in d0['new'] if it.get('kind') == 'words']
+for tag, wits in (('build_plan', wit_build), ('load_plan', wit_load)):
+    check(len(wits) == 9, f'{tag} 词条数 9，实际 {len(wits)}')
+    check(all(it.get('kanji') for it in wits), f'{tag} 词条主体不得为空')
+    check(all(it['kanji'] == (it.get('word') or it['kanji']) for it in wits),
+          f'{tag} 词条主体=完整词形，实际 {[it["kanji"] for it in wits]}')
+    check(all(len(it['kanji']) > 1 or not it.get('link_kanji') or
+              it['kanji'] != it.get('link_kanji') or it['kanji'] == (it.get('word') or it['kanji'])
+              for it in wits), f'{tag} 词条未被关联单字覆盖')
 # 阶段说明接口：1-10 阶段各有中文间隔与走完天数（计划表单数据源）
 r = client.get('/api/books/curve')
 cv = r.get_json()
