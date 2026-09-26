@@ -384,6 +384,74 @@ _S2J = {
     '从': '従', '怀': '懐', '姬': '姫', '窗': '窓', '发': '髪', '丝': '糸',
     '净': '浄', '机': '機', '种': '種', '东': '東', '现': '現', '动': '動',
     '静': '静', '争': '争', '音': '音', '咲': '咲',
+    # ---- v20 扩充：审计发现 song《夏恋》等简体转录仍有漏字（诱/访/梦/阑/标/见/响/鸣/仅）----
+    '岚': '嵐', '诱': '誘', '访': '訪', '梦': '夢', '阑': '闌', '标': '標', '见': '見',
+    '响': '響', '鸣': '鳴', '仅': '僅', '觉': '覚', '览': '覧', '观': '観',
+    '规': '規', '视': '視', '亲': '親', '触': '触', '误': '誤', '课': '課',
+    '谈': '談', '调': '調', '论': '論', '识': '識', '译': '訳', '词': '詞',
+    '试': '試', '话': '話', '让': '譲', '讯': '訊', '记': '記', '讨': '討',
+    '训': '訓', '议': '議', '计': '計', '认': '認', '设': '設', '评': '評',
+    '证': '証', '误': '誤', '贝': '貝', '负': '負', '贵': '貴', '费': '費',
+    '资': '資', '赏': '賞', '质': '質', '赠': '贈', '踪': '踪', '躯': '躯',
+    '软': '軟', '较': '較', '载': '載', '辈': '輩', '迹': '跡', '适': '適',
+    '逊': '遜', '递': '逓', '锁': '鎖', '错': '錯', '镜': '鏡', '闪': '閃',
+    '闭': '閉', '闹': '閙', '阵': '陣', '际': '際', '陆': '陸', '隆': '隆',
+    '随': '随', '离': '離', '云': '雲', '电': '電', '静': '静', '页': '頁',
+    '顶': '頂', '顺': '順', '预': '預', '颜': '顔', '风': '風', '飘': '飄',
+    '养': '養', '馆': '館', '驱': '駆', '惊': '驚', '骨': '骨', '体': '体',
+    '发': '髪', '斗': '闘', '鲜': '鮮', '鹤': '鶴', '点': '点', '党': '党',
+    '烛': '燭', '烟': '煙', '烂': '爛', '独': '独', '猫': '猫', '环': '環',
+    '琐': '瑣', '瑶': '瑶', '当': '当', '疗': '療', '尽': '尽', '监': '監',
+    '盘': '盤', '睁': '睜', '瞒': '瞞', '确': '確', '祷': '禱', '祸': '禍',
+    '离': '離', '秘': '秘', '积': '積', '称': '称', '稳': '穏', '穷': '窮',
+    '笔': '筆', '笼': '籠', '简': '簡', '篮': '籃', '类': '類', '粮': '糧',
+    '紧': '緊', '絮': '絮', '纵': '縦', '纷': '紛', '练': '練', '绊': '絆',
+    '绍': '紹', '绕': '繞', '绘': '絵', '绪': '緒', '绽': '綻', '缠': '纏',
+    '罗': '羅', '罚': '罰', '翻': '翻', '耻': '恥', '聪': '聡', '肠': '腸',
+    '肤': '膚', '胧': '朧', '脉': '脈', '脏': '臓', '脑': '脳', '脸': '顔',
+    '舍': '舎', '舰': '艦', '艳': '艶', '芦': '芦', '苏': '蘇', '茧': '繭',
+    '荡': '蕩', '药': '薬', '莲': '蓮', '萤': '螢', '营': '営', '虑': '慮',
+    '虫': '虫', '虽': '雖', '蚀': '蝕', '蜡': '蠟', '蝉': '蟬', '亿': '億',
+    '价': '価', '们': '們', '优': '優', '伞': '傘', '伟': '偉', '伤': '傷',
+    '侣': '侶', '俭': '倹', '债': '債', '倾': '傾', '偿': '償', '兰': '蘭',
+    '兹': '茲', '养': '養', '兽': '獣', '冲': '沖', '况': '況', '冻': '凍',
+    '凑': '湊', '凤': '鳳', '凭': '憑', '击': '撃', '刘': '劉', '则': '則',
+    '刚': '剛', '创': '創', '别': '別', '刹': '刹', '刻': '刻', '剂': '剤',
+    '劝': '勧', '办': '弁', '务': '務', '劲': '勁', '励': '励', '劳': '労',
+    '势': '勢', '匀': '勻', '医': '医', '协': '協', '压': '圧', '厅': '庁',
+    '历': '歴', '厉': '厲', '厌': '厭', '县': '県', '双': '双', '发': '発',
+    '叙': '叙', '叹': '嘆', '吓': '嚇', '吗': '嗎', '吨': '噸', '听': '聴',
+    '启': '啓', '呜': '嗚', '员': '員', '呼': '呼', '响': '響', '哑': '啞',
+    '唤': '喚', '啸': '嘯', '喊': '喊', '嘱': '囑', '坚': '堅', '坠': '墜',
+    '垄': '壟', '垫': '墊', '埋': '埋', '堕': '堕', '墙': '牆', '壮': '壮',
+    '声': '声', '壳': '殻', '够': '夠', '夹': '挾', '夺': '奪', '奖': '奨',
+    '妆': '妝', '妇': '婦', '娇': '嬌', '婵': '嬋', '娘': '娘', '婴': '嬰',
+    '孙': '孫', '孤': '孤', '宝': '宝', '实': '実', '宠': '寵', '审': '審',
+    '寻': '尋', '对': '対', '寿': '寿', '导': '導', '尘': '塵', '层': '層',
+    '屉': '屜', '届': '届', '属': '属', '屿': '嶼', '峡': '峽', '崭': '嶄',
+    '巅': '巔', '巩': '鞏', '币': '幣', '帅': '帥', '帜': '幟', '帮': '幫',
+    '干': '幹', '并': '並', '幸': '幸', '幻': '幻', '床': '床', '底': '底',
+    '异': '異', '弃': '棄', '张': '張', '弥': '彌', '弯': '彎', '弹': '弾',
+    '归': '帰', '当': '当', '录': '録', '彻': '徹', '径': '径', '徒': '徒',
+    '忆': '憶', '忧': '憂', '怜': '憐', '态': '態', '怒': '怒', '怨': '怨',
+    '恋': '恋', '恒': '恒', '恳': '懇', '恼': '悩', '悬': '懸', '惧': '懼',
+    '惨': '惨', '惯': '慣', '愤': '憤', '慑': '懾', '懒': '懶', '戏': '戯',
+    '战': '戦', '扑': '撲', '执': '執', '扬': '揚', '扰': '擾', '抚': '撫',
+    '抛': '抛', '抢': '搶', '护': '護', '担': '担', '拟': '擬', '拥': '擁',
+    '挂': '掛', '挚': '摯', '挤': '擠', '挥': '揮', '损': '損', '换': '換',
+    '据': '拠', '掷': '擲', '搂': '摟', '摄': '撮', '摆': '擺', '撑': '撐',
+    '斋': '斎', '断': '断', '旧': '旧', '昙': '曇', '晓': '暁', '晕': '暈',
+    '晚': '晩', '暂': '暫', '术': '術', '朴': '朴', '杂': '雑', '权': '権',
+    '杆': '桿', '构': '構', '枪': '槍', '柜': '櫃', '栏': '欄', '栖': '棲',
+    '样': '様', '桥': '橋', '梦': '夢', '检': '検', '棂': '欞', '椭': '楕',
+    '楼': '楼', '榄': '欖', '歼': '殲', '殇': '殤', '残': '残', '毁': '毀',
+    '毕': '畢', '毫': '毫', '氢': '氫', '汇': '匯', '汤': '湯', '沟': '溝',
+    '没': '没', '沧': '滄', '沪': '滬', '泛': '氾', '浅': '浅', '浊': '濁',
+    '测': '測', '浑': '渾', '涂': '塗', '涌': '湧', '润': '潤', '涨': '漲',
+    '渐': '漸', '渔': '漁', '温': '温', '湾': '湾', '溃': '潰', '滚': '滾',
+    '滞': '滞', '满': '満', '滨': '浜', '潜': '潜', '澜': '瀾', '灯': '灯',
+    '灿': '燦', '炉': '炉', '烁': '爍', '烦': '煩', '烧': '焼', '烫': '燙',
+    '焕': '煥', '煌': '煌', '熄': '熄', '燃': '燃',
 }
 _S2J = {k: v for k, v in _S2J.items() if v and k != v}
 
@@ -459,6 +527,22 @@ def _protect_ascii(toks):
     return toks
 
 
+def _strip_fake_ruby(toks):
+    """终检：token 的"读音"里混着汉字（引擎对未知字回吐表面形）= 假读音，
+    一律清除并标 unk，绝不当真注音展示。alt 候选同理过滤。"""
+    for t in toks:
+        r = t.get('r')
+        if r and _KANJI_RE.search(r):
+            t['r'] = None
+            if _KANJI_RE.search(t.get('s') or ''):
+                t['unk'] = True
+        if t.get('alt'):
+            t['alt'] = [a for a in t['alt'] if not _KANJI_RE.search(a)]
+            if not t['alt']:
+                t.pop('alt')
+    return toks
+
+
 def _backfill_ruby(toks):
     """注音一致性：同一行内同一汉字，别处有注音而此处缺失 → 回填（保守：仅单字词）。"""
     known = {}
@@ -511,13 +595,26 @@ def annotate_lyrics(lyrics: str):
                     ts = _restore_spaces(ts, ln)
                     _protect_ascii(ts)
                     _backfill_ruby(ts)
+                    _strip_fake_ruby(ts)
                     return ts
                 cand = _mk(toks)
                 cand0 = _mk(toks0)
                 ok = ''.join(x.get('s') or '' for x in cand) == ln
                 ok0 = ''.join(x.get('s') or '' for x in cand0) == ln
                 if ok and ok0:
-                    toks = cand if len(cand) < len(cand0) else cand0
+                    # v20 择优标准修正：先比注音质量（unk / 含汉字却无有效读音的
+                    # token 越少越好），再比形素数。旧标准只比长度，平手时误选
+                    # 未转换路径，导致 风铃/鸣 等简体词整词 unk。
+                    def _badness(ts):
+                        n = 0
+                        for x in ts:
+                            s_, r_ = x.get('s') or '', x.get('r')
+                            if x.get('unk'):
+                                n += 1
+                            elif _KANJI_RE.search(s_) and r_ and _KANJI_RE.search(r_):
+                                n += 1   # "读音"里混着汉字 = 假读音
+                        return n
+                    toks = cand if (_badness(cand), len(cand)) <= (_badness(cand0), len(cand0)) else cand0
                 elif ok:
                     toks = cand
                 else:
@@ -527,6 +624,7 @@ def annotate_lyrics(lyrics: str):
                 toks = _restore_spaces(toks, ln)        # 补回丢失的空格
                 _protect_ascii(toks)                     # 英文不注音
                 _backfill_ruby(toks)                     # 同字注音一致性
+                _strip_fake_ruby(toks)                   # 假读音（读音含汉字）清除
             _seg_mark(toks, ln)                      # 学习模式：意思群标记
             tokens.append(toks)
         except Exception:
@@ -680,6 +778,30 @@ def _seg_mark(tokens, line):
     return changed
 
 
+# 注音引擎版本号：ktv/furigana 注音管线有实质变化时 +1。
+# get_song 时发现存量 tokens 版本落后 → 惰性整首重注回写（用户零感知升级，无需手动 reannotate）。
+ANNO_VER = 2
+
+
+def ensure_fresh(song_row):
+    """引擎版本对齐 + 分词标记补算。返回 (tokens, anno_ver)。
+
+    存量 tokens 若是老引擎产物（anno_ver < ANNO_VER），惰性整首重注并回写；
+    单首 ~20ms，只在首次打开时发生一次，之后走缓存路径。
+    """
+    ver = song_row.get('anno_ver') or 0
+    if ver < ANNO_VER:
+        try:
+            fresh, kcount = annotate_lyrics(song_row['lyrics'])
+            import db as _db
+            _db.update_song_tokens(song_row['id'], fresh, anno_ver=ANNO_VER,
+                                   kanji_count=kcount)
+            return fresh, ANNO_VER
+        except Exception:
+            pass  # 重注失败：退回旧 tokens 兜底（宁可显示老注音也不白屏）
+    return ensure_seg(song_row), ver
+
+
 def ensure_seg(song_row):
     """兼容旧数据：没有分词标记的歌词 token 即时补算并回写。返回 token 列表。"""
     toks = json.loads(song_row['tokens']) if song_row['tokens'] else []
@@ -702,3 +824,73 @@ def ensure_seg(song_row):
         import db as _db
         _db.update_song_tokens(song_row['id'], toks)
     return toks
+
+
+# ---------------------------------------------------------------
+# v20 歌曲学习档案：这首歌的汉字/词汇 vs 我的学习进度（SRS）
+# 全部走已有索引（tokens 缓存 + srs 表 + kanji_index 计数），单曲 <30ms
+# ---------------------------------------------------------------
+def song_study(song_row):
+    """返回歌曲学习档案：
+    {
+      kanji: {total, learned, coverage, new: [{k, song_freq, corpus_freq}...], known: [...]},
+      words: {total, learned, coverage, new: [{w, r, song_freq}...], known: [...]},
+    }
+    new 按「歌内出现次数 × 语料常用度」排序——先学出现最勤、最通用的。
+    """
+    import db as _db
+    toks, _ver = ensure_fresh(song_row)
+
+    kanji_freq = {}                       # 汉字 → 歌内出现次数
+    word_freq = {}                        # 辞书形 → (读音, 歌内出现次数)
+    for line in toks:
+        if not line or not isinstance(line, list):
+            continue
+        if len(line) == 1 and ('k' in line[0] or 'en' in line[0]):
+            continue                      # 罗马音行 / 英文行不计
+        prev_dw = None
+        for t in line:
+            s = t.get('s') or ''
+            for ch in s:
+                if _KANJI_RE.match(ch):
+                    kanji_freq[ch] = kanji_freq.get(ch, 0) + 1
+            dw = t.get('dw') or t.get('w')
+            if dw and dw != prev_dw and _KANJI_RE.search(dw):
+                r, n = word_freq.get(dw, (t.get('dr') or t.get('wr') or '', 0))
+                word_freq[dw] = (r, n + 1)
+            prev_dw = dw if dw else None
+
+    # SRS 进度（字 / 词双轨）
+    with _db.get_conn() as c:
+        srs_rows = c.execute('SELECT kanji, kind, stage FROM srs').fetchall()
+        placeholders = ','.join('?' * len(kanji_freq)) or "''"
+        cf = dict(c.execute(
+            f'SELECT kanji, COUNT(*) FROM kanji_index WHERE kanji IN ({placeholders}) GROUP BY kanji',
+            list(kanji_freq)).fetchall()) if kanji_freq else {}
+    learned_k = {r['kanji'] for r in srs_rows if (r['kind'] or 'kanji') == 'kanji'}
+    learned_w = {r['kanji'] for r in srs_rows if (r['kind'] or 'kanji') == 'words'}
+
+    new_k, known_k = [], []
+    for k, n in kanji_freq.items():
+        (known_k if k in learned_k else new_k).append(
+            {'k': k, 'song_freq': n, 'corpus_freq': int(cf.get(k, 0))})
+    # 排序：歌内高频优先，语料常用度打破平手（越通用越值得先学）
+    new_k.sort(key=lambda x: (-x['song_freq'], -x['corpus_freq'], x['k']))
+    known_k.sort(key=lambda x: (-x['song_freq'], x['k']))
+
+    new_w, known_w = [], []
+    for w, (r, n) in word_freq.items():
+        item = {'w': w, 'r': r, 'song_freq': n}
+        (known_w if w in learned_w else new_w).append(item)
+    new_w.sort(key=lambda x: (-x['song_freq'], x['w']))
+    known_w.sort(key=lambda x: (-x['song_freq'], x['w']))
+
+    tk, tw = len(kanji_freq), len(word_freq)
+    return {
+        'kanji': {'total': tk, 'learned': len(known_k),
+                  'coverage': round(len(known_k) * 100 / tk) if tk else 100,
+                  'new': new_k[:60], 'known': known_k[:60]},
+        'words': {'total': tw, 'learned': len(known_w),
+                  'coverage': round(len(known_w) * 100 / tw) if tw else 100,
+                  'new': new_w[:60], 'known': known_w[:60]},
+    }

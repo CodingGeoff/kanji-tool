@@ -199,6 +199,8 @@ def number_with_counter(n: int, counter: str):
 
 
 _NUM_RE = re.compile(r'^[0-9]+$')
+# 纯假名（平/片假名 + 长音符 + 假名重复符）——alt 候选读音的硬性形态要求
+_PURE_KANA_RE = re.compile(r'[ぁ-ゖァ-ヺーゝゞヽヾ]+')
 
 # 「〜中」读じゅう的前接时间/范围词（一日中・今日中・世界中・体中…）
 _JUU_BEFORE = {'今日', '明日', '昨日', '一日', '日', '年', '一年', '半年',
@@ -546,7 +548,10 @@ def annotate(text: str):
             if mecab_concat == sr or is_rendaku_variant(mecab_concat, sr):
                 extra = {'c': 'high'}
             else:
-                extra = {'c': 'mid', 'alt': [mecab_concat]}
+                extra = {'c': 'mid'}
+                # alt 候选必须纯假名（歌词含括号注音等脏字符时 MeCab 拼读混入符号）
+                if mecab_concat and _PURE_KANA_RE.fullmatch(mecab_concat):
+                    extra['alt'] = [mecab_concat]
             if no_split:
                 tokens.append({'s': whole, 'r': sr, 'w': whole, 'wr': sr, **extra})
                 i = end
@@ -682,6 +687,9 @@ def annotate(text: str):
                 alts.clear()   # 双引擎共识 > nbest 次优路径
             else:
                 alts.add(sd)
+        # 候选读音必须是纯假名：引擎对未收录字可能吐回表面形（啄→啄），
+        # 这类脏候选一律过滤，绝不作为"歧义读音"展示
+        alts = {a for a in alts if a and _PURE_KANA_RE.fullmatch(a)}
         if alts:
             conf = 'low'
 

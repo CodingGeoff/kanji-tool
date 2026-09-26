@@ -509,6 +509,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" id="ktvBarRow2" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
         <span class="muted" id="ktvMeta" style="font-size:12.5px"></span>
         <span style="flex:1"></span>
+        <button class="btn mini" onclick="ktvStudy()" title="这首歌的汉字/词汇 vs 我的学习进度：覆盖率、生字生词优先级、一键加入学习">📚 学习档案</button>
+        <button class="btn mini" onclick="ktvBuilder()" title="用本曲库歌词行出多邻国式组句题（歌词无译文，自动零干扰，纯考语序）">🧩 歌词组句</button>
         <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
         <button class="btn mini" onclick="ktvFont(2)" title="放大字号">A＋</button>
         <label class="advtog"><input type="checkbox" id="ktvRubyTog" checked onchange="ktvRender()"><span>注音</span></label>
@@ -545,6 +547,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
         <div class="row">
           <button class="btn primary" onclick="bkQuizCfgOpen()" title="自定义出题源占比、出题数量，支持一键自动调节">🎛 出题配置</button><button class="btn" style="background:var(--gold);color:#fff;border-color:var(--gold)" onclick="eduDashboardOpen()" title="教育心理学仪表盘：能力、ZPD、认知负荷、布鲁姆、心流、错误分析">🧠 仪表盘</button>
           <button class="btn" onclick="bkQuizOpen()" title="从本书或全库句子挖空，考察语法点（难度可配）">📝 挖空练习</button>
+          <button class="btn" onclick="sbOpen()" title="多邻国式组句：把句子拆成词块重新排序；初级=纯净词块+语料换词变体，高级=带混淆干扰；多种语法正确语序均判对">🧩 组句练习</button>
+          <button class="btn" onclick="sbCfgOpen()" title="组句练习完整配置：初级/高级模式、N级难度（两轴独立）、题型占比、干扰块、换词、判卷严格度">🧩 组句配置</button>
           <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
           <button class="btn primary" onclick="bkToggleImport()">＋ 制作课本</button>
@@ -722,6 +726,30 @@ async function showAbout(){
   .opt-btn{font-size:19px;padding:14px 10px}
   .cloze-blank{min-width:100px;font-size:18px}
 }
+/* ---------- v19 组句练习（多邻国式拼句） ---------- */
+.sb-area{min-height:70px;border:2px dashed var(--line);border-radius:14px;padding:10px 12px;
+  display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:12px;background:#fbf9f4}
+.sb-area.ans{background:#fff;border-color:var(--gold)}
+.sb-area .ph{color:var(--sub);font-size:13.5px;opacity:.7}
+.sb-tile{font-size:20px;padding:9px 15px;border:2px solid var(--line);border-radius:12px;
+  background:#fff;cursor:pointer;line-height:1.6;transition:.12s;font-family:inherit;
+  box-shadow:0 2px 0 rgba(0,0,0,.05)}
+.sb-tile:hover:not(:disabled){border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+.sb-tile:disabled{cursor:default;opacity:.85}
+.sb-tile ruby rt{font-size:.52em;color:var(--sub)}
+.sb-tile.ok{border-color:var(--accent2);background:#e7f2ec}
+.sb-tile.ng{border-color:var(--accent);background:#fbe9ea}
+.sb-pairs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;max-width:560px}
+.sb-pairs .sb-tile{text-align:center}
+.sb-tile.sel{border-color:var(--gold);background:#fdf6e8}
+.sb-tile.done{border-color:var(--accent2);background:#e7f2ec;color:var(--accent2);opacity:.7}
+.sb-badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sb-mode{display:inline-block;font-size:11.5px;font-weight:700;border-radius:6px;padding:2px 8px}
+.sb-mode.basic{background:#e7f2ec;color:var(--accent2)}
+.sb-mode.adv{background:#fdf0e8;color:#c26a2d}
+.sb-swapnote{font-size:12.5px;color:#a08c5a;background:#fdf6e8;border-radius:8px;
+  padding:5px 10px;margin-top:8px;display:inline-block}
+@media(max-width:600px){.sb-tile{font-size:17.5px;padding:8px 11px}.sb-pairs{grid-template-columns:1fr 1fr}}
 /* ---------- v15 出题配置面板 ---------- */
 .qcfg-grid{display:grid;grid-template-columns:110px 1fr 52px;gap:8px 10px;align-items:center;margin-top:12px}
 .qcfg-grid .lbl{font-size:14px;font-weight:600}
@@ -1766,6 +1794,48 @@ function ktvLineTokens(){
 function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
 function ktvToggleHdr(){ document.body.classList.toggle('showhdr'); }  // 沉浸模式下唤出/隐藏顶栏
 function ktvToggleBar(){ $('#ktvBar').classList.toggle('hidden'); }   // ☰ 悬浮按钮：展开/收起歌词工具栏
+async function ktvStudy(){
+  if(!ktvCur) return;
+  const m=bkModal('<b>📚 学习档案加载中…</b>',680);
+  let st; try{ st=await api('/api/songs/'+ktvCur.id+'/study'); }catch(e){ return m.querySelector('.card').innerHTML='<div class="muted">加载失败</div>'; }
+  const bar=(pct)=>`<div style="background:var(--line);border-radius:6px;height:10px;overflow:hidden;flex:1"><div style="width:${pct}%;height:100%;background:${pct>=70?'#7cb342':pct>=30?'var(--gold)':'#e57373'}"></div></div>`;
+  const chipK=x=>`<span class="tag" style="cursor:default" title="歌内 ${x.song_freq} 次 · 语料 ${x.corpus_freq} 句">${esc(x.k)}</span>`;
+  const chipW=x=>`<span class="tag" style="cursor:default" title="歌内 ${x.song_freq} 次">${esc(x.w)}${x.r&&x.r!==x.w?`<small style="opacity:.7"> ${esc(x.r)}</small>`:''}</span>`;
+  const K=st.kanji,W=st.words;
+  m.querySelector('.card').innerHTML=`
+    <div class="row" style="justify-content:space-between"><b>📚 《${esc(ktvCur.title)}》学习档案</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div style="margin-top:10px">
+      <div class="row" style="align-items:center;gap:10px"><span style="min-width:120px">汉字覆盖 ${K.learned}/${K.total}（${K.coverage}%）</span>${bar(K.coverage)}</div>
+      <div class="row" style="align-items:center;gap:10px;margin-top:6px"><span style="min-width:120px">词汇覆盖 ${W.learned}/${W.total}（${W.coverage}%）</span>${bar(W.coverage)}</div>
+    </div>
+    ${K.new.length?`<div style="margin-top:12px"><b style="font-size:13.5px">✍️ 生字 ${K.total-K.learned} 个（按歌内频次×语料常用度排序，先学最值的）</b>
+      <div class="row" style="flex-wrap:wrap;gap:5px;margin-top:6px">${K.new.map(chipK).join('')}</div>
+      <button class="btn mini" style="margin-top:8px" onclick="ktvStudyAdd('kanji',this)">＋ 全部加入学习（${Math.min(K.new.length,60)}字）</button></div>`
+      :'<div class="muted" style="margin-top:12px">🎉 这首歌的汉字你全学过了！</div>'}
+    ${W.new.length?`<div style="margin-top:12px"><b style="font-size:13.5px">📖 生词 ${W.total-W.learned} 个</b>
+      <div class="row" style="flex-wrap:wrap;gap:5px;margin-top:6px">${W.new.slice(0,40).map(chipW).join('')}</div>
+      <button class="btn mini" style="margin-top:8px" onclick="ktvStudyAdd('words',this)">＋ 全部加入学习（${Math.min(W.new.length,60)}词）</button></div>`:''}
+    <div class="muted" style="font-size:12px;margin-top:12px">已学＝在艾宾浩斯复习队列中；加入后按记忆曲线自动安排复习。</div>`;
+  window._ktvStudyData=st;
+}
+async function ktvStudyAdd(kind,btn){
+  const st=window._ktvStudyData; if(!st) return;
+  btn.disabled=true;btn.textContent='加入中…';
+  try{
+    if(kind==='kanji'){
+      await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:st.kanji.new.map(x=>x.k),kind:'kanji'})});
+    }else{
+      const readings={};st.words.new.forEach(x=>{if(x.r)readings[x.w]=x.r});
+      await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:st.words.new.map(x=>x.w),kind:'words',readings})});
+    }
+    btn.textContent='✓ 已加入复习队列';toast('已加入学习，今日复习见首页');
+  }catch(e){btn.disabled=false;btn.textContent='加入失败，重试';}
+}
+function ktvBuilder(){
+  ktvBack();
+  document.querySelector('#nav button[data-tab=books]').click();
+  sbOpen({scope:'lyric'});
+}
 function ktvBack(){ document.body.classList.remove('ktv-song','showhdr'); $('#ktvFab').classList.add('hidden'); $('#ktvBar').classList.remove('hidden'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
@@ -2076,6 +2146,7 @@ function bkRenderPlan(p){
       <div class="row" style="gap:6px">
         <span class="muted">新学进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
         ${(!bkCfg||bkCfg.cloze_enabled!==false)?`<button class="btn mini" onclick="bkQuizOpen()" title="按配置的难度从本书/全库句子挖空考察语法">📝 挖空练习</button>`:''}
+        <button class="btn mini" onclick="sbOpen()" title="多邻国式组句练习（词块排序，多种正确语序均判对）">🧩 组句练习</button>
       </div>
     </div>
     <div class="progressbar"><i style="width:${pct}%"></i></div>
@@ -2597,6 +2668,268 @@ async function bkQuizFinish(){
   window.scrollTo(0,0);
 }
 
+
+/* ---------- v19 组句练习（多邻国式拼句：文节词块排序 + 多解稳健判卷） ---------- */
+let sbQuiz=null, sbCfgCache=null;
+const SB_LV=['any','N5','N4','N3','N2','N1'];
+async function sbCfgLoad(force){
+  if(!sbCfgCache||force){
+    try{const d=await api('/api/builder/cfg');sbCfgCache=d.cfg;sbCfgCache._stats=d.stats||[];}
+    catch(e){sbCfgCache=null;}
+  }
+  return sbCfgCache||{};
+}
+function sbShowRuby(){
+  const c=sbCfgCache||{},m=sbQuiz?sbQuiz.mode:'basic';
+  if(c.show_furigana==='always')return true;
+  if(c.show_furigana==='never')return false;
+  return m==='basic';
+}
+function sbTileHTML(t){
+  if(sbShowRuby()&&t.tokens&&t.tokens.length)return rubyHTML(t.tokens);
+  return esc(t.s);
+}
+async function sbOpen(opts){
+  bkQuizShow();
+  const v=$('#bkQuizView');
+  v.innerHTML='<div class="card"><div class="muted">🧩 出题中（文节切块＋合法语序枚举＋逐句语法质检…）</div></div>';
+  await sbCfgLoad();
+  const body=window.bkSel&&bkSel.size?{book_ids:[...bkSel]}:{};
+  if(opts&&opts.scope) body.scope=opts.scope;   // KTV 歌词组句等定向题源
+  window._sbLastOpts=opts||null;
+  let d;
+  try{ d=await api('/api/builder/quiz',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ d={ok:false}; }
+  if(!d.ok||!d.questions||!d.questions.length){
+    v.innerHTML=`<div class="card quiz-wrap">
+      <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🧩 组句练习</b></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合质检的题目：可在 🧩 组句配置里放宽难度/词块数，或去语料库抓取更多语料。'}</div>
+      <div class="quiz-nav"><button class="btn" onclick="sbCfgOpen()">🧩 组句配置</button></div>
+    </div>`;
+    return;
+  }
+  sbQuiz={qs:d.questions,i:0,ok:0,ans:[],mode:d.mode,level:d.level,sel:[],checked:false,
+          pairSel:null,pairErr:0,pairDone:0};
+  sbRender();
+}
+function sbModeBadge(){
+  const m=sbQuiz.mode;
+  return `<span class="sb-mode ${m==='basic'?'basic':'adv'}">${m==='basic'?'初级·纯净词块':'高级·带混淆'}</span>
+    <span class="tag">难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}</span>`;
+}
+function sbRender(){
+  const v=$('#bkQuizView'),q=sbQuiz.qs[sbQuiz.i],n=sbQuiz.qs.length;
+  sbQuiz.sel=[];sbQuiz.checked=false;sbQuiz.pairSel=null;sbQuiz.pairErr=0;sbQuiz.pairDone=0;
+  const top=`<div class="quiz-top">
+      <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
+      <span class="quiz-prog">🧩 组句 ${sbQuiz.i+1} / ${n}</span>
+      <span class="sb-badges">${sbModeBadge()}${q.qtype==='arrange'?`<span class="lv lv-${q.level}">${q.level}</span><span class="tag">${esc(q.origin||'')}</span>`:'<span class="tag">词·读音配对</span>'}</span>
+      <span style="flex:1"></span>
+      <span class="muted" style="font-size:12.5px">得分 ${sbQuiz.ok}</span>
+    </div>
+    <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*sbQuiz.i/n)}%"></i></div>`;
+  if(q.qtype==='pairs'){
+    const L=q.pairs.map((p,i)=>({i,t:p.w,side:'L'})),R=q.pairs.map((p,i)=>({i,t:p.wr,side:'R'}));
+    shuffleArr(L);shuffleArr(R);
+    sbQuiz._pairL=L;sbQuiz._pairR=R;
+    v.innerHTML=`<div class="card quiz-wrap">${top}
+      <div style="margin-top:16px;font-size:16px"><b>把左边的词和右边的读音配对</b><span class="muted">（配错不扣题分，但全对才算此题正确）</span></div>
+      <div class="sb-pairs" id="sbPairs">
+        ${L.map((x,k)=>`<button class="sb-tile jp" id="sbPL${k}" onclick="sbPairPick('L',${k})">${esc(x.t)}</button>
+        <button class="sb-tile jp" id="sbPR${k}" onclick="sbPairPick('R',${k})">${esc(R[k].t)}</button>`).join('')}
+      </div>
+      <div id="sbQuizExp"></div>
+    </div>`;
+    return;
+  }
+  v.innerHTML=`<div class="card quiz-wrap">${top}
+    <div style="margin-top:16px;font-size:16px"><b>${q.swap?'把词块排成一个语法正确的句子':'把词块排成句子'}</b></div>
+    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:'<div class="muted" style="margin-top:6px">（此句暂无译文，按语法正确排列即可）</div>'}
+    ${q.swap?`<div class="sb-swapnote">✨ 语料变体题：原句的「${esc(q.swap.from)}${esc(q.swap.particle)}」已按语料真实搭配换成「${esc(q.swap.to)}${esc(q.swap.particle)}」，语法结构不变</div>`:''}
+    <div class="sb-area ans jp" id="sbAns"><span class="ph">点击下方词块，按顺序组成句子…</span></div>
+    <div class="sb-area jp" id="sbBank">
+      ${q.tiles.map((t,k)=>`<button class="sb-tile" id="sbT${k}" onclick="sbTileTap(${k})">${sbTileHTML(t)}</button>`).join('')}
+    </div>
+    <div class="quiz-nav">
+      <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
+      <button class="btn" onclick="sbReset()">重置</button>
+    </div>
+    <div id="sbQuizExp"></div>
+  </div>`;
+}
+function shuffleArr(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}}
+function sbTileTap(k){
+  if(sbQuiz.checked)return;
+  const q=sbQuiz.qs[sbQuiz.i],idx=sbQuiz.sel.indexOf(k);
+  if(idx>=0)sbQuiz.sel.splice(idx,1);else sbQuiz.sel.push(k);
+  sbSyncTiles();
+}
+function sbSyncTiles(){
+  const q=sbQuiz.qs[sbQuiz.i];
+  const ans=$('#sbAns');
+  if(!sbQuiz.sel.length)ans.innerHTML='<span class="ph">点击下方词块，按顺序组成句子…</span>';
+  else ans.innerHTML=sbQuiz.sel.map(k=>`<button class="sb-tile" onclick="sbTileTap(${k})">${sbTileHTML(q.tiles[k])}</button>`).join('');
+  q.tiles.forEach((t,k)=>{
+    const b=document.getElementById('sbT'+k);
+    if(b)b.style.visibility=sbQuiz.sel.includes(k)?'hidden':'visible';
+  });
+  const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
+}
+function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
+async function sbCheck(){
+  if(sbQuiz.checked||!sbQuiz.sel.length)return;
+  const q=sbQuiz.qs[sbQuiz.i];
+  const order=sbQuiz.sel.map(k=>q.tiles[k].id);
+  let r;
+  try{ r=await api('/api/builder/check',{method:'POST',body:JSON.stringify({spec:q.spec,order})}); }
+  catch(e){ toast('判卷失败：'+e);return; }
+  sbQuiz.checked=true;
+  if(r.ok)sbQuiz.ok++;
+  sbQuiz.ans.push({qtype:'arrange',mode:sbQuiz.mode,level:q.level,ok:!!r.ok});
+  const ans=$('#sbAns');
+  ans.classList.remove('ans');
+  ans.innerHTML=sbQuiz.sel.map(k=>`<span class="sb-tile ${r.ok?'ok':'ng'}">${sbTileHTML(q.tiles[k])}</span>`).join('');
+  const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+  const altNote=r.alt_count>1?`<div class="muted" style="font-size:13px;margin-top:6px">ℹ️ 此题共有 <b>${r.alt_count}</b> 种语法正确的语序${r.ok?'，你的答案是其中之一':''}（日语格成分句内可自由换序，判卷全部认可）</div>`:'';
+  document.getElementById('sbQuizExp').innerHTML=`<div class="quiz-exp">
+    <div style="font-size:19px"><b style="color:${r.ok?'var(--accent2)':'var(--accent)'}">${r.ok?'✅ 组句正确':'❌ 还差一点'}</b>
+      ${!r.ok&&r.feedback?`<span style="font-size:14.5px;margin-left:8px;color:var(--accent)">${esc(r.feedback)}</span>`:''}</div>
+    ${!r.ok&&r.your_text?`<div class="muted" style="margin-top:8px;font-size:14.5px">你的排列：${esc(r.your_text)}</div>`:''}
+    <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:23px">${full} ${spkBtn(q.text)}</div>
+    ${q.translation?`<div class="tr">译：${esc(q.translation)}</div>`:''}
+    ${q.swap?`<div class="muted" style="font-size:13px;margin-top:6px">✨ 本题为语料变体：原句用词「${esc(q.swap.from)}」→ 本题「${esc(q.swap.to)}」（同一助词「${esc(q.swap.particle)}」+ 同一谓语在语料中的真实搭配）</div>`:''}
+    ${q.alt_group?`<div class="muted" style="font-size:13px;margin-top:6px">🔁 多答案槽位「${esc(q.alt_group.slot)}」：${q.alt_group.options.map(o=>esc(o+q.alt_group.particle)).join('／')} 均为语料实证的同谓语搭配，任选其一都判对</div>`:''}
+    ${altNote}
+    ${(q.grammar||[]).length?`<div class="ex">${q.grammar.map(g=>`<span class="lv lv-${g.level}">${g.level}</span> <b>${esc(g.name||'')}</b>${g.structure&&g.structure!=='—'?`<span class="muted">（${esc(g.structure)}）</span>`:''}<br><span style="font-size:14px">${esc(g.explain||'')}</span>`).join('<br>')}</div>`:''}
+    <div class="quiz-nav">
+      <button class="btn primary" onclick="sbNext()">${sbQuiz.i+1>=sbQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      ${q.sid?`<button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>`:''}
+    </div>
+  </div>`;
+  document.getElementById('sbQuizExp').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function sbPairPick(side,k){
+  const q=sbQuiz.qs[sbQuiz.i];
+  const el=document.getElementById(side==='L'?'sbPL'+k:'sbPR'+k);
+  if(!el||el.classList.contains('done'))return;
+  const cur=sbQuiz.pairSel;
+  if(cur&&cur.side===side){ // 换选同侧
+    document.getElementById(cur.side==='L'?'sbPL'+cur.k:'sbPR'+cur.k).classList.remove('sel');
+    sbQuiz.pairSel={side,k};el.classList.add('sel');return;
+  }
+  if(!cur){sbQuiz.pairSel={side,k};el.classList.add('sel');return;}
+  // 两侧各一：判定
+  const L=side==='L'?{side,k}:cur, R=side==='R'?{side,k}:cur;
+  const li=sbQuiz._pairL[L.k].i, ri=sbQuiz._pairR[R.k].i;
+  const elL=document.getElementById('sbPL'+L.k),elR=document.getElementById('sbPR'+R.k);
+  elL.classList.remove('sel');elR.classList.remove('sel');
+  sbQuiz.pairSel=null;
+  if(li===ri){
+    elL.classList.add('done');elR.classList.add('done');elL.disabled=elR.disabled=true;
+    sbQuiz.pairDone++;
+    if(sbQuiz.pairDone>=q.pairs.length){
+      const ok=sbQuiz.pairErr===0;
+      if(ok)sbQuiz.ok++;
+      sbQuiz.ans.push({qtype:'pairs',mode:sbQuiz.mode,level:'-',ok});
+      sbQuiz.checked=true;
+      document.getElementById('sbQuizExp').innerHTML=`<div class="quiz-exp">
+        <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 全部配对正确':'❌ 配对完成（有 '+sbQuiz.pairErr+' 次失误）'}</b></div>
+        <div class="quiz-nav"><button class="btn primary" onclick="sbNext()">${sbQuiz.i+1>=sbQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button></div>
+      </div>`;
+    }
+  }else{
+    sbQuiz.pairErr++;
+    elL.classList.add('ng');elR.classList.add('ng');
+    setTimeout(()=>{elL.classList.remove('ng');elR.classList.remove('ng');},450);
+  }
+}
+function sbNext(){
+  if(!sbQuiz||sbQuiz.i>=sbQuiz.qs.length)return;
+  const t=Date.now(); if(t-(sbQuiz._nt||0)<400)return; sbQuiz._nt=t;
+  sbQuiz.i++;
+  if(sbQuiz.i>=sbQuiz.qs.length)sbFinish();
+  else{sbRender();window.scrollTo(0,0);}
+}
+async function sbFinish(){
+  let d=null;
+  try{ d=await api('/api/builder/answer',{method:'POST',body:JSON.stringify({results:sbQuiz.ans})}); }catch(e){}
+  const v=$('#bkQuizView'),n=sbQuiz.qs.length,pct=n?Math.round(100*sbQuiz.ok/n):0;
+  v.innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🧩 组句练习完成</b></div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${sbQuiz.ok}</b> / ${n}（${pct}%）
+      <div class="muted" style="font-size:13px;margin-top:4px">${sbQuiz.mode==='basic'?'初级模式':'高级模式'} · 难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}${d&&d.ok?' · 已计入统计':''}</div></div>
+    <div class="quiz-nav" style="justify-content:center">
+      <button class="btn primary" onclick="sbOpen(window._sbLastOpts)">再来一组</button>
+      <button class="btn" onclick="sbCfgOpen()">🧩 组句配置</button>
+      <button class="btn" onclick="bkQuizQuit()">返回书架</button>
+    </div>
+    <div style="margin-top:14px"><b>答题回顾</b></div>
+    ${sbQuiz.qs.map((q,i)=>{
+      const a=sbQuiz.ans[i]||{ok:false};
+      if(q.qtype==='pairs')return `<div class="quiz-rev">${a.ok?'✅':'❌'} <b>词·读音配对</b> <span class="muted">${q.pairs.map(p=>esc(p.w)).join('、')}</span></div>`;
+      const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
+      return `<div class="quiz-rev">
+        <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span>${q.alt_count>1?`<span class="muted" style="font-size:12px">（${q.alt_count} 种合法语序）</span>`:''}${q.swap?'<span class="muted" style="font-size:12px">（语料变体题）</span>':''}</div>
+        <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
+      </div>`;}).join('')}
+  </div>`;
+  window.scrollTo(0,0);
+}
+/* ---------- 组句配置面板（mode 与 level 两条独立轴 + 题型占比 + 干扰/换词/判卷） ---------- */
+async function sbCfgOpen(){
+  const c=await sbCfgLoad(true);
+  const st=(c._stats||[]).slice(-7);
+  const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
+  bkModal(`
+    <div class="row" style="justify-content:space-between"><b>🧩 组句练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">「初级/高级模式」与「N 级难度」是<b>两条独立轴</b>：模式决定词块形态（是否带混淆干扰、是否语料换词），难度决定选句的语法级别，可自由组合。</div>
+    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+      <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="sbcOn" ${c.enabled!==false?'checked':''}><span>开启组句练习</span></label>
+      <span class="muted">模式（题目形态）</span><select id="sbcMode">
+        <option value="basic" ${c.mode!=='advanced'?'selected':''}>初级 —— 只给所需词块（默认语料换词变体）</option>
+        <option value="advanced" ${c.mode==='advanced'?'selected':''}>高级 —— 混入干扰词块（时态变形/句外词/换助词）</option></select>
+      <span class="muted">难度（句子选材）</span><select id="sbcLevel">
+        ${SB_LV.map(l=>`<option value="${l}" ${c.level===l?'selected':''}>${l==='any'?'不限（随机）':l+' 级语法句'}</option>`).join('')}</select>
+      <span class="muted">题源</span><select id="sbcScope">
+        <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
+        <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
+        <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
+      <span class="muted">每组题数</span><input id="sbcN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
+      <span class="muted">题型占比</span><div class="row" style="gap:8px">组句 <input id="sbcTArr" type="number" min="0" max="100" value="${(c.types||{}).arrange??80}" style="width:64px">% ／ 配对 <input id="sbcTPair" type="number" min="0" max="100" value="${(c.types||{}).pairs??20}" style="width:64px">%</div>
+      <span class="muted">词块数范围</span><div class="row" style="gap:8px"><input id="sbcMinT" type="number" min="2" max="6" value="${c.min_tiles||3}" style="width:64px"> ～ <input id="sbcMaxT" type="number" min="3" max="14" value="${c.max_tiles||9}" style="width:64px"> 块</div>
+      <span class="muted">干扰块（高级）</span><div class="row" style="gap:8px"><input id="sbcDN" type="number" min="0" max="6" value="${c.distractors??3}" style="width:64px"> 个
+        <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态变形</span></label>
+        <label class="advtog"><input type="checkbox" id="sbcDP" ${(c.distractor_kinds||{}).particle!==false?'checked':''}><span>换助词</span></label>
+        <label class="advtog"><input type="checkbox" id="sbcDW" ${(c.distractor_kinds||{}).vocab!==false?'checked':''}><span>句外词</span></label></div>
+      <span class="muted">多答案（高级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcAlt" ${c.alt_answers!==false?'checked':''}><span>槽位可互换名词（任选其一均判对）</span></label>最多 <input id="sbcAltN" type="number" min="1" max="4" value="${c.alt_max||2}" style="width:64px"> 个</div>
+      <span class="muted">语料换词（初级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcSwap" ${c.swap!==false?'checked':''}><span>开启</span></label>概率 <input id="sbcSwapP" type="number" min="0" max="100" value="${Math.round((c.swap_prob??0.35)*100)}" style="width:64px">%</div>
+      <span class="muted">判卷严格质检</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="sbcStrict" ${c.strict_check!==false?'checked':''}><span>出题时枚举全部合法语序并逐句语法质检（推荐）</span></label>
+      <span class="muted">词块注音</span><select id="sbcRuby">
+        <option value="basic" ${c.show_furigana==='basic'||!c.show_furigana?'selected':''}>仅初级模式显示</option>
+        <option value="always" ${c.show_furigana==='always'?'selected':''}>始终显示</option>
+        <option value="never" ${c.show_furigana==='never'?'selected':''}>从不显示</option></select>
+    </div>
+    <div class="muted" style="margin-top:10px;font-size:12.5px">稳健判卷：日语格成分（〜は/〜が/〜を/〜に/〜で、时间词、副词）句内可自由换序 —— 所有语法正确的语序都判对；干扰块经等价性过滤（は↔が、に↔へ 这类意义不变的替换绝不出现），用错必然可判。</div>
+    ${stHTML}
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="sbCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`,660);
+}
+async function sbCfgSave(){
+  const body={enabled:$('#sbcOn').checked,mode:$('#sbcMode').value,level:$('#sbcLevel').value,
+    scope:$('#sbcScope').value,count:parseInt($('#sbcN').value)||6,
+    types:{arrange:parseInt($('#sbcTArr').value)||0,pairs:parseInt($('#sbcTPair').value)||0},
+    min_tiles:parseInt($('#sbcMinT').value)||3,max_tiles:parseInt($('#sbcMaxT').value)||9,
+    distractors:isNaN(parseInt($('#sbcDN').value))?3:parseInt($('#sbcDN').value),
+    distractor_kinds:{verb_form:$('#sbcDV').checked,particle:$('#sbcDP').checked,vocab:$('#sbcDW').checked},
+    alt_answers:$('#sbcAlt').checked,alt_max:parseInt($('#sbcAltN').value)||2,
+    swap:$('#sbcSwap').checked,swap_prob:(parseInt($('#sbcSwapP').value)||0)/100,
+    strict_check:$('#sbcStrict').checked,show_furigana:$('#sbcRuby').value};
+  try{
+    const r=await api('/api/builder/cfg',{method:'POST',body:JSON.stringify(body)});
+    sbCfgCache=r.cfg;bkModalClose();toast('组句配置已保存');
+  }catch(e){toast('保存失败：'+e);}
+}
 
 /* ---------- v15 出题配置面板（多源占比+自动调节+记忆+难度过滤+预览+导入导出） ---------- */
 let _qcfg = null;

@@ -17,8 +17,43 @@ import structsim
 import textbook
 import edu_psychology
 import ai_translate
+import sentence_builder
 
 app = Flask(__name__, static_folder='static')
+
+# ---------------------------------------------------------------
+# v20 性能：JSON/文本响应 gzip 压缩（零依赖，纯标准库）。
+# 单曲 tokens ≈60KB → 压缩后 ≈8-10KB，移动网络下加载明显提速。
+# ---------------------------------------------------------------
+import gzip as _gzip
+
+_GZIP_TYPES = ('application/json', 'text/html', 'text/plain',
+               'text/css', 'application/javascript', 'text/javascript')
+
+
+@app.after_request
+def _gzip_response(resp):
+    try:
+        if (resp.direct_passthrough
+                or resp.status_code < 200 or resp.status_code >= 300
+                or 'Content-Encoding' in resp.headers
+                or 'gzip' not in (request.headers.get('Accept-Encoding') or '').lower()
+                or not resp.content_type
+                or not resp.content_type.startswith(_GZIP_TYPES)):
+            return resp
+        data = resp.get_data()
+        if len(data) < 1024:          # 小响应压缩得不偿失
+            return resp
+        gz = _gzip.compress(data, compresslevel=5)
+        if len(gz) >= len(data):
+            return resp
+        resp.set_data(gz)
+        resp.headers['Content-Encoding'] = 'gzip'
+        resp.headers['Content-Length'] = str(len(gz))
+        resp.headers.setdefault('Vary', 'Accept-Encoding')
+    except Exception:
+        pass                          # 压缩失败绝不影响正常响应
+    return resp
 db.init_db()
 
 # ---------- 版本信息（用于前端"关于"界面核对缓存是否为新版） ----------
@@ -558,8 +593,18 @@ def api_song_get(sid):
     row = db.get_song(sid)
     if not row:
         return jsonify({'error': 'not found'}), 404
-    row['tokens'] = ktv.ensure_seg(row) if row['tokens'] else []
+    # 引擎版本对齐：老引擎注音自动惰性重注回写（首次打开 ~20ms，之后走缓存）
+    row['tokens'], row['anno_ver'] = ktv.ensure_fresh(row) if row['tokens'] else ([], row.get('anno_ver') or 0)
     return jsonify(row)
+
+
+@app.route('/api/songs/<int:sid>/study')
+def api_song_study(sid):
+    """v20 歌曲学习档案：歌内汉字/词汇 vs SRS 学习进度（覆盖率 + 生字生词优先级）。"""
+    row = db.get_song(sid)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(ktv.song_study(row))
 
 
 @app.route('/api/songs/search')
@@ -593,7 +638,8 @@ def api_songs_reannotate():
     n = 0
     for r in rows:
         tokens, kc = ktv.annotate_lyrics(r['lyrics'])
-        db.update_song(r['id'], lyrics=r['lyrics'], tokens=tokens, kanji_count=kc)
+        db.update_song(r['id'], lyrics=r['lyrics'], tokens=tokens, kanji_count=kc,
+                       anno_ver=ktv.ANNO_VER)
         n += 1
     db.log('song', f'全部歌词重新注音（{n}首）')
     return jsonify({'reannotated': n})
@@ -619,7 +665,7 @@ def api_songs_import():
             skipped.append(p['title'])
             continue
         tokens, kcount = ktv.annotate_lyrics(p['lyrics'])
-        sid = db.add_song(p['title'], p['artist'], p['lyrics'], tokens, kcount)
+        sid = db.add_song(p['title'], p['artist'], p['lyrics'], tokens, kcount, anno_ver=ktv.ANNO_VER)
         db.log('song', f'导入歌词《{p["title"]}》（{kcount}个汉字）')
         created.append({'id': sid, 'title': p['title']})
     return jsonify({'created': created, 'skipped': skipped})
@@ -641,7 +687,7 @@ def api_song_update(sid):
             return jsonify({'error': '歌词不能为空'}), 400
         tokens, kcount = ktv.annotate_lyrics(lyrics)
         db.update_song(sid, title=title, artist=artist, lyrics=lyrics,
-                       tokens=tokens, kanji_count=kcount)
+                       tokens=tokens, kanji_count=kcount, anno_ver=ktv.ANNO_VER)
         db.log('song', f'编辑歌词《{title}》')
     else:
         db.update_song(sid, title=title, artist=artist)
@@ -1063,6 +1109,57 @@ def api_book_cloze_answer():
     d = request.json or {}
     return jsonify(textbook.record_cloze(d.get('results') or []))
 
+
+# ================================================================
+# 组句练习（多邻国式拼句，sentence_builder v1）
+# ================================================================
+
+@app.route('/api/builder/cfg')
+def api_builder_cfg_get():
+    """组句练习配置（mode 初级/高级 与 level N级难度 两条独立轴）"""
+    cfg = sentence_builder.builder_cfg()
+    return jsonify({'ok': True, 'cfg': cfg,
+                    'stats': sentence_builder.builder_stats()})
+
+
+@app.route('/api/builder/cfg', methods=['POST'])
+def api_builder_cfg_set():
+    """保存组句练习配置（白名单键 + 边界修正）"""
+    cfg = sentence_builder.save_builder_cfg(request.json or {})
+    return jsonify({'ok': True, 'cfg': cfg})
+
+
+@app.route('/api/builder/quiz', methods=['POST'])
+def api_builder_quiz():
+    """生成一组组句/配对题；mode、level、scope、count 可临时覆盖配置"""
+    d = request.json or {}
+    return jsonify(sentence_builder.make_quiz(
+        book_ids=d.get('book_ids'), count=d.get('count'),
+        mode=d.get('mode'), level=d.get('level'), scope=d.get('scope')))
+
+
+@app.route('/api/builder/check', methods=['POST'])
+def api_builder_check():
+    """稳健判卷：多种语法正确语序均判对，并返回结构化反馈"""
+    d = request.json or {}
+    return jsonify(sentence_builder.check_arrangement(
+        d.get('spec') or {}, d.get('order') or []))
+
+
+@app.route('/api/builder/answer', methods=['POST'])
+def api_builder_answer():
+    """记录一组答题结果（按日 + 题型/模式/级别 细分统计）"""
+    d = request.json or {}
+    return jsonify(sentence_builder.record_results(d.get('results') or []))
+
+
+@app.route('/api/builder/stats')
+def api_builder_stats():
+    """最近 N 天组句练习统计"""
+    days = _num(request.args.get('days'), 14, 1, 90)
+    return jsonify({'ok': True, 'stats': sentence_builder.builder_stats(days)})
+
+
 # ================================================================
 # 教育心理学深度模块 (v16) - 完整教育心理学整合
 # ================================================================
@@ -1302,7 +1399,7 @@ def api_import():
             song_skip += 1
             continue
         tokens, kc = ktv.annotate_lyrics(lyrics)
-        db.add_song(title or '未命名歌曲', r.get('artist') or '', lyrics, tokens, kc)
+        db.add_song(title or '未命名歌曲', r.get('artist') or '', lyrics, tokens, kc, anno_ver=ktv.ANNO_VER)
         song_add += 1
     # 3) SRS 进度合并
     srs_add = srs_merge = 0
