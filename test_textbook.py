@@ -158,6 +158,36 @@ per_lesson = [l['kanji'] for l in det['lessons_list']]
 check(sum(per_lesson) == 14 and all(x > 0 for x in per_lesson),
       f'每课字数合计 14 {[(l["kanji"], l["title"]) for l in det["lessons_list"]]}')
 
+# 单本完整课本导出/导入：课程、译文、元数据、进度及计划均可迁移；同名原位更新。
+print('== 4b. 单本完整课本导出 / 导入 ==')
+_, b_rows = db.list_book_sentences(idB, per=100)
+b_sid = b_rows[0]['id']
+db.update_sentence(b_sid, translation='去赏花。', translation_source='human')
+db.set_book_progress(idB, '花', 'done', '已掌握', 'kanji')
+with db.get_conn() as c:
+    c.execute("INSERT INTO book_plan(book_id,day,is_new,kanji,done,created_at,kind) "
+              "VALUES(?,?,?,?,?,?,?)", (idB, '2026-09-27', 1, '花', 1, 1.0, 'kanji'))
+r = client.get(f'/api/books/{idB}/export')
+check(r.status_code == 200 and 'attachment' in (r.headers.get('Content-Disposition') or ''),
+      '完整课本作为 JSON 附件导出')
+pkg = r.get_json()
+check(pkg['kind'] == textbook.BOOK_PACKAGE_KIND and pkg['version'] == 1,
+      f'课本包类型与版本有效：{pkg.get("kind")}/{pkg.get("version")}')
+check(pkg['book']['lessons'][0]['sentences'][0]['translation'] == '去赏花。'
+      and pkg['book']['progress'][0]['kanji'] == '花' and pkg['book']['plan'][0]['kanji'] == '花',
+      '导出包含译文、进度与计划')
+r = client.post('/api/books/package/import', json=pkg)
+imp = r.get_json()
+check(r.status_code == 200 and imp['ok'] and imp['book']['id'] == idB,
+      f'同名完整课本原位导入：{imp}')
+check(db.list_book_progress(idB)[0]['state'] == 'done', '导入恢复本书进度')
+with db.get_conn() as c:
+    restored = c.execute('SELECT COUNT(*) n FROM book_plan WHERE book_id=? AND kanji=?',
+                         (idB, '花')).fetchone()['n']
+check(restored == 1, '导入恢复本书计划且不重复')
+r = client.post('/api/books/package/import', json={'kind': 'wrong', 'version': 1})
+check(r.status_code == 400 and 'error' in r.get_json(), '拒绝非课本 JSON 文件')
+
 # ============ 5. 截止日计划（核心算法） ============
 print('== 5. 学习计划：曲线走完 + 每日容量 ==')
 r = client.post('/api/books/plan', json={'book_ids': [idA], 'deadline': '2026-10-15',

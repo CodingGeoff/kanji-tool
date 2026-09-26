@@ -506,6 +506,133 @@ def import_book(book, deadline=None, minutes_per_day=30, target_stage=7,
             'kanji': stat['kanji'], 'words': stat['words']}
 
 
+BOOK_PACKAGE_KIND = 'kanji-tool-textbook'
+BOOK_PACKAGE_VERSION = 1
+
+
+def export_book_package(book_id):
+    """导出一本可独立迁移的完整课本。
+
+    包含书籍元数据、课程顺序、原句/译文/原始文本、本书进度标记和排程；
+    不导出派生的字词索引与注音，导入时用当前引擎重新生成，避免旧格式污染。
+    """
+    book = db.get_book(book_id)
+    if not book:
+        return None
+    with db.get_conn() as c:
+        lessons = [dict(r) for r in c.execute(
+            'SELECT id,idx,title FROM book_lessons WHERE book_id=? ORDER BY idx,id',
+            (book_id,)).fetchall()]
+        out_lessons = []
+        for lesson in lessons:
+            sentences = [dict(r) for r in c.execute('''
+                SELECT s.text,s.translation,s.orig_text,s.translation_source
+                FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id
+                WHERE bs.book_id=? AND bs.lesson_id=? ORDER BY bs.idx,bs.id''',
+                (book_id, lesson['id'])).fetchall()]
+            out_lessons.append({'title': lesson.get('title') or '',
+                                'sentences': sentences})
+        progress = [dict(r) for r in c.execute(
+            'SELECT kanji,kind,state,note FROM book_progress WHERE book_id=? '
+            'ORDER BY added_at,rowid', (book_id,)).fetchall()]
+        plan = [dict(r) for r in c.execute(
+            'SELECT day,is_new,kanji,done,kind FROM book_plan WHERE book_id=? '
+            'ORDER BY day,id', (book_id,)).fetchall()]
+    meta_keys = ('title', 'author', 'level', 'note', 'deadline', 'minutes_per_day',
+                 'target_stage', 'active', 'sort_order')
+    return {'app': 'kanji-tool', 'kind': BOOK_PACKAGE_KIND,
+            'version': BOOK_PACKAGE_VERSION, 'exported_at': time.time(),
+            'book': {**{k: book.get(k) for k in meta_keys},
+                     'lessons': out_lessons, 'progress': progress, 'plan': plan}}
+
+
+def import_book_package(package):
+    """导入 :func:`export_book_package` 生成的单课本 JSON；同名书原位更新。"""
+    if not isinstance(package, dict) or package.get('kind') != BOOK_PACKAGE_KIND:
+        raise ValueError('不是 kanji-tool 完整课本文件')
+    try:
+        version = int(package.get('version', 0))
+    except (TypeError, ValueError):
+        version = 0
+    if version != BOOK_PACKAGE_VERSION:
+        raise ValueError(f'不支持的课本文件版本：{version}')
+    raw = package.get('book')
+    if not isinstance(raw, dict):
+        raise ValueError('课本文件缺少 book 数据')
+    title = str(raw.get('title') or '').strip()
+    lessons_raw = raw.get('lessons')
+    if not title or len(title) > 200 or not isinstance(lessons_raw, list):
+        raise ValueError('课本标题或课程数据无效')
+    if len(lessons_raw) > 5000:
+        raise ValueError('课程数量超过上限')
+
+    lessons, sentence_meta, total = [], [], 0
+    for i, lesson in enumerate(lessons_raw):
+        if not isinstance(lesson, dict):
+            raise ValueError(f'第 {i + 1} 课格式无效')
+        rows = lesson.get('sentences') or []
+        if not isinstance(rows, list):
+            raise ValueError(f'第 {i + 1} 课句子格式无效')
+        texts = []
+        for item in rows:
+            item = {'text': item} if isinstance(item, str) else item
+            if not isinstance(item, dict):
+                raise ValueError('句子格式无效')
+            text = str(item.get('text') or '').strip()
+            if not text or len(text) > 10000:
+                raise ValueError('课本中包含空句子或超长句子')
+            texts.append(text)
+            sentence_meta.append((text, item))
+            total += 1
+            if total > 200000:
+                raise ValueError('课本句子数量超过上限')
+        lessons.append({'title': str(lesson.get('title') or f'第{i + 1}課')[:500],
+                        'sentences': texts})
+
+    minutes = max(1, min(int(raw.get('minutes_per_day') or DEFAULT_MINUTES), 600))
+    target = max(1, min(int(raw.get('target_stage') or 7), 10))
+    result = import_book({'title': title, 'author': str(raw.get('author') or '')[:500],
+                          'level': str(raw.get('level') or '')[:50], 'lessons': lessons},
+                         deadline=str(raw.get('deadline') or '').strip() or None,
+                         minutes_per_day=minutes, target_stage=target,
+                         note=str(raw.get('note') or '')[:10000])
+    bid = result['id']
+    db.update_book(bid, active=1 if raw.get('active', 1) else 0,
+                   sort_order=int(raw.get('sort_order') or 0),
+                   minutes_per_day=minutes, target_stage=target)
+
+    # 恢复译文；句子在全局语料中去重，所以按文本定位当前 sentence id。
+    for text, item in sentence_meta:
+        tr = item.get('translation')
+        orig = item.get('orig_text')
+        source = item.get('translation_source')
+        with db.get_conn() as c:
+            row = c.execute('SELECT id FROM sentences WHERE text=?', (text,)).fetchone()
+        if row:
+            db.update_sentence(row['id'], translation=tr, orig_text=orig,
+                               translation_source=source)
+
+    db.reset_book_plan_and_progress(bid)
+    for mark in raw.get('progress') or []:
+        if not isinstance(mark, dict) or not str(mark.get('kanji') or '').strip():
+            continue
+        state = mark.get('state') if mark.get('state') in ('learning', 'done', 'skip') else 'learning'
+        db.set_book_progress(bid, str(mark['kanji'])[:200], state,
+                             str(mark.get('note') or '')[:2000], mark.get('kind'))
+    now = time.time()
+    with db.get_conn() as c:
+        for item in raw.get('plan') or []:
+            if not isinstance(item, dict) or not item.get('day') or not item.get('kanji'):
+                continue
+            c.execute('INSERT INTO book_plan(book_id,day,is_new,kanji,done,created_at,kind) '
+                      'VALUES(?,?,?,?,?,?,?)',
+                      (bid, str(item['day'])[:10], 1 if item.get('is_new', 1) else 0,
+                       str(item['kanji'])[:200], 1 if item.get('done') else 0, now,
+                       item.get('kind') if item.get('kind') in ('kanji', 'words') else 'kanji'))
+    db.log('book', f'导入完整课本《{title}》：{result["lessons"]} 课 · {result["sentences"]} 句')
+    return result
+
+
 def rebuild_book_index(book_id):
     """按课本顺序重建「字 / 词」索引：字按首次出现排序（= 教材教学顺序），词同理。"""
     _total, rows = db.list_book_sentences(book_id, per=1000000)

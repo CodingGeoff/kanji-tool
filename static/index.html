@@ -556,6 +556,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
           <button class="btn" onclick="aiItemsOpen()" title="AI 起草听力/阅读理解题草稿箱：批量生成 + 人工复核后才能进入练习">🤖 AI 出题草稿箱</button>
           <button class="btn" onclick="bkCfgOpen()" title="例句来源/数量、语法难度下限、挖空范围/题数">⚙ 学习配置</button>
           <button class="btn" onclick="bkTogglePlanForm()" title="按截止日自动排程：每天学什么、复习什么">📅 学习计划</button>
+          <button class="btn" onclick="bkPackagePick()" title="导入由本工具导出的单本完整课本 JSON">📥 导入完整课本</button>
+          <input id="bkPackageFile" type="file" accept=".json,.kanji-book.json,application/json" class="hidden" onchange="bkPackageImport(this)">
           <button class="btn primary" onclick="bkToggleImport()">＋ 制作课本</button>
         </div>
       </div>
@@ -2068,6 +2070,31 @@ async function bkDel(id){
   await api('/api/books/'+id,{method:'DELETE'});
   bkSel.delete(id);toast('已删除');loadBooks();
 }
+function bkPackageExport(id){
+  if(!id)return;
+  location.href=`/api/books/${id}/export`;
+}
+function bkPackagePick(){
+  const el=$('#bkPackageFile');if(el){el.value='';el.click();}
+}
+let _bkPackageImporting=false;
+async function bkPackageImport(input){
+  const file=input&&input.files&&input.files[0];
+  if(!file||_bkPackageImporting)return;
+  if(file.size>20*1024*1024){toast('课本文件过大（最多 20MB）');input.value='';return;}
+  _bkPackageImporting=true;
+  try{
+    let data;
+    try{data=JSON.parse(await file.text());}catch(_){throw new Error('JSON 文件无法解析');}
+    toast('正在导入完整课本并重建注音、字词索引…');
+    const d=await api('/api/books/package/import',{method:'POST',body:JSON.stringify(data)});
+    if(d.error)throw new Error(d.error);
+    const b=d.book||{};
+    toast(`已导入《${b.title||'课本'}》：${b.lessons||0} 课 · ${b.sentences||0} 句`);
+    await loadBooks();
+  }catch(e){toast('导入失败：'+(e.message||e));}
+  finally{_bkPackageImporting=false;if(input)input.value='';}
+}
 async function bkAnalyze(){
   const text=$('#bkText').value;
   if(!text.trim())return toast('先粘贴文本');
@@ -2210,6 +2237,7 @@ function bkRenderDetail(){
          <button class="btn mini ${rubyOn?'green':''}" id="bkRubyBtn" onclick="bkToggleRubyAll()" title="一键显示/隐藏全部汉字读音">🔤 ${rubyOn?'隐藏读音':'显示读音'}</button>
          <button class="btn mini" onclick="bkGrammarOpen(bkCur.id)" title="抽取本书句型（按配置过滤太简单的级别）">语法点</button>
          <button class="btn mini" onclick="bkEditMeta()">编辑</button>
+         <button class="btn mini" onclick="bkPackageExport(b.id)" title="导出本书全部课程、原句、译文、配置、进度与计划">📤 导出本书</button>
          <button class="btn mini" onclick="bkReindex()" title="句子变动后重建字/词索引">重建索引</button>
          <button class="btn mini danger" onclick="bkReset()" title="清空本书计划与标记（不影响全局记忆）">重置进度</button>
        </div>
@@ -3132,7 +3160,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从换了一个真实语料词的相似句里挑出原句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从四条长度、字面相近的真实语料原句中挑出录音句；绝不机械换词造句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
     <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
