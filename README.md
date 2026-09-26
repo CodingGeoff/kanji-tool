@@ -92,6 +92,36 @@ python dbtool.py verify     # 合并/提交后校验：完整性、孤儿索引�
 
 完整原理、合并规则与 FAQ 见 **`DATABASE.md`**；回归测试：`python test_dbtool.py`。
 
+## 综合能力测评（研究驱动）
+
+在原有挖空/组句基础练习之外，新增 `proficiency_exam.py` 的证据中心测评蓝图：
+`foundation`（保留基础算法）、`proficiency`（N级综合）与 `academic`（专业·学术）。
+综合卷按明确比例混合语境语法、汉字读音和全文意义理解，每题携带能力领域与证据声明；
+结果按题型/领域诊断，不把未经大样本等值的正确率伪装成官方 JLPT 分数。
+正式练习采用服务端答案会话：`POST /api/exam/start` → `POST /api/exam/submit`，避免浏览器自报正确；
+`GET /api/exam/item-analysis` 聚合选项频次、难度、耗时和信心，为预测后淘汰无效干扰项提供证据。
+另有 N3–N1 写作/口语真实任务与分析量规：`GET /api/performance/tasks`、
+`POST /api/performance/generate`、`POST /api/performance/rate`；不以选择题冒充产出能力。
+多题共用篇章题库支持 `draft → reviewed → approved → retired` 生命周期及六项强制审核，
+接口：`GET /api/assessment/passages`、`POST /api/assessment/passages/generate`、
+`POST /api/assessment/passages/<id>/review`。原创种子题默认只允许试测，绝不冒充官方真题。
+完整研究依据见 [`ASSESSMENT_DESIGN.md`](ASSESSMENT_DESIGN.md)；题目实际来源、版权边界、
+覆盖矩阵和质量保证流程见 [`QUESTION_SOURCE_POLICY.md`](QUESTION_SOURCE_POLICY.md)。
+测试：`python -m unittest test_proficiency_exam.py test_performance_tasks.py test_assessment_bank.py`。
+
+## 大规模开放语料分片
+
+新增 `corpus_shards.py`：大型语料不再继续塞入可变的 `kanji.db`，而是写入目标 48 MiB、
+硬上限 80 MiB 的不可变内容寻址 SQLite 分片；密封后按文件 SHA-256 命名，多设备合并等于
+文件集合求并，索引与 manifest 均可重建。支持跨任意数量分片联合查询与文本 UID 去重。
+NHK/NHK EASY 因官方条款不允许整库正文复制，注册为 `link_only` 并由代码硬拒绝正文导入；
+Tatoeba、Wikimedia 官方 dump 和逐作品确认公版的青空文库作为批量语料来源。
+`federated_search.py` 已把主库与分片做候选召回、统一打分、内容去重和来源合并；现有 RAG
+也会把只读分片作为 `web` 通道参与排序。调试接口：`GET /api/corpus/federated-search?q=...`；
+健康检查：`GET /api/corpus/shards/status?verify=1`。
+完整下载、许可、更新、同步、联合检索和精排方案见 [`CORPUS_ARCHITECTURE.md`](CORPUS_ARCHITECTURE.md)。
+测试：`python -m unittest test_corpus_shards.py test_federated_search.py test_rag_shards.py`。
+
 ## 文件结构
 - `app.py` — Flask 后端 + 后台抓取线程
 - `furigana.py` — 注音引擎（可独立运行 `python3 furigana.py` 自测）

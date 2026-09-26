@@ -23,3 +23,7 @@ _dbbackup/
 # Render 构建时克隆仓库、直接读这个文件；忽略掉它，云端只会拿到空库
 # （语料/课本/复习进度全部丢失）。正确做法见 DATABASE.md。
 !kanji.db
+
+# 大规模开放语料：不可变内容寻址分片由 corpus_shards.py 管理并通过外部存储同步。
+# 这些文件通常数 GB，不能提交 Git；manifest 可从分片扫描重建。
+corpus_data/
