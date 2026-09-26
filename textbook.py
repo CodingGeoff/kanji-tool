@@ -1082,6 +1082,88 @@ def origin_label(source, book_title=None, lesson_title=None):
     return SOURCE_LABELS.get(source or '', f'🌐 {source or "语料库"}')
 
 
+# ================================================================
+# 题源解析（组句/挖空/听力等所有「按课本/语料库」出题的题型共用一套逻辑）
+# ----------------------------------------------------------------
+# 历史问题：多个出题模块各自写了一份「scope=='book' 但 book_ids 为空」的
+# 处理，且大多在这种情况下悄悄把候选池换成全库语料，却不修正返回的 scope
+# 字段 —— 前端于是显示「题源：仅课本」，实际出的却是语料库句子，用户完全
+# 无法察觉。这里统一成一条清晰规则：
+#   1. book_ids 会先按「该 id 在 books 表中真实存在」做校验，无效 id 一律丢弃；
+#   2. scope 为 book/mixed 且没有给出（有效）book_ids 时，只要用户书架里
+#      有课本，就自动改用「书架里全部课本」——这才是「仅课本」最自然的默认
+#      含义，而不是悄悄换成语料库；
+#   3. 只有当 scope=='book' 且用户书架里一本课本都没有时，才诚实降级为
+#      corpus，并在返回值里如实标注 scope 和原因，绝不让 book 挂羊头卖狗肉；
+#   4. 调用方必须把返回的 scope（而非调用前的 scope）写回接口响应，
+#      前端据此显示真实题源，不能自欺欺人。
+# ================================================================
+def resolve_book_scope(scope, book_ids):
+    """统一解析出题题源。
+
+    返回 dict：
+      scope       —— 修正后的真实 scope（corpus/book/mixed/lyric）
+      ids         —— 校验后确实存在的课本 id 列表
+      auto_all    —— 是否因为「没显式选课本」而自动使用了全部课本
+      note        —— None，或 'no_books_fallback_corpus'（书架为空被迫退回全库）
+    """
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else 'corpus'
+    raw_ids = []
+    for b in (book_ids or []):
+        try:
+            raw_ids.append(int(b))
+        except (TypeError, ValueError):
+            continue
+    ids, auto_all, note = raw_ids, False, None
+    if scope in ('book', 'mixed'):
+        try:
+            with db.get_conn() as c:
+                all_rows = c.execute('SELECT id, active FROM books').fetchall()
+        except Exception:
+            all_rows = []
+        valid = {r['id'] for r in all_rows}
+        active_ids = sorted(r['id'] for r in all_rows if r['active'])
+        ids = [i for i in raw_ids if i in valid]
+        if not ids:
+            # 未显式指定课本：默认用书架里「启用中」的全部课本（与 build_plan /
+            # make_cloze_multi 等既有逻辑保持一致），已归档/停用的课本不会被
+            # 悄悄拉进来搅乱题源。
+            all_ids = active_ids or sorted(valid)
+            if all_ids:
+                ids, auto_all = all_ids, True
+            elif scope == 'book':
+                scope, note = 'corpus', 'no_books_fallback_corpus'
+    return {'scope': scope, 'ids': ids, 'auto_all': auto_all, 'note': note}
+
+
+def fetch_book_sentence_rows(ids, need):
+    """按课本 id 分层随机取句（多课本组卷更稳健的关键）。
+
+    如果直接对多个课本 id 做一条 `WHERE book_id IN (...) ORDER BY RANDOM() LIMIT N`，
+    候选池会被句子基数最大的课本压倒性主导 —— 一本 800 句的课本和一本 40 句的课本
+    一起选，后者出现的概率几乎可以忽略。这里改成对每本课本独立限额随机抽样后再
+    合并打乱，保证每本被选中的课本都有公平的出场机会。
+    """
+    ids = [i for i in (ids or []) if isinstance(i, int)]
+    if not ids:
+        return []
+    per = max(3, math.ceil(need / len(ids)))
+    rows = []
+    try:
+        with db.get_conn() as c:
+            for bid in ids:
+                rows += [dict(r) for r in c.execute(
+                    'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
+                    'bs.book_id book_id, b.title book_title, l.title lesson_title '
+                    'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+                    'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
+                    'WHERE bs.book_id=? ORDER BY RANDOM() LIMIT ?', (bid, per)).fetchall()]
+    except Exception:
+        pass
+    random.shuffle(rows)
+    return rows
+
+
 def study_cfg():
     """学习配置（settings 表 JSON，所有环节的用户自定义项）"""
     cfg = dict(DEFAULT_CFG)
@@ -3683,24 +3765,18 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
     min_level = min_level or cfg.get('cloze_min_level', 'N4')
     count = max(1, min(int(count or cfg.get('cloze_per_day', 5)), 20))
     min_o = _lv(min_level)
-    ids = [int(b) for b in (book_ids or [])]
 
     need = min(count * 25, 200)
+    resolved = resolve_book_scope(scope, book_ids)
+    scope, ids = resolved['scope'], resolved['ids']
     if scope == 'book' and ids:
-        ph = ','.join('?' * len(ids))
-        with db.get_conn() as c:
-            rows = c.execute(
-                f'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
-                f'bs.book_id book_id, b.title book_title, l.title lesson_title '
-                f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
-                f'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
-                f'WHERE bs.book_id IN ({ph}) ORDER BY RANDOM() LIMIT ?',
-                ids + [need]).fetchall()
+        rows = fetch_book_sentence_rows(ids, need)
     else:
         scope = 'corpus'
         with db.get_conn() as c:
-            rows = c.execute('SELECT id sid, text text, translation translation, source source '
-                             'FROM sentences ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()
+            rows = [dict(r) for r in c.execute(
+                'SELECT id sid, text text, translation translation, source source '
+                'FROM sentences ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()]
 
     pool = []
     for r in rows:
@@ -3764,6 +3840,7 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
         if len(questions) >= count:
             break
     return {'ok': True, 'scope': scope, 'min_level': min_level,
+            'book_ids': ids, 'scope_auto_all': resolved['auto_all'], 'scope_note': resolved['note'],
             'count': len(questions), 'questions': questions,
             'short': len(questions) < count}
 
