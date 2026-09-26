@@ -17,6 +17,7 @@ import structsim
 import textbook
 import edu_psychology
 import ai_translate
+import sentence_builder
 
 app = Flask(__name__, static_folder='static')
 db.init_db()
@@ -1062,6 +1063,57 @@ def api_book_cloze_answer():
     """提交挖空练习结果（计入当日统计与历史）"""
     d = request.json or {}
     return jsonify(textbook.record_cloze(d.get('results') or []))
+
+
+# ================================================================
+# 组句练习（多邻国式拼句，sentence_builder v1）
+# ================================================================
+
+@app.route('/api/builder/cfg')
+def api_builder_cfg_get():
+    """组句练习配置（mode 初级/高级 与 level N级难度 两条独立轴）"""
+    cfg = sentence_builder.builder_cfg()
+    return jsonify({'ok': True, 'cfg': cfg,
+                    'stats': sentence_builder.builder_stats()})
+
+
+@app.route('/api/builder/cfg', methods=['POST'])
+def api_builder_cfg_set():
+    """保存组句练习配置（白名单键 + 边界修正）"""
+    cfg = sentence_builder.save_builder_cfg(request.json or {})
+    return jsonify({'ok': True, 'cfg': cfg})
+
+
+@app.route('/api/builder/quiz', methods=['POST'])
+def api_builder_quiz():
+    """生成一组组句/配对题；mode、level、scope、count 可临时覆盖配置"""
+    d = request.json or {}
+    return jsonify(sentence_builder.make_quiz(
+        book_ids=d.get('book_ids'), count=d.get('count'),
+        mode=d.get('mode'), level=d.get('level'), scope=d.get('scope')))
+
+
+@app.route('/api/builder/check', methods=['POST'])
+def api_builder_check():
+    """稳健判卷：多种语法正确语序均判对，并返回结构化反馈"""
+    d = request.json or {}
+    return jsonify(sentence_builder.check_arrangement(
+        d.get('spec') or {}, d.get('order') or []))
+
+
+@app.route('/api/builder/answer', methods=['POST'])
+def api_builder_answer():
+    """记录一组答题结果（按日 + 题型/模式/级别 细分统计）"""
+    d = request.json or {}
+    return jsonify(sentence_builder.record_results(d.get('results') or []))
+
+
+@app.route('/api/builder/stats')
+def api_builder_stats():
+    """最近 N 天组句练习统计"""
+    days = _num(request.args.get('days'), 14, 1, 90)
+    return jsonify({'ok': True, 'stats': sentence_builder.builder_stats(days)})
+
 
 # ================================================================
 # 教育心理学深度模块 (v16) - 完整教育心理学整合
