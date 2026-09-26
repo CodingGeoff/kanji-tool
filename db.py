@@ -212,6 +212,11 @@ def _migrate():
             updated_at REAL
         )''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title)')
+        # v20 注音引擎版本号：存量 tokens 落后于当前引擎时 get_song 惰性重注（见 ktv.ANNO_VER）
+        try:
+            c.execute('ALTER TABLE songs ADD COLUMN anno_ver INTEGER DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
         # 自建课本表（v11 老库升级补建）
         c.executescript(BOOK_DDL)
 
@@ -305,23 +310,25 @@ def sentence_exists(text):
 
 # ---------- KTV 歌曲 CRUD ----------
 
-def add_song(title, artist, lyrics, tokens, kanji_count):
+def add_song(title, artist, lyrics, tokens, kanji_count, anno_ver=0):
     now = time.time()
     with _lock, get_conn() as c:
         cur = c.execute(
-            'INSERT INTO songs(title,artist,lyrics,tokens,kanji_count,created_at,updated_at) '
-            'VALUES(?,?,?,?,?,?,?)',
+            'INSERT INTO songs(title,artist,lyrics,tokens,kanji_count,anno_ver,created_at,updated_at) '
+            'VALUES(?,?,?,?,?,?,?,?)',
             (title, artist or '', lyrics,
-             json.dumps(tokens, ensure_ascii=False), kanji_count, now, now))
+             json.dumps(tokens, ensure_ascii=False), kanji_count, int(anno_ver), now, now))
         return cur.lastrowid
 
 
-def update_song(sid, title=None, artist=None, lyrics=None, tokens=None, kanji_count=None):
+def update_song(sid, title=None, artist=None, lyrics=None, tokens=None, kanji_count=None, anno_ver=None):
     with _lock, get_conn() as c:
         if title is not None:
             c.execute('UPDATE songs SET title=? WHERE id=?', (title, sid))
         if artist is not None:
             c.execute('UPDATE songs SET artist=? WHERE id=?', (artist, sid))
+        if anno_ver is not None:
+            c.execute('UPDATE songs SET anno_ver=? WHERE id=?', (int(anno_ver), sid))
         if lyrics is not None:
             c.execute('UPDATE songs SET lyrics=?, tokens=?, kanji_count=?, updated_at=? WHERE id=?',
                       (lyrics,
@@ -336,11 +343,15 @@ def delete_song(sid):
         c.execute('DELETE FROM songs WHERE id=?', (sid,))
 
 
-def update_song_tokens(sid, tokens):
-    """只更新 token（学习模式分词标记补算回写用）。"""
+def update_song_tokens(sid, tokens, anno_ver=None, kanji_count=None):
+    """只更新 token（分词标记补算 / 引擎版本升级重注回写用）。"""
     with _lock, get_conn() as c:
         c.execute('UPDATE songs SET tokens=? WHERE id=?',
                   (json.dumps(tokens, ensure_ascii=False), sid))
+        if anno_ver is not None:
+            c.execute('UPDATE songs SET anno_ver=? WHERE id=?', (int(anno_ver), sid))
+        if kanji_count is not None:
+            c.execute('UPDATE songs SET kanji_count=? WHERE id=?', (int(kanji_count), sid))
 
 
 def get_song(sid):

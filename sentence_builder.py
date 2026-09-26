@@ -74,7 +74,7 @@ DEFAULT_BUILDER_CFG = {
     'enabled': True,
     'mode': 'basic',            # basic=初级(无干扰) | advanced=高级(带混淆)
     'level': 'any',             # any | N5..N1  —— 句子选材难度，独立于 mode
-    'scope': 'corpus',          # corpus=全库语料 | book=仅课本 | mixed=课本优先
+    'scope': 'corpus',          # corpus=全库语料 | book=仅课本 | mixed=课本优先 | lyric=KTV歌词
     'count': 6,                 # 每组题数 (1-20)
     'types': {'arrange': 80, 'pairs': 20},   # 题型占比（自动归一）
     'min_tiles': 3,             # 组句题最少词块数
@@ -121,7 +121,7 @@ def _sanitize_cfg(cfg):
         cfg['mode'] = 'basic'
     if cfg.get('level') not in (['any'] + LEVELS):
         cfg['level'] = 'any'
-    if cfg.get('scope') not in ('corpus', 'book', 'mixed'):
+    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
         cfg['scope'] = 'corpus'
     try:
         cfg['count'] = max(1, min(int(cfg.get('count', 6)), 20))
@@ -996,6 +996,8 @@ def _fetch_pool(scope, book_ids, need):
                     ids + [need]).fetchall()]
         except Exception:
             pass
+    if scope == 'lyric':
+        rows += _lyric_pool(need)
     if scope == 'corpus' or scope == 'mixed' or (scope == 'book' and not ids):
         try:
             with db.get_conn() as c:
@@ -1007,7 +1009,43 @@ def _fetch_pool(scope, book_ids, need):
     return rows
 
 
+_LYRIC_KANA_RE = re.compile(r'[ぁ-ゖ]')
+_LYRIC_LATIN_RE = re.compile(r'[A-Za-z]')
+
+
+def _lyric_pool(need):
+    """v20 歌词语料域：KTV 歌曲的日文行 → 组句题源。
+
+    公平性自动成立：歌词行没有人工译文 → advanced 也零干扰（铁律兜底），
+    只考语序与多答案；语法门禁照常把关（歌词碎片行会被自然过滤）。
+    sid 置 None（歌词行不在 sentences 表，前端不显示收藏按钮），
+    去重用独立键 dedup，不与语料句混淆。
+    """
+    rows, seen = [], set()
+    try:
+        with db.get_conn() as c:
+            songs = c.execute('SELECT id, title, lyrics FROM songs').fetchall()
+    except Exception:
+        return rows
+    for s_ in songs:
+        for i, ln in enumerate((s_['lyrics'] or '').split('\n')):
+            t = ln.strip()
+            if (not t or not (6 <= len(t) <= 60)
+                    or not _LYRIC_KANA_RE.search(t)
+                    or _LYRIC_LATIN_RE.search(t)
+                    or t in seen):
+                continue
+            seen.add(t)
+            rows.append({'sid': None, 'dedup': f'L{s_["id"]}:{i}',
+                         'text': t, 'translation': None, 'source': 'lyric',
+                         'song_title': s_['title'], 'artist': ''})
+    random.shuffle(rows)
+    return rows[:need]
+
+
 def _origin(row):
+    if row.get('source') == 'lyric':
+        return f"🎵 《{row.get('song_title') or '歌词'}》"
     try:
         import textbook
         return textbook.origin_label(row.get('source'), row.get('book_title'),
@@ -1159,7 +1197,7 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
                 'count': 0, 'questions': []}
     mode = mode if mode in ('basic', 'advanced') else cfg['mode']
     level = level if level in (['any'] + LEVELS) else cfg['level']
-    scope = scope if scope in ('corpus', 'book', 'mixed') else cfg['scope']
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else cfg['scope']
     try:
         count = max(1, min(int(count), 20)) if count else cfg['count']
     except Exception:
@@ -1179,7 +1217,7 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
         for row in rows:
             if len(questions) >= n_arr:
                 break
-            if row.get('sid') in used_sid:
+            if (row.get('sid') or row.get('dedup')) in used_sid:
                 continue
             got = _build_arrange(row, cfg, mode, want)
             if isinstance(got, tuple):       # level 不匹配（供放宽重试）
@@ -1189,7 +1227,7 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
             if relax and level != 'any':
                 got['level_relaxed'] = True
                 relax_note = True
-            used_sid.add(row['sid'])
+            used_sid.add(row.get('sid') or row.get('dedup'))
             questions.append(got)
         if len(questions) >= n_arr or level == 'any':
             break

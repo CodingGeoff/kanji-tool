@@ -509,6 +509,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" id="ktvBarRow2" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center">
         <span class="muted" id="ktvMeta" style="font-size:12.5px"></span>
         <span style="flex:1"></span>
+        <button class="btn mini" onclick="ktvStudy()" title="这首歌的汉字/词汇 vs 我的学习进度：覆盖率、生字生词优先级、一键加入学习">📚 学习档案</button>
+        <button class="btn mini" onclick="ktvBuilder()" title="用本曲库歌词行出多邻国式组句题（歌词无译文，自动零干扰，纯考语序）">🧩 歌词组句</button>
         <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
         <button class="btn mini" onclick="ktvFont(2)" title="放大字号">A＋</button>
         <label class="advtog"><input type="checkbox" id="ktvRubyTog" checked onchange="ktvRender()"><span>注音</span></label>
@@ -1792,6 +1794,48 @@ function ktvLineTokens(){
 function ktvSegSave(){ localStorage.setItem('ktvSeg',$('#ktvSegTog').checked?'1':'0'); }
 function ktvToggleHdr(){ document.body.classList.toggle('showhdr'); }  // 沉浸模式下唤出/隐藏顶栏
 function ktvToggleBar(){ $('#ktvBar').classList.toggle('hidden'); }   // ☰ 悬浮按钮：展开/收起歌词工具栏
+async function ktvStudy(){
+  if(!ktvCur) return;
+  const m=bkModal('<b>📚 学习档案加载中…</b>',680);
+  let st; try{ st=await api('/api/songs/'+ktvCur.id+'/study'); }catch(e){ return m.querySelector('.card').innerHTML='<div class="muted">加载失败</div>'; }
+  const bar=(pct)=>`<div style="background:var(--line);border-radius:6px;height:10px;overflow:hidden;flex:1"><div style="width:${pct}%;height:100%;background:${pct>=70?'#7cb342':pct>=30?'var(--gold)':'#e57373'}"></div></div>`;
+  const chipK=x=>`<span class="tag" style="cursor:default" title="歌内 ${x.song_freq} 次 · 语料 ${x.corpus_freq} 句">${esc(x.k)}</span>`;
+  const chipW=x=>`<span class="tag" style="cursor:default" title="歌内 ${x.song_freq} 次">${esc(x.w)}${x.r&&x.r!==x.w?`<small style="opacity:.7"> ${esc(x.r)}</small>`:''}</span>`;
+  const K=st.kanji,W=st.words;
+  m.querySelector('.card').innerHTML=`
+    <div class="row" style="justify-content:space-between"><b>📚 《${esc(ktvCur.title)}》学习档案</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div style="margin-top:10px">
+      <div class="row" style="align-items:center;gap:10px"><span style="min-width:120px">汉字覆盖 ${K.learned}/${K.total}（${K.coverage}%）</span>${bar(K.coverage)}</div>
+      <div class="row" style="align-items:center;gap:10px;margin-top:6px"><span style="min-width:120px">词汇覆盖 ${W.learned}/${W.total}（${W.coverage}%）</span>${bar(W.coverage)}</div>
+    </div>
+    ${K.new.length?`<div style="margin-top:12px"><b style="font-size:13.5px">✍️ 生字 ${K.total-K.learned} 个（按歌内频次×语料常用度排序，先学最值的）</b>
+      <div class="row" style="flex-wrap:wrap;gap:5px;margin-top:6px">${K.new.map(chipK).join('')}</div>
+      <button class="btn mini" style="margin-top:8px" onclick="ktvStudyAdd('kanji',this)">＋ 全部加入学习（${Math.min(K.new.length,60)}字）</button></div>`
+      :'<div class="muted" style="margin-top:12px">🎉 这首歌的汉字你全学过了！</div>'}
+    ${W.new.length?`<div style="margin-top:12px"><b style="font-size:13.5px">📖 生词 ${W.total-W.learned} 个</b>
+      <div class="row" style="flex-wrap:wrap;gap:5px;margin-top:6px">${W.new.slice(0,40).map(chipW).join('')}</div>
+      <button class="btn mini" style="margin-top:8px" onclick="ktvStudyAdd('words',this)">＋ 全部加入学习（${Math.min(W.new.length,60)}词）</button></div>`:''}
+    <div class="muted" style="font-size:12px;margin-top:12px">已学＝在艾宾浩斯复习队列中；加入后按记忆曲线自动安排复习。</div>`;
+  window._ktvStudyData=st;
+}
+async function ktvStudyAdd(kind,btn){
+  const st=window._ktvStudyData; if(!st) return;
+  btn.disabled=true;btn.textContent='加入中…';
+  try{
+    if(kind==='kanji'){
+      await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:st.kanji.new.map(x=>x.k),kind:'kanji'})});
+    }else{
+      const readings={};st.words.new.forEach(x=>{if(x.r)readings[x.w]=x.r});
+      await api('/api/learn',{method:'POST',body:JSON.stringify({kanji:st.words.new.map(x=>x.w),kind:'words',readings})});
+    }
+    btn.textContent='✓ 已加入复习队列';toast('已加入学习，今日复习见首页');
+  }catch(e){btn.disabled=false;btn.textContent='加入失败，重试';}
+}
+function ktvBuilder(){
+  ktvBack();
+  document.querySelector('#nav button[data-tab=books]').click();
+  sbOpen({scope:'lyric'});
+}
 function ktvBack(){ document.body.classList.remove('ktv-song','showhdr'); $('#ktvFab').classList.add('hidden'); $('#ktvBar').classList.remove('hidden'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
@@ -2645,12 +2689,14 @@ function sbTileHTML(t){
   if(sbShowRuby()&&t.tokens&&t.tokens.length)return rubyHTML(t.tokens);
   return esc(t.s);
 }
-async function sbOpen(){
+async function sbOpen(opts){
   bkQuizShow();
   const v=$('#bkQuizView');
   v.innerHTML='<div class="card"><div class="muted">🧩 出题中（文节切块＋合法语序枚举＋逐句语法质检…）</div></div>';
   await sbCfgLoad();
   const body=window.bkSel&&bkSel.size?{book_ids:[...bkSel]}:{};
+  if(opts&&opts.scope) body.scope=opts.scope;   // KTV 歌词组句等定向题源
+  window._sbLastOpts=opts||null;
   let d;
   try{ d=await api('/api/builder/quiz',{method:'POST',body:JSON.stringify(body)}); }
   catch(e){ d={ok:false}; }
@@ -2813,7 +2859,7 @@ async function sbFinish(){
     <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${sbQuiz.ok}</b> / ${n}（${pct}%）
       <div class="muted" style="font-size:13px;margin-top:4px">${sbQuiz.mode==='basic'?'初级模式':'高级模式'} · 难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}${d&&d.ok?' · 已计入统计':''}</div></div>
     <div class="quiz-nav" style="justify-content:center">
-      <button class="btn primary" onclick="sbOpen()">再来一组</button>
+      <button class="btn primary" onclick="sbOpen(window._sbLastOpts)">再来一组</button>
       <button class="btn" onclick="sbCfgOpen()">🧩 组句配置</button>
       <button class="btn" onclick="bkQuizQuit()">返回书架</button>
     </div>
@@ -2848,7 +2894,8 @@ async function sbCfgOpen(){
       <span class="muted">题源</span><select id="sbcScope">
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
-        <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option></select>
+        <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
       <span class="muted">每组题数</span><input id="sbcN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
       <span class="muted">题型占比</span><div class="row" style="gap:8px">组句 <input id="sbcTArr" type="number" min="0" max="100" value="${(c.types||{}).arrange??80}" style="width:64px">% ／ 配对 <input id="sbcTPair" type="number" min="0" max="100" value="${(c.types||{}).pairs??20}" style="width:64px">%</div>
       <span class="muted">词块数范围</span><div class="row" style="gap:8px"><input id="sbcMinT" type="number" min="2" max="6" value="${c.min_tiles||3}" style="width:64px"> ～ <input id="sbcMaxT" type="number" min="3" max="14" value="${c.max_tiles||9}" style="width:64px"> 块</div>

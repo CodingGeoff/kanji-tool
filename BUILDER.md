@@ -175,7 +175,7 @@ MeCab+UniDic 形态素 → 文节：内容词 + 其后附属功能词为一块�
 | `enabled` | true | 总开关 |
 | `mode` | basic | 初级/高级（题目形态轴） |
 | `level` | any | N 级难度（选材轴，与 mode 独立） |
-| `scope` | corpus | corpus / book / mixed |
+| `scope` | corpus | corpus / book / mixed / lyric（v20：KTV 歌词行为题源；无译文 ⇒ 公平性铁律自动生效，advanced 也零干扰，题面带 🎵 歌名） |
 | `count` | 6 | 每组题数（1–20） |
 | `types` | 80/20 | 组句/配对占比（自动归一） |
 | `min_tiles` / `max_tiles` | 3 / 9 | 词块数范围 |
