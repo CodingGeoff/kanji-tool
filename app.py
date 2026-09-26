@@ -778,6 +778,39 @@ def api_books_import():
     return jsonify({'ok': True, 'books': out})
 
 
+@app.route('/api/books/<int:bid>/export')
+def api_book_export(bid):
+    """导出任一本完整课本 JSON（内容、译文、配置、进度与计划）。"""
+    package = textbook.export_book_package(bid)
+    if not package:
+        return jsonify({'error': 'not found'}), 404
+    title = package['book'].get('title') or f'book-{bid}'
+    safe = ''.join(c if c not in '\\/:*?"<>|\r\n' else '_' for c in title).strip()[:80]
+    payload = json.dumps(package, ensure_ascii=False, indent=2)
+    db.log('book', f'导出完整课本《{title}》')
+    from urllib.parse import quote
+    filename = quote((safe or f'book-{bid}') + '.kanji-book.json')
+    return Response(payload, content_type='application/json; charset=utf-8', headers={
+        'Content-Disposition': f"attachment; filename*=UTF-8''{filename}",
+        'X-Content-Type-Options': 'nosniff'})
+
+
+@app.route('/api/books/package/import', methods=['POST'])
+def api_book_package_import():
+    """导入单本完整课本包；同名课本原位更新，避免重复书架项。"""
+    if request.content_length and request.content_length > 20 * 1024 * 1024:
+        return jsonify({'error': '课本文件过大（最多 20MB）'}), 413
+    try:
+        package = request.get_json(force=True)
+        result = textbook.import_book_package(package)
+        return jsonify({'ok': True, 'book': result})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception('导入完整课本失败')
+        return jsonify({'error': '课本导入失败：文件可能损坏或格式不兼容'}), 500
+
+
 @app.route('/api/books/<int:bid>', methods=['GET'])
 def api_book_get(bid):
     info = textbook.book_detail(bid)

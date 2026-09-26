@@ -5,8 +5,8 @@
   1. 配置读写：白名单 + 边界修正
   2. meaning 题：4 选项语言一致（绝不出现"一眼认出哪个是中文"的伪劣题）、
      干扰项均为真实译文、答案在选项中
-  3. discriminate 题：换词候选为真实语料名词、4 个选项互不相同、
-     答案与原句完全一致、复合词（图书馆型）不被拆散
+  3. discriminate 题：4 个选项均为真实语料完整句、互不相同，
+     答案与原句完全一致，绝不通过机械替换名词合成坏句
   4. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
      "仅课本" 不会泄漏语料库句子
   5. 统计记录
@@ -88,20 +88,33 @@ for q in meaning_qs:
     langs = {ls._tr_lang(o) for o in q['options']}
     check(len(langs) == 1, f'4 个选项语言必须一致（否则靠文字系统就能蒙对）：{q["options"]} → {langs}')
 
-print('== 3. discriminate 题：真实名词换词 + 互不相同 + 复合词不拆散 ==')
+print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])
 db.add_sentence('卵はどのように調理しましょうか。', '鸡蛋要怎么烹调呢。', 'unit_test', None, [], [])
 db.add_sentence('彼はソファーに座って雑誌を読んでいた。', '他坐在沙发上看杂志。', 'unit_test', None, [], [])
+# 回归：最近是无助词时间状语，旧实现会生成「霊魂彼は…」式拼接垃圾。
+db.add_sentence('最近彼は新しい事業を始めた。', '最近他开始了一项新事业。', 'unit_test', None, [], [])
+db.add_sentence('一週間シャンプーをしていないので頭がかゆいです。',
+                '我一个星期没洗头，所以头很痒。', 'unit_test', None, [], [])
+db.add_sentence('家に電話して！', '给家里打电话！', 'unit_test', None, [], [])
+db.add_sentence('彼に助けを求めても無駄だ。', '向他求助也没有用。', 'unit_test', None, [], [])
+# 新策略不再做任何词语替换：每个选项都必须是数据库中真实存在的完整句子。
+with db.get_conn() as c:
+    attested_texts = {r['text'] for r in c.execute('SELECT text FROM sentences').fetchall()}
 d = ls.make_quiz(count=15, scope='corpus')
 disc_qs = [q for q in d['questions'] if q['qtype'] == 'discriminate']
 check(bool(disc_qs), 'discriminate 题型应出现')
 for q in disc_qs:
     check(len(q['options']) == 4 and len(set(q['options'])) == 4, f'4 个选项且不重复：{q["options"]}')
     check(q['answer'] == q['text'] and q['answer'] in q['options'], f'原句本身是唯一正确答案：{q}')
-    check('館' not in (q['swapped']['from'] if q.get('swapped') else ''),
-          '不应把复合词的后半部分（接尾辞）单独当作替换目标')
+    check(q.get('distractor_source') == 'attested_sentences' and not q.get('swapped'),
+          '辨句题必须标记为完整实证句来源，且不得再携带机械换词数据')
     for opt in q['options']:
-        check(len(opt) == len(q['text']) or True, '基本合理性占位')  # 长度可能因替换词不同而略变
+        check(opt in attested_texts, f'每个选项必须是数据库中的完整真实句，不得合成：{opt}')
+        check(ls._sound_sentence(opt), f'每个选项必须通过句子质量门禁：{opt}')
+        check(opt not in ('彼に助けを求めても合図だ。', '彼に助けを求めても午後だ。',
+                          '彼に助けを求めても国民だ。'),
+              f'不得生成「無駄だ」机械换词坏句：{opt}')
 
 print('== 4. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
 bk = textbook.import_book({'title': '听力测试课本', 'author': '', 'level': '',

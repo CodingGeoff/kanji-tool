@@ -71,6 +71,9 @@ CHUNK_CASES = [
      ['母に', '心配を', 'かけないように', '早く帰ることにした']),
     ('日本語が上手になるために、毎日練習している。',
      ['日本語が', '上手になるために', '毎日', '練習している']),
+    # 课本 OCR 回归：「おわんももとへ」应为「おわんを口もとへ」。
+    ('それで、おわんを口もとへ持ってきて、吸う習慣がついた。',
+     ['それで', 'おわんを', '口もとへ', '持ってきて', '吸う習慣が', 'ついた']),
 ]
 for text, want in CHUNK_CASES:
     p = sb.parse_sentence(text)
@@ -101,6 +104,9 @@ for t in rows:
     stripped = _re.sub('[、。！？!?，, 　]', '', t)
     check(rebuilt == stripped, f'重建失真：{t} → {rebuilt}')
 check(n_parse >= 100, f'300 句语料至少 100 句可解析（实际 {n_parse}）')
+with db.get_conn() as c:
+    bad_ocr = c.execute("SELECT COUNT(*) n FROM sentences WHERE text LIKE '%おわんももとへ%'").fetchone()['n']
+check(bad_ocr == 0, '课本 OCR 错句「おわんももとへ」不得留在出题语料中')
 
 # ================================================================
 print('== 2. 多解稳健判卷')

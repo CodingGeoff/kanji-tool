@@ -18,10 +18,10 @@
                    sentence_builder 的公平性铁律：没有译文就不能拿它当
                    语义判分的题目）。干扰项来自其它句子的真实译文，
                    不是编造出来的假译文。
-  2. discriminate  听音辨句：播放一句录音，从 4 个「只换了一个名词」的
-                   相似文本里选出与录音完全一致的那个。换词候选一律来自
-                   同一批次语料里真实出现过的名词（同词性替换），不会出现
-                   凭空捏造的假词；不需要译文，天然适配歌词等无译文语料。
+  2. discriminate  听音辨句：播放一句录音，从 4 个真实语料句中选出完全
+                   一致的一句。干扰项优先选择长度和字面相近的完整原句，绝不
+                   再把名词机械塞进另一句话（这种做法会生成「友達して」或
+                   「国民だ」等语法/语义垃圾）；不需要译文，适配歌词等语料。
 
 难度轴（与组句练习保持同样的两条独立轴哲学）：
   - level：句子选材难度（复用 sentence_builder._sentence_level 的语法
@@ -42,9 +42,11 @@ import json
 import random
 import re
 from datetime import date
+from difflib import SequenceMatcher
 
 import db
 import furigana
+import grammar
 import sentence_builder as sb
 import textbook
 
@@ -199,86 +201,62 @@ def _build_meaning_q(row, translation_pool):
 
 
 # ================================================================
-# 题型 2：听音辨句（不需要译文；换词候选来自同批次真实出现过的名词）
+# 题型 2：听音辨句（不需要译文；所有选项都是完整的真实语料句）
 # ================================================================
-_NOUN_STOP = {'こと', 'もの', 'これ', 'それ', 'あれ', 'ため', 'よう', 'はず',
-              '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'}
-
-
-def _common_nouns(text):
-    """返回 (下标, 词面) —— 只取「普通名詞」且不紧跟接尾辞（避免拆散複合词
-    如 図書+館），排除形式名词/数词等替换后容易产生歧义或无意义的词。"""
+def _sound_sentence(text):
+    """辨句选项的保守门禁；失败或检查异常都不让句子进入题面。"""
+    text = (text or '').strip()
+    if not text or not (4 <= len(text) <= 100):
+        return False
     try:
-        words = list(sb._tagger(text))
+        return bool(grammar.is_sentence_grammatically_sound(text))
     except Exception:
-        return []
-    out = []
-    for i, w in enumerate(words):
-        f = w.feature
-        if f.pos1 != '名詞' or f.pos2 != '普通名詞':
-            continue
-        surf = w.surface
-        if surf in _NOUN_STOP or not (1 < len(surf) <= 5) or not re.search(r'[一-龥]', surf):
-            continue
-        nxt = words[i + 1] if i + 1 < len(words) else None
-        if nxt is not None and nxt.feature.pos1 == '接尾辞':
-            continue        # 复合词后半部分不完整，跳过（如「図書」+「館」）
-        out.append((i, surf))
-    return out
+        return False
 
 
-def _noun_pool(rows, exclude_text):
-    """从整批候选句子里收集普通名词（真实语料实证，绝不编造新词）。"""
-    pool = set()
-    for r in rows:
-        t = (r.get('text') or '')
-        if t == exclude_text:
-            continue
-        for _, surf in _common_nouns(t):
-            pool.add(surf)
-    return pool
+def _build_discriminate_q(row, sentence_pool):
+    """用三条真实原句作干扰项，绝不再做机械词语替换。
 
-
-def _build_discriminate_q(row, noun_pool):
+    旧实现即使按词性和助词槽筛选，仍无法判断「無駄だ」能否换成
+    「国民だ」，更会因サ变/复合词分词产生「友達して」「一明日」等坏句。
+    规则引擎没有语义能力，因此唯一稳健的边界是：只展示语料中实际存在且
+    通过句子门禁的完整文本。相似度仅用于让选项不至于完全无关，不参与造句。
+    """
     text = (row.get('text') or '').strip()
-    nouns = _common_nouns(text)
-    if not nouns:
+    if not _sound_sentence(text):
         return None
+
+    seen, ranked = set(), []
+    end = text[-1:] if text else ''
+    for candidate in sentence_pool:
+        other = ((candidate.get('text') if isinstance(candidate, dict) else candidate) or '').strip()
+        if other == text or other in seen or not _sound_sentence(other):
+            continue
+        # 排除长度悬殊、凭长度即可秒选的选项；池不足时由调用方改出 meaning 题。
+        delta = abs(len(other) - len(text))
+        if delta > max(6, int(len(text) * 0.45)):
+            continue
+        seen.add(other)
+        similarity = SequenceMatcher(None, text, other, autojunk=False).ratio()
+        punct_bonus = 0.05 if other[-1:] == end else 0.0
+        ranked.append((similarity + punct_bonus - delta * 0.002, other))
+
+    if len(ranked) < 3:
+        return None
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    # 从最相近的一小组中抽取，兼顾题目质量和重复练习时的变化。
+    shortlist = [other for _, other in ranked[:min(12, len(ranked))]]
+    decoys = random.sample(shortlist, 3)
+    opts = [text] + decoys
+    random.shuffle(opts)
     try:
-        words = list(sb._tagger(text))
+        tokens = furigana.annotate(text)
     except Exception:
-        return None
-    random.shuffle(nouns)
-    for idx, target in nouns:
-        candidates = [w for w in noun_pool if w != target and abs(len(w) - len(target)) <= 2]
-        random.shuffle(candidates)
-        picks = []
-        for c in candidates:
-            if c in picks:
-                continue
-            picks.append(c)
-            if len(picks) >= 3:
-                break
-        if len(picks) < 3:
-            continue
-        decoys = []
-        for c in picks:
-            variant = ''.join(c if i == idx else w.surface for i, w in enumerate(words))
-            if variant != text and variant not in decoys:
-                decoys.append(variant)
-        if len(decoys) < 3:
-            continue
-        opts = [text] + decoys[:3]
-        random.shuffle(opts)
-        try:
-            tokens = furigana.annotate(text)
-        except Exception:
-            tokens = []
-        return {'qtype': 'discriminate', 'text': text, 'options': opts, 'answer': text,
-                'sid': row.get('sid'), 'source': row.get('source'),
-                'origin': _origin(row), 'tokens': tokens,
-                'swapped': {'from': target, 'to': picks[:3]}}
-    return None
+        tokens = []
+    return {'qtype': 'discriminate', 'text': text, 'options': opts, 'answer': text,
+            'sid': row.get('sid'), 'source': row.get('source'),
+            'origin': _origin(row), 'tokens': tokens,
+            'distractor_source': 'attested_sentences'}
 
 
 def _origin(row):
@@ -317,7 +295,8 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     n_disc = count - n_meaning
 
     translation_pool = [r.get('translation') for r in rows if (r.get('translation') or '').strip()]
-    noun_pool = _noun_pool(rows, exclude_text=None)
+    # discriminate 的干扰项池保留完整语料行；不再拆词、换词或合成句子。
+    sentence_pool = rows
 
     questions, used = [], set()
     relax_note = False
@@ -339,9 +318,9 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             if want_type == 'meaning':
                 got = _build_meaning_q(row, translation_pool)
                 if not got and len(questions) < n_meaning + n_disc:
-                    got = _build_discriminate_q(row, noun_pool)
+                    got = _build_discriminate_q(row, sentence_pool)
             else:
-                got = _build_discriminate_q(row, noun_pool)
+                got = _build_discriminate_q(row, sentence_pool)
                 if not got:
                     got = _build_meaning_q(row, translation_pool)
             if not got:
