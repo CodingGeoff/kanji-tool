@@ -2752,6 +2752,7 @@ async function sbCheck(){
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:23px">${full} ${spkBtn(q.text)}</div>
     ${q.translation?`<div class="tr">译：${esc(q.translation)}</div>`:''}
     ${q.swap?`<div class="muted" style="font-size:13px;margin-top:6px">✨ 本题为语料变体：原句用词「${esc(q.swap.from)}」→ 本题「${esc(q.swap.to)}」（同一助词「${esc(q.swap.particle)}」+ 同一谓语在语料中的真实搭配）</div>`:''}
+    ${q.alt_group?`<div class="muted" style="font-size:13px;margin-top:6px">🔁 多答案槽位「${esc(q.alt_group.slot)}」：${q.alt_group.options.map(o=>esc(o+q.alt_group.particle)).join('／')} 均为语料实证的同谓语搭配，任选其一都判对</div>`:''}
     ${altNote}
     ${(q.grammar||[]).length?`<div class="ex">${q.grammar.map(g=>`<span class="lv lv-${g.level}">${g.level}</span> <b>${esc(g.name||'')}</b>${g.structure&&g.structure!=='—'?`<span class="muted">（${esc(g.structure)}）</span>`:''}<br><span style="font-size:14px">${esc(g.explain||'')}</span>`).join('<br>')}</div>`:''}
     <div class="quiz-nav">
@@ -2855,6 +2856,7 @@ async function sbCfgOpen(){
         <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态变形</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDP" ${(c.distractor_kinds||{}).particle!==false?'checked':''}><span>换助词</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDW" ${(c.distractor_kinds||{}).vocab!==false?'checked':''}><span>句外词</span></label></div>
+      <span class="muted">多答案（高级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcAlt" ${c.alt_answers!==false?'checked':''}><span>槽位可互换名词（任选其一均判对）</span></label>最多 <input id="sbcAltN" type="number" min="1" max="4" value="${c.alt_max||2}" style="width:64px"> 个</div>
       <span class="muted">语料换词（初级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcSwap" ${c.swap!==false?'checked':''}><span>开启</span></label>概率 <input id="sbcSwapP" type="number" min="0" max="100" value="${Math.round((c.swap_prob??0.35)*100)}" style="width:64px">%</div>
       <span class="muted">判卷严格质检</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="sbcStrict" ${c.strict_check!==false?'checked':''}><span>出题时枚举全部合法语序并逐句语法质检（推荐）</span></label>
       <span class="muted">词块注音</span><select id="sbcRuby">
@@ -2873,6 +2875,7 @@ async function sbCfgSave(){
     min_tiles:parseInt($('#sbcMinT').value)||3,max_tiles:parseInt($('#sbcMaxT').value)||9,
     distractors:isNaN(parseInt($('#sbcDN').value))?3:parseInt($('#sbcDN').value),
     distractor_kinds:{verb_form:$('#sbcDV').checked,particle:$('#sbcDP').checked,vocab:$('#sbcDW').checked},
+    alt_answers:$('#sbcAlt').checked,alt_max:parseInt($('#sbcAltN').value)||2,
     swap:$('#sbcSwap').checked,swap_prob:(parseInt($('#sbcSwapP').value)||0)/100,
     strict_check:$('#sbcStrict').checked,show_furigana:$('#sbcRuby').value};
   try{

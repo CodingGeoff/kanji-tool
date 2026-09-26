@@ -81,6 +81,9 @@ DEFAULT_BUILDER_CFG = {
     'max_tiles': 9,             # 组句题最多词块数
     'distractors': 3,           # advanced 干扰块数 (0-6)
     'distractor_kinds': {'verb_form': True, 'vocab': True, 'particle': True},
+    'alt_answers': True,        # advanced 多答案：槽位放可互换名词块（任选其一均判对）
+    'alt_max': 2,               # 每题最多追加的可互换名词数 (1-4)
+    'alt_min_freq': 1,          # 可互换名词的语料共现次数下限
     'swap': True,               # basic 语料同位换词
     'swap_prob': 0.35,          # 每题换词概率
     'strict_check': True,       # 出题时对全部合法排列做语法质检
@@ -140,6 +143,15 @@ def _sanitize_cfg(cfg):
         cfg['swap_prob'] = max(0.0, min(float(cfg.get('swap_prob', 0.35)), 1.0))
     except Exception:
         cfg['swap_prob'] = 0.35
+    cfg['alt_answers'] = bool(cfg.get('alt_answers', True))
+    try:
+        cfg['alt_max'] = max(1, min(int(cfg.get('alt_max', 2)), 4))
+    except Exception:
+        cfg['alt_max'] = 2
+    try:
+        cfg['alt_min_freq'] = max(1, min(int(cfg.get('alt_min_freq', 1)), 5))
+    except Exception:
+        cfg['alt_min_freq'] = 1
     try:
         cfg['perm_limit'] = max(1, min(int(cfg.get('perm_limit', 120)), 720))
     except Exception:
@@ -518,10 +530,17 @@ def check_arrangement(spec, order_tile_ids):
         return {'ok': False, 'feedback': '用到了干扰词块（这些词不属于本句）',
                 'your_text': '', **base}
     idx_order = [tile_map[t] for t in order_tile_ids]
-    your_text = ''.join(surfaces[i] for i in idx_order if 0 <= i < n) + (spec.get('punct') or '')
+    # 拼出用户句子：优先用词块自身表面（可互换名词块与槽位原块表面不同）
+    tsurf = {str(k): v for k, v in (spec.get('tile_surface') or {}).items()}
+    your_text = ''.join(tsurf.get(t, surfaces[tile_map[t]] if 0 <= tile_map[t] < n else '')
+                        for t in order_tile_ids) + (spec.get('punct') or '')
     base['your_text'] = your_text
-    # 3) 完整性（多用/少用/重复）
+    # 3) 完整性（多用/少用/重复；可互换块映射同一槽位 → 天然支持多答案）
     if sorted(idx_order) != list(range(n)):
+        dup = sorted({i for i in idx_order if idx_order.count(i) > 1})
+        if dup and spec.get('has_groups'):
+            return {'ok': False,
+                    'feedback': '同一槽位的可互换词块只能选用一个', **base}
         missing = [surfaces[i] for i in range(n) if i not in idx_order]
         if missing:
             return {'ok': False,
@@ -631,16 +650,38 @@ def _pred_key(toks, j):
 # 过于泛化的动词：任何名词都能搭 → 共现统计无意义，禁止作为换词依据
 _GENERIC_PREDS = {'為る', '居る', '有る', '成る', '仕舞う', '行く', '来る'}
 
+# 形式名词/轻名词（こと/もの/ところ…）：不是实义搭配词，
+# 挖掘左扩绝不吸收、候选词绝不采用
+_FORMAL_NOUNS = {'事', '物', '所', '為', '筈', '訳', '方', '風', '積もり', '儘', '内', '中'}
+
+
+def _noun_candidate_ok(w):
+    """换词/多答案候选词终审：纯实义名词（可含复合），无数字、
+    无形式名词头、无助数词，且整词可完整分词为名词序列。"""
+    if not w or not (1 < len(w) <= 6) or re.search(r'[0-9０-９〇一二三四五六七八九十]', w[:1]):
+        return False
+    try:
+        toks = _tag(w)
+    except Exception:
+        return False
+    if not toks or not all(t['p1'] in ('名詞', '接頭辞', '接尾辞') for t in toks):
+        return False
+    for t in toks:
+        if t['lemma'] in _FORMAL_NOUNS or t['p3'] in ('助数詞可能',):
+            return False
+    return True
+
 
 @functools.lru_cache(maxsize=256)
 def _colloc_nouns(particle, pred_key):
     """语料共现挖掘：与谓语 pred_key 搭配、经 particle 标记的名词分布。
-    只信语料里真实出现过的搭配 —— 换词后语义搭配天然成立。"""
+    返回 ((名词, 出现次数), ...) 按频次降序。只信语料里真实出现过的搭配 ——
+    「语料是语义预言机」：算法不懂句义，但语料中出现过 = 有人写过 = 搭配成立。"""
     try:
         with db.get_conn() as c:
             rows = c.execute(
                 'SELECT text FROM sentences WHERE text LIKE ? '
-                'ORDER BY RANDOM() LIMIT 700', (f'%{particle}%',)).fetchall()
+                'ORDER BY RANDOM() LIMIT 1000', (f'%{particle}%',)).fetchall()
     except Exception:
         return ()
     counter = {}
@@ -656,27 +697,64 @@ def _colloc_nouns(particle, pred_key):
             if (prev['p1'] != '名詞' or prev['p2'] != '普通名詞'
                     or prev['p3'] in ('助数詞可能', '副詞可能')):
                 continue
+            # 左扩收取完整复合名词（注意事項→注意事項，绝不截半个复合词）；
+            # 形式名词（こと/もの…）/助数词/时间词是独立文节成分，绝不吸收
+            j0 = i - 1
+            while (j0 - 1 >= 0 and toks[j0 - 1]['p1'] in ('名詞', '接頭辞')
+                   and toks[j0 - 1]['p3'] not in ('助数詞可能', '副詞可能')
+                   and toks[j0 - 1]['lemma'] not in _FORMAL_NOUNS
+                   and toks[j0 - 1]['p2'] in ('普通名詞', '固有名詞', '')):
+                j0 -= 1
+            noun_surf = ''.join(x['s'] for x in toks[j0:i])
+            if not (1 <= len(noun_surf) <= 8):
+                continue
             # particle 之后 4 个形态素内找到目标谓语
             for j in range(i + 1, min(i + 5, len(toks))):
                 if toks[j]['p1'] == '動詞':
                     if _pred_key(toks, j) == pred_key:
-                        counter[prev['s']] = counter.get(prev['s'], 0) + 1
+                        counter[noun_surf] = counter.get(noun_surf, 0) + 1
                     break
-    return tuple(w for w, _ in sorted(counter.items(), key=lambda kv: -kv[1])[:20])
+    return tuple(sorted(counter.items(), key=lambda kv: -kv[1])[:20])
 
 
-def _swap_variant(text, parsed):
-    """挑一个「名词+格助词」自由块，用语料共现名词替换。
-    返回 (new_text, {'from','to','particle'}) 或 None。替换句必须过语法质检。"""
+SWAP_PARTICLES = ('を', 'が', 'で')
+# 换词/多答案槽位只认选择限制强的格：を(宾语)/が(主语)/で(场所·手段)。
+# に 格语义角色过宽（方向/目标/场所/时间/惯用），共现证据容易跨语境
+# 误配（「文頭に持ってくる」≠「手もとに持っている」），一律不做换词槽位。
+
+OBLIQUE_PARTICLES = ('に', 'へ', 'と', 'から', 'まで')
+# 语义收窄闸门：句中若存在「名词+斜格助词」成分（塀に/駅へ/友達と…），
+# 该斜格会收窄谓语义项（「塀に掛ける」＝搭靠 ≠「電話を掛ける」＝拨打），
+# 跨语境共现证据可能错配 —— 整句禁用换词/多答案槽位（宁可少出，绝不出错）。
+
+
+def _has_oblique(chunks):
+    for c in chunks:
+        toks = c['toks']
+        if (len(toks) >= 2 and toks[-1]['p2'] == '格助詞'
+                and toks[-1]['s'] in OBLIQUE_PARTICLES
+                and all(t['p1'] in ('名詞', '代名詞', '接頭辞', '接尾辞')
+                        for t in toks[:-1])):
+            return True
+    return False
+
+
+def _case_slots(parsed, text):
+    """枚举可换词槽位：「名词+格助词(を/が/で)」块且能定位支配谓语。
+    槽位不必是自由块 —— 换词只改名词表面、不影响语序判卷，
+    锁死区内的名词块同样可换。返回 [(ci, noun, particle, pred_key), ...]。"""
     chunks, zones = parsed['chunks'], parsed['zones']
-    mov_idx = [i for z in zones for i in z['mov']]
+    if _has_oblique(chunks):
+        return []                      # 语义收窄闸门：斜格在场，整句不换词
+    mov_idx = list(range(len(chunks)))
     random.shuffle(mov_idx)
+    out = []
     for ci in mov_idx:
         toks = chunks[ci]['toks']
         if len(toks) < 2:
             continue
         last = toks[-1]
-        if last['p2'] != '格助詞' or last['s'] not in ('を', 'が', 'に', 'で'):
+        if last['p2'] != '格助詞' or last['s'] not in SWAP_PARTICLES:
             continue
         noun_toks = toks[:-1]
         if not all(t['p1'] in ('名詞', '接頭辞', '接尾辞') for t in noun_toks):
@@ -696,21 +774,71 @@ def _swap_variant(text, parsed):
                     break
             if pred is not None or any(t['p1'] == '動詞' for t in ctoks):
                 break
-        if not pred:
-            continue
-        cands = [w for w in _colloc_nouns(last['s'], pred)
-                 if w != noun and w not in text and 1 < len(w) <= 6]
+        if pred:
+            out.append((ci, noun, last['s'], pred))
+    return out
+
+
+def _vet_substitution(text, parsed, noun, particle, repl):
+    """换词双保险：整句语法质检 + 换词后结构等价（块数不变）。
+    返回替换后的整句或 None。"""
+    new_text = text.replace(noun + particle, repl + particle, 1)
+    if new_text == text:
+        return None
+    try:
+        if not grammar.is_sentence_grammatically_sound(new_text):
+            return None
+    except Exception:
+        return None
+    np_ = parse_sentence(new_text)
+    if not np_ or len(np_['chunks']) != len(parsed['chunks']):
+        return None
+    return new_text
+
+
+def _swap_variant(text, parsed):
+    """初级变体：挑一个「名词+格助词」自由块，用语料共现名词替换。
+    返回 (new_text, {'from','to','particle'}) 或 None。替换句必须过语法质检。"""
+    for ci, noun, particle, pred in _case_slots(parsed, text):
+        cands = [w for w, _n in _colloc_nouns(particle, pred)
+                 if w != noun and w not in text and _noun_candidate_ok(w)]
         random.shuffle(cands)
         for repl in cands[:5]:
-            new_text = text.replace(noun + last['s'], repl + last['s'], 1)
-            if new_text == text:
-                continue
-            try:
-                if grammar.is_sentence_grammatically_sound(new_text):
-                    return new_text, {'from': noun, 'to': repl, 'particle': last['s']}
-            except Exception:
-                continue
+            new_text = _vet_substitution(text, parsed, noun, particle, repl)
+            if new_text:
+                return new_text, {'from': noun, 'to': repl, 'particle': particle}
     return None
+
+
+def _alt_group(text, parsed, cfg):
+    """高级多答案：为一个槽位挖掘可互换名词（语料实证 + 语法质检 + 结构等价）。
+    任选其一均判对 —— 判卷只看槽位是否恰好被填一次，与选词无关。
+    返回 {'ci', 'noun', 'particle', 'alts': [...]} 或 None。"""
+    max_alts = max(1, min(int(cfg.get('alt_max', 2) or 2), 4))
+    min_freq = max(1, int(cfg.get('alt_min_freq', 1) or 1))
+    for ci, noun, particle, pred in _case_slots(parsed, text):
+        pool = [(w, n) for w, n in _colloc_nouns(particle, pred)
+                if w != noun and w not in text and n >= min_freq
+                and _noun_candidate_ok(w)]
+        random.shuffle(pool)
+        alts = []
+        for repl, _n in pool:
+            if _vet_substitution(text, parsed, noun, particle, repl):
+                alts.append(repl)
+            if len(alts) >= max_alts:
+                break
+        if alts:
+            return {'ci': ci, 'noun': noun, 'particle': particle, 'alts': alts}
+    return None
+
+
+def _attested_words(parsed, text):
+    """本句各槽位的语料实证搭配词全集 —— 句外词干扰块绝不允许命中该集合
+    （否则该词其实能合法替入某槽位，判错会不公平）。"""
+    out = set()
+    for _ci, _noun, particle, pred in _case_slots(parsed, text):
+        out |= {w for w, _n in _colloc_nouns(particle, pred)}
+    return out
 
 
 # ================================================================
@@ -788,17 +916,24 @@ def _vocab_distractors(n, exclude_text):
     return out[:n]
 
 
-def make_distractors(parsed, text, cfg):
-    """生成混淆干扰块列表（surface 字符串）。安全保证：
-    1. 判卷要求「所需词块恰好全用」，用任一干扰块必错 —— 而干扰块的
-       语义均偏离译文（时态/极性变形、句外词、非等价助词），判错公平；
-    2. 干扰块 surface 与任何所需块都不同（避免 UI 无法区分）。"""
+def make_distractors(parsed, text, cfg, extra_exclude=()):
+    """生成混淆干扰块列表（surface 字符串）。
+
+    公平性铁律（调用方保证）：只有**有人工译文**的句子才会调用本函数 ——
+    译文是语义预言机，钉死了唯一正确语义；干扰块三类的语义均偏离译文：
+      verb_form  时态/礼貌体/极性变形 —— 与译文时态/极性必然不符；
+      particle   非等价换助词 —— 意义保持对（は↔が、に↔へ…）已在源头禁用；
+      vocab      句外词 —— 额外经过**语料实证反查**：凡是与本句任一槽位
+                 （同助词+同谓语）在语料中真实共现过的词一律不做干扰块，
+                 因为它其实能合法替入槽位（多答案领域），判错会不公平。
+    结构性保证：判卷要求所需词块恰好全用，用任一干扰块必错；
+    干扰块 surface 与所需块/可互换块均不同、不是句内子串。"""
     kinds = cfg.get('distractor_kinds') or {}
     want = int(cfg.get('distractors', 3))
     if want <= 0:
         return []
     chunks, zones = parsed['chunks'], parsed['zones']
-    required = {c['surface'] for c in chunks}
+    required = {c['surface'] for c in chunks} | set(extra_exclude)
     out = []
 
     def _push(s):
@@ -819,7 +954,10 @@ def make_distractors(parsed, text, cfg):
             if len(out) >= want:
                 break
     if kinds.get('vocab', True) and len(out) < want:
+        attested = _attested_words(parsed, text)   # 语料实证反查：可替入词禁用
         for v in _vocab_distractors(want - len(out), text + ''.join(out)):
+            if v in attested:
+                continue
             _push(v)
     random.shuffle(out)
     return out[:want]
@@ -917,15 +1055,41 @@ def _build_arrange(row, cfg, mode, want_level):
     accepted = enumerate_accepted(parsed, perm_limit=cfg.get('perm_limit', 120),
                                   strict=cfg.get('strict_check', True))
     alt_count = len(accepted) if accepted is not None else order_count(parsed['zones'])
+    has_translation = bool((row.get('translation') or '').strip())
 
     chunk_tokens = _tiles_tokens(text, parsed['chunks'])
-    tiles, tile_map = [], {}
+    tiles, tile_map, tile_surface = [], {}, {}
     for i, (c, tk) in enumerate(zip(parsed['chunks'], chunk_tokens)):
         tid = f't{i}'
         tiles.append({'id': tid, 's': c['surface'], 'tokens': tk})
         tile_map[tid] = i
-    if mode == 'advanced':
-        for k, ds in enumerate(make_distractors(parsed, text, cfg)):
+        tile_surface[tid] = c['surface']
+
+    # 高级多答案：一个槽位放入可互换名词块（语料实证 + 语法质检），任选其一均判对
+    group_info = None
+    if mode == 'advanced' and cfg.get('alt_answers', True):
+        ag = _alt_group(text, parsed, cfg)
+        if ag:
+            group_info = {'slot': parsed['chunks'][ag['ci']]['surface'],
+                          'options': [ag['noun']] + ag['alts'],
+                          'particle': ag['particle']}
+            for k, alt in enumerate(ag['alts']):
+                surf = alt + ag['particle']
+                tid = f'a{k}'
+                try:
+                    atk = furigana.annotate(surf)
+                except Exception:
+                    atk = [{'s': surf, 'r': None, 'w': None, 'wr': None}]
+                tiles.append({'id': tid, 's': surf, 'tokens': atk})
+                tile_map[tid] = ag['ci']          # 与原块映射同一槽位
+                tile_surface[tid] = surf
+
+    # 干扰块公平性铁律：只有存在人工译文（语义预言机）的句子才放混淆项；
+    # 无译文时题面要求「语法正确即可」，任何语法上可行的块都不该被判错。
+    if mode == 'advanced' and has_translation:
+        exclude = set(tile_surface.values())
+        for k, ds in enumerate(make_distractors(parsed, text, cfg,
+                                                extra_exclude=exclude)):
             tid = f'd{k}'
             try:
                 dtk = furigana.annotate(ds)
@@ -933,11 +1097,13 @@ def _build_arrange(row, cfg, mode, want_level):
                 dtk = [{'s': ds, 'r': None, 'w': None, 'wr': None}]
             tiles.append({'id': tid, 's': ds, 'tokens': dtk})
             tile_map[tid] = -1
+            tile_surface[tid] = ds
     random.shuffle(tiles)
 
     spec = {'chunks': [c['surface'] for c in parsed['chunks']],
             'zones': parsed['zones'], 'punct': parsed['punct'],
-            'tile_map': tile_map,
+            'tile_map': tile_map, 'tile_surface': tile_surface,
+            'has_groups': bool(group_info),
             'accepted': accepted, 'alt_count': alt_count}
     try:
         full_tokens = furigana.annotate(text)
@@ -948,7 +1114,7 @@ def _build_arrange(row, cfg, mode, want_level):
             'sid': row.get('sid'), 'text': text, 'punct': parsed['punct'],
             'translation': row.get('translation'),
             'origin': _origin(row), 'source': row.get('source'),
-            'swap': swap_info,
+            'swap': swap_info, 'alt_group': group_info,
             'tiles': tiles, 'n_required': n_chunks,
             'alt_count': alt_count, 'tokens': full_tokens,
             'grammar': [{'name': g.get('name'), 'level': g.get('level'),

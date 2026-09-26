@@ -185,7 +185,8 @@ print('== 4. 初级换词变体（语料共现）')
 # ================================================================
 nouns = sb._colloc_nouns('を', '読む')
 check(len(nouns) >= 1, f'语料共现挖掘（を+読む）应有结果：{nouns}')
-check(all(isinstance(w, str) and w for w in nouns), '共现名词均为非空字符串')
+check(all(isinstance(w, str) and w and isinstance(n, int) and n >= 1
+          for w, n in nouns), '共现结果为 (名词, 频次≥1) 对')
 found_swap = 0
 for _ in range(12):
     text = '彼女は毎日図書館で本を読んでいる。'
@@ -201,6 +202,22 @@ for _ in range(12):
           f'换词后必须语法正确：{new_text}')
     check(sb.parse_sentence(new_text) is not None, '换词后仍可正常切块')
 check(found_swap >= 1, '12 次尝试至少产出 1 个换词变体')
+
+# —— 语义安全闸门 ——
+# 1) 斜格在场（塀に…掛けた：に格收窄动词义项）→ 整句禁用换词槽位
+_pg = sb.parse_sentence('彼は塀に梯子を掛けた。')
+check(sb._case_slots(_pg, '彼は塀に梯子を掛けた。') == [],
+      '斜格闸门：塀に 在场时禁用换词/多答案槽位')
+check(sb._swap_variant('彼は塀に梯子を掛けた。', _pg) is None,
+      '斜格闸门：换词直接返回 None')
+# 2) に 格本身绝不做槽位（语义角色过宽）
+check('に' not in sb.SWAP_PARTICLES and set(sb.SWAP_PARTICLES) == {'を', 'が', 'で'},
+      '槽位只认选择限制强的 を/が/で')
+# 3) 候选词终审：形式名词碎片/数字头/复合词残片一律拒绝
+check(sb._noun_candidate_ok('小説') and sb._noun_candidate_ok('注意事項'),
+      '正常实义名词通过终审')
+check(not sb._noun_candidate_ok('こと煙草') and not sb._noun_candidate_ok('２人')
+      and not sb._noun_candidate_ok('一箱'), '形式名词头/数字头拒绝')
 
 # ================================================================
 print('== 5. 高级干扰块安全性')
@@ -234,6 +251,49 @@ tail = sb.parse_sentence('彼は学校へ行った。')
 if tail:
     vf2 = sb._verb_form_variants(tail['chunks'][-1])
     check('行く' in vf2, f'タ形→辞书形变形：{vf2}')
+
+# —— 公平性铁律：无译文的句子 advanced 也不得放干扰块（译文=语义预言机）——
+_row_tr = {'sid': 90001, 'text': '彼女は毎日図書館で本を読んでいる。',
+           'translation': '她每天在图书馆看书。', 'source': 'tatoeba'}
+_row_no = dict(_row_tr, translation='')
+cfgA = sb.builder_cfg()
+qtr = sb._build_arrange(_row_tr, cfgA, 'advanced', None)
+qno = sb._build_arrange(_row_no, cfgA, 'advanced', None)
+check(qtr and any(v == -1 for v in qtr['spec']['tile_map'].values()),
+      '有译文 → advanced 可带干扰块')
+check(qno and not any(v == -1 for v in qno['spec']['tile_map'].values()),
+      '无译文 → advanced 零干扰块（公平性铁律）')
+
+# —— 多答案（可互换名词槽位）——
+found_group = None
+for _ in range(8):
+    qg = sb._build_arrange(_row_tr, cfgA, 'advanced', None)
+    if qg and qg.get('alt_group'):
+        found_group = qg
+        break
+if check(found_group is not None, '高频搭配句应能产出多答案组'):
+    qg = found_group
+    tm = qg['spec']['tile_map']
+    alt_ids = [t for t in tm if t.startswith('a')]
+    req_ids = sorted([t for t in tm if t.startswith('t')], key=lambda t: tm[t])
+    ci = tm[alt_ids[0]]
+    surfs = {t['id']: t['s'] for t in qg['tiles']}
+    for a in alt_ids:
+        # 换入整句独立复验语法
+        s = ''.join(qg['spec']['chunks'][:ci]) + surfs[a] \
+            + ''.join(qg['spec']['chunks'][ci + 1:]) + '。'
+        check(grammar.is_sentence_grammatically_sound(s),
+              f'可互换块换入整句必过语法质检：{s}')
+        # 任选其一判对
+        order = [a if tm[t] == ci else t for t in req_ids]
+        check(sb.check_arrangement(qg['spec'], order)['ok'],
+              f'可互换块 {surfs[a]} 作答判对')
+    # 同槽双用必错
+    r = sb.check_arrangement(qg['spec'], [alt_ids[0]] + req_ids)
+    check(not r['ok'] and '互换' in r['feedback'], '同槽双用判错并明示原因')
+    # 复合名词完整性：可互换名词不得是被截半的复合词碎片
+    for o in qg['alt_group']['options']:
+        check(len(o) >= 1 and not o.startswith(('々',)), f'互换名词合法：{o}')
 
 # ================================================================
 print('== 6. 配置：白名单 + 边界修正 + 两轴独立')
