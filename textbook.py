@@ -22,6 +22,7 @@
 """
 import json
 import math
+import traceback
 import random
 import re
 import time
@@ -1287,7 +1288,10 @@ def fetch_book_sentence_rows(ids, need):
                      'WHERE bs.book_id=? ORDER BY bs.sentence_id LIMIT ?')
                 rows += [dict(r) for r in c.execute(q, (bid, per)).fetchall()]
     except Exception:
-        pass
+        # 静默吞掉会让「课本题源取空」变成查不出原因的幽灵故障（调用方只看到
+        # 空列表，然后退化成全库语料），这里至少把原因打到 stderr。
+        traceback.print_exc()
+        return []
     random.shuffle(rows)
     return rows
 

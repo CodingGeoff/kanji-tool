@@ -2893,7 +2893,7 @@ function sbRender(){
     <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
-      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 / ${q.n_required} 个必要槽位</span>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">${q.translation?'已填 0 块':`已填 0 块（需要 ${q.n_required} 个必要槽位）`}</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -2917,8 +2917,10 @@ function sbSyncTiles(){
   const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
   const need=$('#sbNeed');
   if(need){
-    const real=sbQuiz.sel.filter(k=>(q.spec.tile_map||{})[q.tiles[k].id]>=0).length;
-    need.textContent=`已填 ${real} / ${q.n_required} 个必要槽位${sbQuiz.sel.length>real?`（另有 ${sbQuiz.sel.length-real} 个混淆块）`:''}`;
+    // 只报「放了几块」：原先按 tile_map 只数真槽位，等于每点一块就告诉你它是不是
+    // 混淆块，一路试过去就能反推出正确块集合。有译文时连必要块数也不必再报。
+    const n=sbQuiz.sel.length;
+    need.textContent=q.translation?`已填 ${n} 块`:`已填 ${n} 块（需要 ${q.n_required} 个必要槽位）`;
   }
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
@@ -3181,7 +3183,7 @@ function lsRender(){
   const v=$('#bkQuizView'),q=lsQuiz.qs[lsQuiz.i],n=lsQuiz.qs.length;
   lsQuiz.picked=null;lsQuiz.checked=false;_lsPlays=0;
   const sl=LS_SCOPE_LABEL[lsQuiz.scope]||'';
-  const qtypeLabel={meaning:'听后选义',discriminate:'听音辨句',cloze:'双空最小对立'}[q.qtype]||q.qtype;
+  const qtypeLabel={contrast:'译文最小对立',meaning:'听后选义',discriminate:'听音辨句',cloze:'双空最小对立'}[q.qtype]||q.qtype;
   const top=`<div class="quiz-top">
       <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
       <span class="quiz-prog">🎧 听力 ${lsQuiz.i+1} / ${n}</span>
@@ -3190,16 +3192,20 @@ function lsRender(){
       <span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
-  const hint={meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
+  const hint={contrast:'四个选项的实词完全相同，只有语法关系不同（谁对谁做／做没做／什么时候／因为还是虽然）——必须听懂整句才能选对',meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
+  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
+  const zoneTip=(q.contrast_zones||[]).length?`；要听清<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
+  const axisTip=q.qtype==='contrast'&&(q.contrast_axis_labels||[]).length?`<div class="muted" style="font-size:12.5px;margin-top:4px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`:'';
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
+    ${axisTip}
     ${clozePrompt}
     <div style="margin-top:12px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
       <div id="lsPlayBox" class="muted" style="margin-top:6px;font-size:12.5px">还没有播放过</div>
     </div>
-    <div class="sb-area jp" id="lsOpts" style="margin-top:16px">
+    <div class="sb-area${(q.qtype==='contrast'||q.qtype==='meaning')?'':' jp'}" id="lsOpts" style="margin-top:16px">
       ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})" disabled>选项 ${k+1}（播放后显示）</button>`).join('')}
     </div>
     <div class="muted" id="lsUnlockHint" style="font-size:12.5px;margin-top:5px">先播放录音，随后解锁选项</div>
@@ -3240,17 +3246,39 @@ async function lsCheck(){
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
   const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
   const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
-  const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。</div>`:'';
+  const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。<br>注意这一题型天然偏易：四条句子各有独有词汇，听清一个词就能排除其余三条。想要真正逼自己听懂整句，请把「译文最小对立」的占比调高。</div>`:'';
+  const twistNote=q.qtype==='contrast'?lsContrastNote(q):'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
-    ${contrastNote}${meaningNote}${discNote}
+    ${contrastNote}${meaningNote}${discNote}${twistNote}
     <div class="quiz-nav">
       <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
       <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid},this)">☆收藏</button>`:''}
     </div>
   </div>`;
+}
+function lsDiffHTML(answer,option){
+  if(option===answer)return esc(option);
+  let i=0;
+  while(i<answer.length&&i<option.length&&answer[i]===option[i])i++;
+  let j=0;
+  while(j<answer.length-i&&j<option.length-i&&answer[answer.length-1-j]===option[option.length-1-j])j++;
+  const mid=option.slice(i,option.length-j);
+  return esc(option.slice(0,i))+(mid?`<b style="color:var(--accent)">${esc(mid)}</b>`:'')+esc(option.slice(option.length-j));
+}
+function lsContrastNote(q){
+  const rows=(q.distractor_audit||[]).map(a=>{
+    const tag=a.is_answer?'<span style="color:var(--accent2)">✔ 录音说的就是这句</span>'
+      :(a.changes||[]).map(c=>`✘ 改动了<b>${esc(c.axis_label||'')}</b>：${esc(c.note||'')}`).join('；');
+    return `<div style="margin:4px 0;line-height:1.7">${lsDiffHTML(q.answer,a.option)}<br><span class="muted" style="font-size:12.5px">${tag}</span></div>`;
+  }).join('');
+  const ev=(q.jp_evidence||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+  const diffTxt={hard:'难（必须听清句子中段，只抓开头结尾不够）',medium:'中（考点在句子中段）',easy:'易（考点集中在句首人称／句尾谓语）'}[q.contrast_difficulty]||'';
+  return `<div class="muted" style="font-size:13px;margin-top:8px;line-height:1.7">🧪 译文最小对立：四个选项由<b>同一条真实译文</b>按纯语法规则改写而成，实词一个没换${q.contrast_structure==='matrix_2x2'?'；两个考点组成 2×2，每个考点上正确值与错误值各占两项，光比选项无法反推答案':'；同一处给出四个互斥取值'}${diffTxt?`。难度：<b>${diffTxt}</b>`:''}。</div>
+    <div style="margin-top:6px">${rows}</div>
+    ${ev?`<div class="muted" style="font-size:12.5px;margin-top:6px;line-height:1.7">改写依据（日文侧显式证据，没有证据的改写一律不生成）：<ul style="margin:4px 0 0 18px">${ev}</ul></div>`:''}`;
 }
 function lsNext(){
   if(!lsQuiz||lsQuiz.i>=lsQuiz.qs.length)return;
@@ -3281,7 +3309,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性。中英译文高级模式：先从扩大后的真实译文池检索共享高信息关键词/短语的同主题句，再匹配人称、肯否、疑问类型、长度及日文结构；仅关键动作、对象、时间或数量不同。高级题凑不齐三个相近且唯一错误的真实译文时直接放弃，不再以无关句补足。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">译文最小对立（默认主力题型）：把这句话的真实译文按纯语法规则改写成四个选项——实词一个不换，只有「谁对谁做／做没做／已经做还是还没做／因为还是虽然／在上面还是在下面」不同；每条改写都必须在日文里找到显式形态素或助词证据，找不到就不出这道题。日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性。中英译文高级模式：先从扩大后的真实译文池检索共享高信息关键词/短语的同主题句，再匹配人称、肯否、疑问类型、长度及日文结构；仅关键动作、对象、时间或数量不同。高级题凑不齐三个相近且唯一错误的真实译文时直接放弃，不再以无关句补足。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
@@ -3302,7 +3330,8 @@ async function lsCfgOpen(){
         <option value="normal" ${(!c.rate||c.rate==='normal')?'selected':''}>正常语速</option>
         <option value="fast" ${c.rate==='fast'?'selected':''}>较快（挑战）</option></select>
       <span class="muted">每组题数</span><input id="lscN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
-      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??30}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??25}" style="width:64px">% ／ 双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??45}" style="width:64px">%</div>
+      <span class="muted">题型占比</span><div><div class="row" style="gap:8px;flex-wrap:wrap">译文最小对立 <input id="lscTX" type="number" min="0" max="100" value="${(c.types||{}).contrast??40}" style="width:64px">% ／ 听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??20}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??10}" style="width:64px">% ／ 双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??30}" style="width:64px">%</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">「译文最小对立」的四个选项是同一条译文的语法改写（实词全同），只听见一个词无法排除任何一项；「听音辨句」是四条不同日文原句，最容易被局部词汇匹配攻破，建议保持低占比。</div></div>
       <span class="muted">每题最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
     </div>
     ${stHTML}
@@ -3312,7 +3341,7 @@ async function lsCfgSave(){
   const body={enabled:$('#lscOn').checked,level:$('#lscLevel').value,scope:$('#lscScope').value,
     meaning_difficulty:$('#lscMeaningDifficulty').value,
     rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
-    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0},
+    types:{contrast:parseInt($('#lscTX').value)||0,meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0},
     max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};
   try{
     const r=await api('/api/listening/cfg',{method:'POST',body:JSON.stringify(body)});

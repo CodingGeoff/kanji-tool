@@ -11,11 +11,21 @@
 语义理解的听力理解题（篇章、推论、话者意图）见 ai_item_writer.py ——
 那条路径显式经过 LLM 起草 + 人工复核，绝不假装规则引擎能替代理解。
 
-本模块提供三种自动题型：
+本模块提供四种自动题型：
 
-  1. meaning       听后选义：从 4 个同语言译文中选义。
-  2. discriminate  听音辨句：从 4 条真实完整语料中辨认原句。
-  3. cloze         双空最小对立：题面同时挖掉一个分句接续/词汇/格成分和一个
+  1. contrast      译文最小对立（默认主力题型）：四个选项是**同一条译文**的
+                   语法改写，实词一个不变，只在「谁对谁做／做没做／已经做还是
+                   还没做／因为还是虽然／在上面还是在下面」这些语法关系上互相
+                   对立。只听见一个名词无法排除任何一项，必须听懂整句关系。
+                   改写由 translation_contrast.py 完成：每条改写规则都绑定
+                   日文侧的显式形态素/助词证据，凑不齐证据就不出题。
+  2. meaning       听后选义：从 4 个同语言的**真实**译文中选义（干扰项来自
+                   语料里其它句子的译文，共享高信息词时含金量很高，但可遇
+                   不可求）。
+  3. discriminate  听音辨句：从 4 条真实完整语料中辨认原句。注意这一题型
+                   天然偏易——四条日文原句各自带有独有词汇，只要听清其中
+                   一个词就能排除其余三条，因此默认占比最低。
+  4. cloze         双空最小对立：题面同时挖掉一个分句接续/词汇/格成分和一个
                    时态・极性成分，四个选项是二者的 2×2 组合。错误极性可让
                    意义完全相反（如「ている」↔「ていない」），词汇项优先
                    使用同助词+同谓语的语料实证搭配。候选整句全部重新经过
@@ -40,6 +50,7 @@
 import json
 import random
 import re
+import traceback
 from collections import Counter, defaultdict
 from datetime import date
 from difflib import SequenceMatcher
@@ -51,6 +62,7 @@ import furigana
 import grammar
 import sentence_builder as sb
 import textbook
+import translation_contrast as tcon
 
 LEVEL_ORDER = sb.LEVEL_ORDER
 LEVELS = sb.LEVELS
@@ -60,8 +72,10 @@ DEFAULT_CFG = {
     'level': 'any',              # any | N5..N1 —— 句子选材难度
     'scope': 'corpus',           # corpus | book | mixed | lyric（与组句练习同义）
     'count': 6,
-    # 双空最小对立占最高比重，避免只听见一个简单词就能排除。
-    'types': {'meaning': 30, 'discriminate': 25, 'cloze': 45},
+    # 译文最小对立占最高比重：四个选项共享全部实词，只有语法关系不同，
+    # 「只听见一个词就能排除三项」的应试策略在这种题面前完全失效。
+    # 听音辨句（四条不同日文原句）最容易被局部词汇匹配攻破，默认占比最低。
+    'types': {'contrast': 40, 'meaning': 20, 'discriminate': 10, 'cloze': 30},
     # advanced 要求译文共享高信息词/短语且句式相近；凑不齐三项就不出该题。
     'meaning_difficulty': 'advanced',   # standard | advanced
     'rate': 'normal',            # slow | slower | normal | fast —— 听力特有难度轴
@@ -124,12 +138,13 @@ def _sanitize_cfg(cfg):
     cfg['min_len'] = _to_int(cfg.get('min_len'), 6, min_val=4, max_val=40)
     cfg['max_len'] = _to_int(cfg.get('max_len'), 60, min_val=cfg['min_len'], max_val=100)
     t = cfg.get('types') if isinstance(cfg.get('types'), dict) else {}
-    m = _to_int(t.get('meaning'), 30, min_val=0, max_val=1000)
-    d = _to_int(t.get('discriminate'), 25, min_val=0, max_val=1000)
-    c = _to_int(t.get('cloze'), 45, min_val=0, max_val=1000)
-    if m + d + c == 0:
-        m, d, c = 30, 25, 45
-    cfg['types'] = {'meaning': m, 'discriminate': d, 'cloze': c}
+    x = _to_int(t.get('contrast'), 40, min_val=0, max_val=1000)
+    m = _to_int(t.get('meaning'), 20, min_val=0, max_val=1000)
+    d = _to_int(t.get('discriminate'), 10, min_val=0, max_val=1000)
+    c = _to_int(t.get('cloze'), 30, min_val=0, max_val=1000)
+    if x + m + d + c == 0:
+        x, m, d, c = 40, 20, 10, 30
+    cfg['types'] = {'contrast': x, 'meaning': m, 'discriminate': d, 'cloze': c}
     cfg['enabled'] = bool(cfg.get('enabled', True))
     return cfg
 
@@ -158,7 +173,11 @@ def _fetch_pool(scope, ids, need):
         rows += tb.fetch_book_sentence_rows(ids, need)
     if scope == 'lyric':
         rows += sb._lyric_pool(need)
-    if scope in ('corpus', 'mixed') or not rows:
+    # 注意：这里绝不能写成 `or not rows` —— 那样课本/歌词题源一旦取空，
+    # 就会把全库语料悄悄混进来，用户以为在练课本，实际在听 Tatoeba。
+    # 取空时老老实实返回空列表，由 make_quiz 统一退化并写明 scope_note，
+    # 让界面照实说「课本没有可用句子，已退回全库」。
+    if scope in ('corpus', 'mixed'):
         try:
             with db.get_conn() as c:
                 rows += [dict(r) for r in c.execute(
@@ -495,6 +514,55 @@ def _get_global_sound_sentences():
 
 
 # ================================================================
+# 题型 0：译文最小对立（四个选项＝同一条译文的语法改写）
+# ================================================================
+def _build_contrast_q(row, min_difficulty=None):
+    """把这句话的真实译文改写成四个只差语法关系的选项。
+
+    与 meaning 题的根本区别：meaning 的干扰项是**别的句子**的译文，选项之间
+    往往话题就不同，听出一个名词即可排除；contrast 的四个选项共享全部实词，
+    只有「谁对谁做／做没做／已经做还是没做／因为还是虽然」这类语法关系不同，
+    局部词汇匹配策略彻底失效。
+
+    所有改写都要求日文侧有显式证据（见 translation_contrast.jp_features），
+    没有证据就返回 None，主流程会换别的题型——绝不靠猜。
+
+    min_difficulty：日语谓语后置，人称在句首、否定/时制在句尾。只考这两头的
+    题目（「他/我 × 去了/没去」）听中间一段全漏也能答对。出卷时先只要
+    'hard'（必须听清句子中段：数量/方位/施受/具体名词…），凑不满再放宽。
+    """
+    text = (row.get('text') or '').strip()
+    tr = (row.get('translation') or '').strip()
+    if not text or not tr or not _sound_sentence(text):
+        return None
+    try:
+        got = tcon.build_contrast(text, tr, min_difficulty=min_difficulty)
+    except Exception:
+        # 单句改写出错不该拖垮整份卷子，但也不能装作无事发生——打日志，
+        # 主流程会自动换成别的题型。
+        traceback.print_exc()
+        return None
+    if not got:
+        return None
+    try:
+        tokens = furigana.annotate(text)
+    except Exception:
+        tokens = []
+    return {
+        'qtype': 'contrast', 'text': text, 'options': got['options'],
+        'answer': got['answer'], 'sid': row.get('sid'), 'source': row.get('source'),
+        'origin': _origin(row), 'tokens': tokens,
+        'tr_lang': got['lang'], 'contrast_structure': got['structure'],
+        'contrast_axes': got['axes'], 'contrast_axis_labels': got['axis_labels'],
+        'jp_evidence': got['evidence'],
+        'contrast_difficulty': got.get('difficulty'),
+        'contrast_zones': got.get('zones'),
+        'distractor_source': 'rule_perturbed_translation_minimal_pair',
+        'distractor_audit': got['audit'],
+    }
+
+
+# ================================================================
 # 题型 2：听音辨句（不需要译文；所有选项都是完整的真实语料句）
 # ================================================================
 @lru_cache(maxsize=16384)
@@ -784,7 +852,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
         rows = valid_rows
 
     t = cfg['types']
-    kinds = ('meaning', 'discriminate', 'cloze')
+    kinds = ('contrast', 'meaning', 'discriminate', 'cloze')
     total_weight = sum(t[k] for k in kinds)
     raw_targets = {k: count * t[k] / total_weight for k in kinds}
     targets = {k: int(raw_targets[k]) for k in kinds}
@@ -800,7 +868,10 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     meaning_ctx = _meaning_search_context(translation_pool) if translation_pool else _get_global_translation_index()
     sentence_pool = rows
 
+    contrast_floor = ['hard']          # 先只收「必须听句子中段」的对立题
+
     builders = {
+        'contrast': lambda row: _build_contrast_q(row, contrast_floor[0]),
         'meaning': lambda row: _build_meaning_q(
             row, translation_pool, meaning_difficulty, meaning_ctx),
         'discriminate': lambda row: _build_discriminate_q(row, sentence_pool),
@@ -811,7 +882,14 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     made = {k: 0 for k in kinds}
     relax_note = False
 
-    def _fill_from(candidate_rows, relax_level=False):
+    def _fill_from(candidate_rows, relax_level=False, strict_mix=True):
+        """strict_mix=True 时只构造「还欠着的题型」。
+
+        否则会出现这种事：用户把「译文最小对立」调到 100%，但该题型对句子
+        有硬性要求（要有译文、日文侧要有显式语法证据），碰上不合适的句子就
+        返回 None，于是这一行立刻被听音辨句题占掉——最后一道对立题都没有。
+        先严格按配额填，填不满再放开，既尊重用户设定又不会出空卷。
+        """
         nonlocal relax_note
         want = None if relax_level else level
         for row in candidate_rows:
@@ -825,6 +903,8 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             if want and want != 'any' and lv != want:
                 continue
             order = sorted(kinds, key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
+            if strict_mix:
+                order = [k for k in order if targets[k] - made[k] > 0]
             got = None
             for kind in order:
                 got = builders[kind](row)
@@ -840,12 +920,25 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             used.add(key)
             questions.append(got)
 
-    # 第一轮：严格匹配指定等级
+    # 第一轮：严格匹配指定等级 + 严格按题型配额 + 只要难的对立题
     _fill_from(rows, relax_level=False)
 
-    # 第二轮：如果题数未满且指定了级别，放宽级别限制
+    # 第二轮：难题不够，放宽到「至少要听句中一处」的中等难度，再到全部
+    for floor in ('medium', None):
+        if len(questions) >= count or made['contrast'] >= targets['contrast']:
+            break
+        contrast_floor[0] = floor
+        _fill_from(rows, relax_level=False)
+
+    # 第三轮：配额填不满（如某题型对句子要求高）时，放开题型限制补齐
+    if len(questions) < count:
+        _fill_from(rows, relax_level=False, strict_mix=False)
+
+    # 第四轮：如果题数仍未满且指定了级别，放宽级别限制
     if len(questions) < count and level != 'any':
         _fill_from(rows, relax_level=True)
+        if len(questions) < count:
+            _fill_from(rows, relax_level=True, strict_mix=False)
 
     random.shuffle(questions)
     rate = cfg['rate']

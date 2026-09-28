@@ -27,6 +27,11 @@ shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanji.db')
 with sqlite3.connect(api_db) as c0:
     c0.execute('DELETE FROM songs')
 db.DB_PATH = api_db
+# db._migrate() 只在 import db 的那一刻针对「当时的 DB_PATH」跑过一次，换成
+# 临时库后必须再补一次（test_ktv / test_ai_translate 就是这么做的）：否则拷贝
+# 出来的旧库缺 v22 的 sentences.grammar_cache 列，凡是 JOIN 该列的「课本取句」
+# SQL 全部报错并被吞掉，课本题源静默退化成全库语料。
+db._migrate()
 import structsim
 import app as appmod
 client = appmod.app.test_client()

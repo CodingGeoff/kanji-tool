@@ -133,6 +133,8 @@ Tatoeba、Wikimedia 官方 dump 和逐作品确认公版的青空文库作为批
 - `DATABASE.md` — 数据库与 Git 协作指南（备份/合并/发布/Render 数据流）
 - `dbtool.py` — 数据库工具：status / save / merge / pull / publish / verify / setup
 - `db.py` — 数据库层
+- `listening.py` — 🎧 听力练习出题引擎（译文最小对立 / 听后选义 / 听音辨句 / 双空最小对立）
+- `translation_contrast.py` — 译文语法改写引擎：把一条真实译文改写成四个只差语法关系的选项
 - `static/index.html` — 前端界面
 - `kanji.db` — 本地数据（**必须提交，Render 靠它拿初始数据**）
 
@@ -272,3 +274,93 @@ API：`GET/POST /api/songs`、`POST /api/songs/import`（支持 `dry_run` 预览
 - **测试**：新增 `test_ktv_quality.py` 35 项（缺字表/双路择优/alt 门禁/全库结构不变式/
   版本对齐/学习档案/歌词组句公平性），全套旧测试（furigana 118、grammar 154、
   builder 全量压力测试等）零回归。
+
+## v23 更新（🎧 听力「译文最小对立」：干扰项从语法里长出来）
+
+**问题**：听日语选日语的四选一，四条原句各有独有词汇，只要抓住一个词就能排除其余三条；
+中英译文题也一样，干扰项来自别的句子，话题一换就等于送分。听力练习实际在考「听到某个词」，
+而不是「听懂整句」。
+
+**做法**：新增 `translation_contrast.py` —— **不检索、不生成新内容**，只对这句话**自己的**
+真实译文做纯语法层面的改写，四个选项共享全部实词：
+
+```
+トムはメアリーに電話しました。          机の上に本があります。
+  ✔ Tom called Mary.                      ✔ There is a book on the desk.
+    Mary called Tom.                        There is a book under the desk.
+    Tom didn't call Mary.                   There is not a book on the desk.
+    Mary didn't call Tom.                   There is not a book under the desk.
+```
+
+- **12 条语法轴**：施受互换（role）、肯否（polarity）、时态（tense）、人称（person）、
+  数量（number）、频率（quant）、方位（place）、方向（direction）、时间（time）、
+  连词（conj）、情态（modal）、比较（comparative）。
+- **每条改写都要日文侧证据**：加否定要求日文谓语无否定形态素、去否定要求确有「ない／ません」、
+  时态轴要求句尾时制明确、施受互换要求两个实体的格助词不同……凑不齐证据**直接不出这道题**
+  （英文 50% / 中文 46% 的句子能出题，其余老实放弃）。
+- **难度分级：别让人只听开头结尾就能选对**。日语是谓语后置的——人称在句首，
+  否定/时制在句尾，数量·方位·对象·具体名词在句中。所以「人称 × 肯否」这种组合，
+  只要听清第一个词和最后一个词就能做对，中间全漏也不影响。每条轴因此标注了它锚定的
+  **听辨区**（head/mid/tail），出题时优先挑逼人听句子中段的组合，并如实标注难度；
+  出卷时先要 `hard`，不够再放宽到 `medium`、最后才用 `easy`。
+  新增**具体名词轴**（咖啡/茶/啤酒/牛奶、电车/公交/自行车、父/母/兄/姉…）专治这一点：
+  四个选项只差句子中间那一个名词，不听清中段无从下手。同组词必须在同一类谓语下都说得通
+  （能喝的跟能喝的换），并核对量词、冠词、可数性——「I drink meat」这种荒唐选项
+  不用听懂也能排除，等于白送分。
+- **两种反泄漏版式**：`matrix_2x2`（两条轴组成 2×2，每条轴上正确值与错误值各占两项，
+  杜绝「哪个选项跟别人都不一样就是答案」）、`four_way_slot`（同一处的四个互斥取值，
+  近义值如 must/have to 会被合并剔除）。
+- **肯否 × 时制融合矩阵**：这两条轴改的是同一个谓语、区间必然重叠，通用 2×2 拼不出来。
+  改成**串行套用**已有规则（先改时制得 B，再在 B 上重新识别肯否得 AB），并做**双向交叉验算**
+  （先改肯否再改时制必须落到同一句），不另写一套动词变形逻辑。
+  `He is a doctor.` → is / is not / was / was not a doctor；
+  `Tom doesn't trust us.` → trusts / doesn't trust / trusted / didn't trust。
+- **倒装疑问句**：`Is this a tax-free shop?` / `Do you know where she is?` 这类句子没有
+  「主语在句首」的形状，原先一律放弃；现在单独识别「(wh +) 助动词 + 主语」，
+  否定收缩到助动词上（Isn't / Didn't），时制走 is↔was、do↔did。
+  what/which/whose 这类论元疑问句不许加否定（"Whose watch is not this?" 是病句）。
+- **英文形态学纯规则实现**：约 190 个不规则动词 + 420 个常用动词的三单/过去式表、
+  缩合形拆分（didn't → did + not）、主谓一致修正、do-support 折叠
+  （does not take → takes）、换数词时同步改 is/are；改不动就放弃，不输出病句。
+  换数词跨单复数时连**名词**带 be 动词一起改（There is one book → There are two books）、
+  施受互换后修主谓一致（I don't → She doesn't）、多词专名整块搬（San Francisco 不许切开）。
+  6000 句 × 全部干扰项的自动病句扫描已清零（仅剩 need/succeed 类正则误报）。
+- **中文安全闸**：否定/时态只在单小句、非祈使、无「把被让使」的句子上做；
+  「很/非常/太 + 形容词」前文出现「了」即放弃；人称轴跳过祈使句与「X们」。
+  另有四道新闸：谓语后紧跟「的」说明它在定语从句里（「你想像的」）不挂否定；
+  单字动词不许切进双字词（想像／会议／要求）；「放学后／吃饭前」是时间状语不是谓语；
+  「可不可以／能不能」正反问里的第二个成分不许替换。时体轴与时间轴互相校对，
+  不产生「他下周去了东京」这种自相矛盾、不用听懂也能排除的白送分选项。
+- **前端讲解**：答完逐项高亮差异，并说明这一项改了哪条轴（`on → under`）、
+  依据是日文里的哪个成分；题型占比可在听力设置里自由调整
+  （默认 译文最小对立 40% / 听后选义 20% / 听音辨句 10% / 双空最小对立 30%）。
+
+**顺带修掉的老问题**：
+
+- `test_listening.py` 等 10 个测试文件换了临时库却没重跑 `db._migrate()`，
+  拷贝出来的旧库缺 v22 的 `sentences.grammar_cache` 列 → 课本取句 SQL 报错被吞 →
+  **「仅课本」题源静默退化成全库语料**。这正是听力测试长期偶发失败（第 5、8 节）的真凶。
+- `listening._fetch_pool` 里 `if scope in ('corpus','mixed') or not rows` 的 `or not rows`：
+  课本/歌词取空时把全库语料悄悄混进来，且不改 `scope`。现在取空就返回空，
+  由 `make_quiz` 统一退化并写明 `scope_note`，界面照实说明。
+- `textbook.fetch_book_sentence_rows` 的 `except: pass` 改为打印 traceback，
+  避免同类故障再次变成查不出原因的幽灵。
+- 组卷按题型配额分两轮填充：先严格按用户设定的占比填，填不满再放开，
+  避免「把某题型调到 100% 却一道都出不来」。
+- **人工抽检工具**：`python contrast_sample.py --per 3 --md CONTRAST_REVIEW.md` 按
+  「难度｜语法轴」分层抽样出题，连同「改了哪条轴、依据是日文里的什么」一起列成表。
+  机器只能核验版式与语法，**「干扰项会不会碰巧也是合法译文」只能靠人看**——这张表就是
+  给人看的。上面那些中英文安全闸，全部来自照着这张表逐条挑刺挑出来的真实病句。
+- **地道性扫描**：另有一套 40 条规则的扫描器（已并入 `test_translation_contrast.py`
+  第 7 节）拿 7500 道真题跑过，专抓「不用听懂就能排除」的破绽：
+  `There is not a book`（应为 `there is no`）、`a eleven-percent`、`I ate a water`、
+  `I will may take`、`It is not no use`、`didn't have some`（应为 `any`）、
+  「我从来去过美国」「粗糙没多」「咖啡店→茶店」「没强调」「一直都→从不都」、
+  以及把词劈开的「美了国」。扫描只追究**改写引入**的毛病，原译文自带的写法不算账。
+- **顺带堵掉的组句题漏洞**：组句题原来显示「已填 3 / 5 个必要槽位」，这个计数只统计
+  真槽位——等于每点一块就告诉你它是不是混淆块，挨个试一遍就能反推出正确块集合。
+  现在只报「已填几块」，有译文时连必要块数也不再报。
+- **测试**：新增 `test_translation_contrast.py`（10 节：版式反泄漏、不换话题、
+  证据完整性、病句扫描、具体规则回归、新增规则回归、难度分级）+ `test_listening.py` 第 2.5 节；
+  `test_listening / test_textbook / test_scope_resolve / test_builder_scope / test_cloze`
+  等全部转为稳定通过。

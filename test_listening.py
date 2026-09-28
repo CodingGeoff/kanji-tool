@@ -44,7 +44,18 @@ with sqlite3.connect(api_db) as c0:
         except sqlite3.OperationalError:
             pass
     c0.execute("DELETE FROM settings WHERE key IN ('listening_cfg','listening_stats')")
+# 必须关掉这条连接：sqlite3 的 with 只提交事务、不关连接，留着它会让下面
+# init_db() 的 ALTER TABLE 撞上 database is locked，而那个异常被 db.py 按
+# 「列已存在」吞掉 —— 结果就是补列静默失败。
+c0.close()
 db.DB_PATH = api_db
+# db._migrate() 是在 import db 那一刻对「当时的 DB_PATH」跑的，换库之后必须
+# 再补一次（test_ktv / test_ai_translate 同理）：否则拷贝出来的旧库缺 v22 的
+# sentences.grammar_cache 列，textbook.fetch_book_sentence_rows 那条 SQL 直接
+# 报 no such column 并被吞掉，「仅课本」题源随即静默退化成全库语料——
+# 本套测试长期偶发失败（第 5、8 节）的真正原因就是这个。
+db.init_db()
+db._migrate()
 
 import textbook
 import listening as ls
@@ -54,8 +65,9 @@ random.seed(20260926)
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
 check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
-      and cfg['types'].get('cloze') == 45 and cfg['meaning_difficulty'] == 'advanced',
-      f'默认配置含高级译文硬负例和高难度双空题：{cfg}')
+      and cfg['types'].get('contrast') == 40 and cfg['types'].get('cloze') == 30
+      and cfg['types'].get('discriminate') == 10 and cfg['meaning_difficulty'] == 'advanced',
+      f'默认配置以译文最小对立为主力、听音辨句占比最低：{cfg}')
 cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999,
                               'meaning_difficulty': 'bogus', 'bogus_key': 'x'})
 check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20
@@ -132,6 +144,107 @@ for controlled, unrelated in [
         check(unrelated not in hard['options'], f'高级模式不得混入无关话题：{hard["options"]}')
         check(all(len(a['shared_terms']) >= 2 for a in hard['distractor_audit']),
               f'长句干扰项至少共享两个信息锚点：{hard["distractor_audit"]}')
+
+print('== 2.5 contrast 题：同一条译文的语法改写，实词不变 ==')
+_FUNC_EN = set('''i you he she it we they me him her us them my your his its our their
+mine yours hers ours theirs myself yourself himself herself itself ourselves themselves
+am is are was were be been being do does did doing done have has had having will would
+shall should can could may might must not no n t don doesn didn isn aren wasn weren
+won can hasn haven hadn shouldn wouldn couldn mustn a an the this that these those
+there here s re ve ll d m'''.split())
+CONTRAST_CASES = [
+    ('トムはメアリーに電話しました。', 'Tom called Mary.'),
+    ('彼女は私に手紙を書いた。', 'She wrote me a letter.'),
+    ('机の上に本があります。', 'There is a book on the desk.'),
+    ('彼はいつも遅刻する。', 'He is always late.'),
+    ('私は昨日公園へ行きませんでした。', "I didn't go to the park yesterday."),
+    ('彼は私の兄より背が高い。', '他比我哥哥高。'),
+    ('她比你大两岁テスト用。', None),
+]
+built = 0
+for txt, tr in CONTRAST_CASES:
+    if not tr:
+        continue
+    db.add_sentence(txt, tr, 'unit_test', None, [], [])
+    q = ls._build_contrast_q({'text': txt, 'translation': tr, 'sid': None, 'source': 'unit_test'})
+    if q is None:
+        continue
+    built += 1
+    check(q['qtype'] == 'contrast' and len(q['options']) == 4 and len(set(q['options'])) == 4,
+          f'4 个互不相同的选项：{q["options"]}')
+    check(q['answer'] in q['options'] and q['answer'] == tr,
+          f'正确选项就是数据库里的真实译文，不被改写：{q["answer"]}')
+    check(q['distractor_source'] == 'rule_perturbed_translation_minimal_pair',
+          '标记干扰项来源为规则改写最小对立')
+    check(len(q['distractor_audit']) == 4
+          and [a['option'] for a in q['distractor_audit']] == q['options'],
+          f'审计信息与选项同序且逐项齐全：{q["distractor_audit"]}')
+    check(sum(1 for a in q['distractor_audit'] if a['is_answer']) == 1,
+          '四项中恰有一项被标记为正确答案')
+    check(q.get('contrast_difficulty') in ('easy', 'medium', 'hard')
+          and q.get('contrast_zones'),
+          f'每道对立题都要带难度与听辨区（供出卷优先挑难题）：{q.get("contrast_difficulty")}')
+    for a in q['distractor_audit']:
+        if a['is_answer']:
+            continue
+        check(bool(a['changes']) and all(c.get('axis') and c.get('evidence') for c in a['changes']),
+              f'每个干扰项都要说明改了哪条语法轴、日文侧证据是什么：{a}')
+    # 反泄漏：2×2 版式下每条轴上正确值与错误值必须各占两项，
+    # 否则「哪个选项长得跟别人都不一样」就能反推答案。
+    if q['contrast_structure'] == 'matrix_2x2':
+        for axis in q['contrast_axes']:
+            changed = sum(1 for a in q['distractor_audit']
+                          if any(c['axis'] == axis for c in a['changes']))
+            check(changed == 2, f'轴 {axis} 上必须 2:2 平分：{q["distractor_audit"]}')
+    # 实词不许凭空出现：改写只允许动语法（人称、时态、极性、方向…），
+    # 不允许换话题。比较时把词还原成原形，并忽略人称代词与助动词——
+    # 这些正是改写要动的部分。
+    if q['tr_lang'] == 'en':
+        import re
+        import translation_contrast as _tc
+
+        def _content(txt):
+            out = set()
+            for w in re.findall(r"[a-z]+", txt.lower()):
+                if w in _FUNC_EN:
+                    continue
+                b = _tc.en_base_of(w)
+                out.add(b[0] if b else w)
+            return out
+
+        base = _content(tr)
+        for a in q['distractor_audit']:
+            # 允许出现的新词只有一种来源：审计里明确写出来的那处语法替换
+            # （on → under、always → never…）。凡是没写进 audit 的新词，
+            # 都说明改写偷偷换了内容，必须判不合格。
+            declared = set()
+            for ch in a['changes']:
+                declared |= _content(ch.get('note') or '')
+            extra = _content(a['option']) - base - declared
+            check(not extra, f'改写只在语法层面动手，不引入未申报的新词：{a["option"]} 新增 {extra}')
+check(built >= 4, f'上述典型句中至少 4 句能构造译文最小对立题（实得 {built}）')
+
+q_sym = ls._build_contrast_q({'text': 'これはペンです。', 'translation': 'This is a pen.',
+                              'sid': None, 'source': 'unit_test'})
+check(q_sym is None or len(q_sym['options']) == 4,
+      '找不到足够语法证据时返回 None，而不是硬造选项')
+check(ls._build_contrast_q({'text': '私は学生です。', 'translation': '', 'sid': None,
+                            'source': 'unit_test'}) is None, '没有译文一律不出 contrast 题')
+
+ls.save_listening_cfg({'types': {'contrast': 100, 'meaning': 0, 'discriminate': 0, 'cloze': 0}})
+d_c = ls.make_quiz(count=6, scope='corpus')
+check(d_c['ok'] and any(q['qtype'] == 'contrast' for q in d_c['questions']),
+      f'contrast 占比 100% 时能真的出到该题型：{[q["qtype"] for q in d_c["questions"]]}')
+ls.save_listening_cfg({'types': {'contrast': 40, 'meaning': 20, 'discriminate': 10, 'cloze': 30}})
+
+# 出卷时先挑「必须听句子中段」的难题，easy（只考句首人称＋句尾否定）垫底
+_hard_probe = ls.make_quiz(None, 12, 'any', 'corpus')
+_cs = [x for x in _hard_probe['questions'] if x['qtype'] == 'contrast']
+if len(_cs) >= 3:
+    _easy = [x for x in _cs if x.get('contrast_difficulty') == 'easy']
+    check(len(_easy) <= max(1, len(_cs) // 3),
+          f'对立题应以难题为主，easy 只能垫底：'
+          f'{[x.get("contrast_difficulty") for x in _cs]}')
 
 print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])
@@ -268,17 +381,18 @@ print('== 8. 全配置组合出题健壮性：无死锁、无空白 ==')
 cfg_corrupt = ls.save_listening_cfg({
     'level': 'INVALID_LV', 'scope': 'BOGUS_SCOPE', 'rate': 'TURBO',
     'count': -5, 'max_plays': 999, 'meaning_difficulty': 'RANDOM',
-    'types': {'meaning': -10, 'discriminate': 'invalid', 'cloze': None}
+    'types': {'contrast': -5, 'meaning': -10, 'discriminate': 'invalid', 'cloze': None}
 })
 check(cfg_corrupt['level'] == 'any' and cfg_corrupt['scope'] == 'corpus'
       and cfg_corrupt['count'] == 1 and cfg_corrupt['max_plays'] == 10
-      and cfg_corrupt['types']['meaning'] == 0,
+      and cfg_corrupt['types']['meaning'] == 0 and cfg_corrupt['types']['contrast'] == 0,
       f'异常配置深度清洗与边界安全：{cfg_corrupt}')
 
 # 遍历所有 scope、level、题型组合，确保均能稳定出题
 for scope in ('corpus', 'mixed', 'lyric'):
     for level in ('any', 'N5', 'N4', 'N3', 'N2', 'N1'):
         for types in [
+            {'contrast': 100, 'meaning': 0, 'discriminate': 0, 'cloze': 0},
             {'meaning': 30, 'discriminate': 25, 'cloze': 45},
             {'meaning': 100, 'discriminate': 0, 'cloze': 0},
             {'meaning': 0, 'discriminate': 100, 'cloze': 0},
