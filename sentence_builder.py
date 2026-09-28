@@ -76,10 +76,15 @@ DEFAULT_BUILDER_CFG = {
     'level': 'any',             # any | N5..N1  —— 句子选材难度，独立于 mode
     'scope': 'corpus',          # corpus=全库语料 | book=仅课本 | mixed=课本优先 | lyric=KTV歌词
     'count': 6,                 # 每组题数 (1-20)
+    # arrange 译文覆盖轴：with=必须有译文；without=必须无译文；mixed=按比例。
+    'translation_mode': 'mixed',
+    'translated_ratio': 50,     # mixed 时有译文组句占比（0-100）
     'types': {'arrange': 80, 'pairs': 20},   # 题型占比（自动归一）
     'min_tiles': 3,             # 组句题最少词块数
     'max_tiles': 9,             # 组句题最多词块数
     'distractors': 3,           # advanced 干扰块数 (0-6)
+    # precise 只用时态/极性/非等价格关系等最小对立；balanced 才允许句外词。
+    'distractor_profile': 'precise',
     'distractor_kinds': {'verb_form': True, 'vocab': True, 'particle': True},
     'alt_answers': True,        # advanced 多答案：槽位放可互换名词块（任选其一均判对）
     'alt_max': 2,               # 每题最多追加的可互换名词数 (1-4)
@@ -123,6 +128,12 @@ def _sanitize_cfg(cfg):
         cfg['level'] = 'any'
     if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
         cfg['scope'] = 'corpus'
+    if cfg.get('translation_mode') not in ('with', 'without', 'mixed'):
+        cfg['translation_mode'] = 'mixed'
+    try:
+        cfg['translated_ratio'] = max(0, min(int(cfg.get('translated_ratio', 50)), 100))
+    except Exception:
+        cfg['translated_ratio'] = 50
     try:
         cfg['count'] = max(1, min(int(cfg.get('count', 6)), 20))
     except Exception:
@@ -139,6 +150,8 @@ def _sanitize_cfg(cfg):
         cfg['distractors'] = max(0, min(int(cfg.get('distractors', 3)), 6))
     except Exception:
         cfg['distractors'] = 3
+    if cfg.get('distractor_profile') not in ('precise', 'balanced'):
+        cfg['distractor_profile'] = 'precise'
     try:
         cfg['swap_prob'] = max(0.0, min(float(cfg.get('swap_prob', 0.35)), 1.0))
     except Exception:
@@ -1070,7 +1083,10 @@ def make_distractors(parsed, text, cfg, extra_exclude=()):
                 _push(v)
             if len(out) >= want:
                 break
-    if kinds.get('vocab', True) and len(out) < want:
+    # 精确模式宁缺毋滥：随机句外词通常太显眼，且语义唯一性最难自动证明；
+    # 只有 balanced 模式显式允许时才启用，并继续经过可插入词/语料实证双门禁。
+    if (cfg.get('distractor_profile') == 'balanced'
+            and kinds.get('vocab', True) and len(out) < want):
         attested = _attested_words(parsed, text)   # 语料实证反查：可替入词禁用
         for v in _vocab_distractors(want - len(out), text + ''.join(out)):
             if v in attested or _freely_insertable(v):   # 双保险：可插入词绝不放行
@@ -1322,29 +1338,60 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
     import textbook
     resolved = textbook.resolve_book_scope(scope, book_ids)
     scope, resolved_ids = resolved['scope'], resolved['ids']
-    rows = _fetch_pool(scope, resolved_ids, need=min(max(n_arr * 30, 120), 500))
+    rows = _fetch_pool(scope, resolved_ids, need=min(max(n_arr * 40, 160), 600))
     questions, used_sid = [], set()
     relax_note = False
+    mix_relaxed = False
 
-    for relax in (False, True):
-        want = None if relax else level      # 第二遍放宽 level 限制
-        for row in rows:
-            if len(questions) >= n_arr:
+    def _row_key(row):
+        return row.get('sid') or row.get('dedup') or row.get('text')
+
+    def _has_translation(row):
+        return bool((row.get('translation') or '').strip())
+
+    def _fill(candidates, amount):
+        """从指定译文池填 amount 道；只允许放宽 JLPT level，不跨译文池。"""
+        nonlocal relax_note
+        goal = min(n_arr, len(questions) + max(0, amount))
+        for relax in (False, True):
+            want = None if relax else level
+            for row in candidates:
+                if len(questions) >= goal:
+                    break
+                key = _row_key(row)
+                if key in used_sid:
+                    continue
+                got = _build_arrange(row, cfg, mode, want)
+                if isinstance(got, tuple) or not got:
+                    continue
+                if relax and level != 'any':
+                    got['level_relaxed'] = True
+                    relax_note = True
+                used_sid.add(key)
+                questions.append(got)
+            if len(questions) >= goal or level == 'any':
                 break
-            if (row.get('sid') or row.get('dedup')) in used_sid:
-                continue
-            got = _build_arrange(row, cfg, mode, want)
-            if isinstance(got, tuple):       # level 不匹配（供放宽重试）
-                continue
-            if not got:
-                continue
-            if relax and level != 'any':
-                got['level_relaxed'] = True
-                relax_note = True
-            used_sid.add(row.get('sid') or row.get('dedup'))
-            questions.append(got)
-        if len(questions) >= n_arr or level == 'any':
-            break
+
+    translated_rows = [r for r in rows if _has_translation(r)]
+    untranslated_rows = [r for r in rows if not _has_translation(r)]
+    random.shuffle(translated_rows)
+    random.shuffle(untranslated_rows)
+    tr_mode = cfg.get('translation_mode', 'mixed')
+    if tr_mode == 'with':
+        _fill(translated_rows, n_arr)
+    elif tr_mode == 'without':
+        _fill(untranslated_rows, n_arr)
+    else:
+        n_translated = int(round(n_arr * cfg.get('translated_ratio', 50) / 100.0))
+        _fill(translated_rows, n_translated)
+        _fill(untranslated_rows, n_arr - n_translated)
+        # 某一池不足时，为保证总题数允许另一池补位，但在返回值中如实标记。
+        if len(questions) < n_arr:
+            before = len(questions)
+            fallback = list(rows)
+            random.shuffle(fallback)
+            _fill(fallback, n_arr - len(questions))
+            mix_relaxed = len(questions) > before
 
     # 配对题
     made_pairs = 0
@@ -1358,9 +1405,16 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
     random.shuffle(questions)
     for i, q in enumerate(questions):
         q['qid'] = f'q{i}'
+    arrange_qs = [q for q in questions if q.get('qtype') == 'arrange']
+    actual_translated = sum(1 for q in arrange_qs if (q.get('translation') or '').strip())
     return {'ok': True, 'mode': mode, 'level': level, 'scope': scope,
             'book_ids': resolved_ids, 'scope_auto_all': resolved['auto_all'],
             'scope_note': resolved['note'],
+            'translation_mode': tr_mode,
+            'translated_ratio': cfg.get('translated_ratio', 50),
+            'actual_translated': actual_translated,
+            'actual_untranslated': len(arrange_qs) - actual_translated,
+            'translation_mix_relaxed': mix_relaxed,
             'count': len(questions), 'questions': questions,
             'n_arrange': len(questions) - made_pairs, 'n_pairs': made_pairs,
             'level_relaxed': relax_note,

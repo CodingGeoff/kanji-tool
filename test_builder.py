@@ -268,6 +268,12 @@ for text in ['私は昨日図書館で本を読みました。', '彼女は毎�
                for x in ('が', 'は', 'も', 'へ')):
             check(False, f'出现等价助词干扰块：{d}')
 check(n_d >= 2, f'两句应产出若干干扰块（{n_d}）')
+# 精确模式即使勾选 vocab 也不得退化为随机句外词；均衡模式才显式允许。
+precise_cfg = dict(cfg, distractor_profile='precise', distractors=4,
+                   distractor_kinds={'verb_form': False, 'particle': False, 'vocab': True})
+check(sb.make_distractors(sb.parse_sentence('私は昨日図書館で本を読みました。'),
+                          '私は昨日図書館で本を読みました。', precise_cfg) == [],
+      '精确最小对立模式禁用无法充分证明语义唯一性的随机句外词')
 # 时态变形干扰
 p = sb.parse_sentence('私は昨日図書館で本を読みました。')
 vf = sb._verb_form_variants(p['chunks'][-1])
@@ -392,6 +398,8 @@ check(c0['mode'] in ('basic', 'advanced') and c0['level'] in ['any'] + sb.LEVELS
       '默认配置合法')
 c1 = sb.save_builder_cfg({'mode': 'advanced', 'level': 'N3', 'count': 99,
                           'max_tiles': 999, 'swap_prob': 7,
+                          'translation_mode': 'bad', 'translated_ratio': 999,
+                          'distractor_profile': 'bad',
                           'types': {'arrange': 0, 'pairs': 0},
                           'distractor_kinds': {'vocab': False, 'bogus': True},
                           'evil_key': 'x'})
@@ -399,6 +407,9 @@ check(c1['mode'] == 'advanced' and c1['level'] == 'N3', 'mode 与 level 独立�
 check(c1['count'] == 20, f'count 上限修正为 20（{c1["count"]}）')
 check(c1['max_tiles'] <= 14, f'max_tiles 上限修正（{c1["max_tiles"]}）')
 check(c1['swap_prob'] <= 1.0, f'swap_prob 修正到 0-1（{c1["swap_prob"]}）')
+check(c1['translation_mode'] == 'mixed' and c1['translated_ratio'] == 100,
+      f'译文模式/比例非法值安全修正：{c1["translation_mode"]}/{c1["translated_ratio"]}')
+check(c1['distractor_profile'] == 'precise', '非法混淆策略回落精确最小对立')
 check(sum(c1['types'].values()) > 0, '题型占比全 0 时回落默认')
 check('evil_key' not in c1 and 'bogus' not in c1['distractor_kinds'],
       '白名单过滤未知键')
@@ -410,6 +421,8 @@ check(c2['mode'] == 'basic' and c2['level'] == 'N3', '改 mode 不动 level（�
 c3 = sb.save_builder_cfg({'level': 'any'})
 check(c3['mode'] == 'basic' and c3['level'] == 'any', '改 level 不动 mode（两轴独立）')
 sb.save_builder_cfg({'mode': 'basic', 'level': 'any', 'count': 6,
+                     'translation_mode': 'mixed', 'translated_ratio': 50,
+                     'distractor_profile': 'precise',
                      'types': {'arrange': 80, 'pairs': 20}, 'max_tiles': 9})
 
 # ================================================================
@@ -441,6 +454,30 @@ for x in q['questions']:
             ids = [tid for i in o for tid, ci in x['spec']['tile_map'].items() if ci == i]
             check(sb.check_arrangement(x['spec'], ids)['ok'],
                   f'白名单语序必判对：{x["text"]}')
+# 译文覆盖轴：必须有译文/必须无译文绝不跨池；混合模式按比例，池不足才如实放宽。
+sb.save_builder_cfg({'translation_mode': 'with', 'types': {'arrange': 100, 'pairs': 0}})
+q_with = sb.make_quiz(count=6, mode='basic', level='any')
+with_arr = [x for x in q_with['questions'] if x['qtype'] == 'arrange']
+check(with_arr and all((x.get('translation') or '').strip() for x in with_arr),
+      '“必须有译文”模式的所有排序题均有译文')
+check(q_with['actual_untranslated'] == 0, '有译文模式返回的实际构成可核验')
+
+sb.save_builder_cfg({'translation_mode': 'without'})
+q_without = sb.make_quiz(count=6, mode='basic', level='any')
+without_arr = [x for x in q_without['questions'] if x['qtype'] == 'arrange']
+check(without_arr and all(not (x.get('translation') or '').strip() for x in without_arr),
+      '“必须无译文”模式的所有排序题均无译文')
+check(q_without['actual_translated'] == 0, '无译文模式返回的实际构成可核验')
+
+sb.save_builder_cfg({'translation_mode': 'mixed', 'translated_ratio': 50})
+q_mix = sb.make_quiz(count=6, mode='basic', level='any')
+check(q_mix['actual_translated'] + q_mix['actual_untranslated'] == q_mix['n_arrange'],
+      '混合模式实际译文构成与排序题总数一致')
+if not q_mix['translation_mix_relaxed'] and q_mix['n_arrange'] == 6:
+    check(q_mix['actual_translated'] == 3 and q_mix['actual_untranslated'] == 3,
+          f'题源充足时严格执行 50/50（{q_mix["actual_translated"]}/{q_mix["actual_untranslated"]}）')
+
+sb.save_builder_cfg({'translation_mode': 'with'})
 qa = sb.make_quiz(count=4, mode='advanced', level='any')
 check(qa['ok'] and qa['count'] >= 1, f'advanced 出题成功（{qa["count"]} 题）')
 adv_has_fake = False

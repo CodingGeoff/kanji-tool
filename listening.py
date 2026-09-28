@@ -42,6 +42,7 @@ import random
 import re
 from datetime import date
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 import db
 import furigana
@@ -173,23 +174,87 @@ def _tr_lang(t):
     return 'other'
 
 
-def _build_meaning_q(row, translation_pool):
+@lru_cache(maxsize=4096)
+def _meaning_signature(text):
+    """为译文难干扰检索提取日文侧结构签名，不生成或改写译文。"""
+    try:
+        points = grammar.analyze(text)
+        grammar_names = frozenset(p.get('name') for p in points
+                                  if p.get('kind') == 'pattern' and p.get('name'))
+        toks = sb._tag(text)
+        content = frozenset(t['lemma'] for t in toks
+                            if t['p1'] in ('名詞', '動詞', '形容詞', '形状詞')
+                            and len(t['lemma']) > 1)
+    except Exception:
+        grammar_names, content = frozenset(), frozenset()
+    return {
+        'grammar': grammar_names,
+        'content': content,
+        'negative': bool(re.search(r'(?:ない|なかった|ません|ぬ|ず)', text)),
+        'past': bool(re.search(r'(?:た|ました|でした)[。！？!?]?$', text)),
+        'question': text.endswith(('？', '?')) or bool(re.search(r'(?:か|の)[。？?]?$', text)),
+    }
+
+
+def _jaccard(a, b):
+    u = a | b
+    return len(a & b) / len(u) if u else 0.0
+
+
+def _build_meaning_q(row, translation_rows):
+    """听后选义：答案和干扰均为库中真实译文。
+
+    不机械篡改中英文（自动改否定很容易破坏指代、时态和语用），而是从真实
+    句对中检索“结构硬负例”：优先选择日文侧语法、极性、时态、疑问类型相近，
+    且译文语言与长度相近但并非近似复述的三项。
+    """
     text = (row.get('text') or '').strip()
     tr = (row.get('translation') or '').strip()
     if not tr:
         return None
     lang = _tr_lang(tr)
-    others = [t for t in translation_pool if t and t != tr and _tr_lang(t) == lang]
-    random.shuffle(others)
-    distractors = []
-    for t in others:
-        if t in distractors:
+    sig = _meaning_signature(text)
+    ranked, seen = [], set()
+    for candidate in translation_rows:
+        if isinstance(candidate, str):
+            other_tr, other_text = candidate.strip(), ''
+        else:
+            other_tr = (candidate.get('translation') or '').strip()
+            other_text = (candidate.get('text') or '').strip()
+        if (not other_tr or other_tr == tr or other_tr in seen
+                or _tr_lang(other_tr) != lang or other_text == text):
             continue
-        distractors.append(t)
-        if len(distractors) >= 3:
-            break
-    if len(distractors) < 3:
+        # 太相近的译文可能只是同义转述，无法保证唯一答案；太长/太短又可秒排。
+        tr_sim = SequenceMatcher(None, tr, other_tr, autojunk=False).ratio()
+        if tr_sim > 0.84:
+            continue
+        length_sim = 1.0 - min(1.0, abs(len(other_tr) - len(tr)) / max(len(tr), 1))
+        if length_sim < 0.35:
+            continue
+        osig = _meaning_signature(other_text) if other_text else {
+            'grammar': frozenset(), 'content': frozenset(),
+            'negative': False, 'past': False, 'question': False}
+        score = (
+            0.34 * _jaccard(sig['grammar'], osig['grammar'])
+            + 0.18 * _jaccard(sig['content'], osig['content'])
+            + 0.18 * length_sim
+            + 0.10 * (sig['negative'] == osig['negative'])
+            + 0.08 * (sig['past'] == osig['past'])
+            + 0.08 * (sig['question'] == osig['question'])
+            + 0.04 * SequenceMatcher(None, text, other_text, autojunk=False).ratio()
+        )
+        seen.add(other_tr)
+        ranked.append((score, other_tr, {
+            'grammar_overlap': round(_jaccard(sig['grammar'], osig['grammar']), 3),
+            'same_polarity': sig['negative'] == osig['negative'],
+            'same_tense': sig['past'] == osig['past'],
+            'same_question_type': sig['question'] == osig['question'],
+        }))
+    if len(ranked) < 3:
         return None
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    chosen = ranked[:3]
+    distractors = [x[1] for x in chosen]
     opts = [tr] + distractors
     random.shuffle(opts)
     try:
@@ -198,7 +263,9 @@ def _build_meaning_q(row, translation_pool):
         tokens = []
     return {'qtype': 'meaning', 'text': text, 'options': opts, 'answer': tr,
             'sid': row.get('sid'), 'source': row.get('source'),
-            'origin': _origin(row), 'tokens': tokens}
+            'origin': _origin(row), 'tokens': tokens,
+            'distractor_source': 'attested_translation_structural_hard_negative',
+            'distractor_audit': [x[2] for x in chosen]}
 
 
 # ================================================================
@@ -457,7 +524,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             break
         targets[k] += 1
 
-    translation_pool = [r.get('translation') for r in rows if (r.get('translation') or '').strip()]
+    translation_pool = [r for r in rows if (r.get('translation') or '').strip()]
     sentence_pool = rows
     builders = {
         'meaning': lambda row: _build_meaning_q(row, translation_pool),

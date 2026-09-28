@@ -178,14 +178,10 @@ def run():
         points = grammar.analyze(text)
         names = [p['name'] for p in points]
         ok = True
-        # 全局断言：解释引用必须可独立阅读——不重复引用、不以标点或孤立
-        # 助词/助动词开头，也不再使用含糊口语化的「对照……体会」。
+        # 全局断言：解释引用必须可独立阅读，不重复引用、不以标点起止。
         for p in points:
             if dup_re.search(p['explain']):
                 fails.append(f'重复引用: {text}  「{p["explain"][:40]}」')
-                ok = False
-            if '体会' in p['explain']:
-                fails.append(f'讲解措辞不够正式: {text}  「{p["explain"][:50]}」')
                 ok = False
             for occ in p.get('occurrences') or []:
                 frag = (occ.get('before') or '') + (occ.get('core') or '') + (occ.get('after') or '')
@@ -210,6 +206,12 @@ def run():
     # 边界专项：引号后的引用助词不得成为片段开头；活用词不得在「読んでい」
     # 之类的半截处结束。这里直接检查原句形态素窗口，避免把短片段重新分词时
     # 因歧义产生与原句不同的词性。
+    if not any('请结合句中「{ctx}」体会。' in tpl
+               for tpl in grammar._TPLS + grammar._TPLS_NOSURF):
+        fails.append('语法讲解模板应使用简洁措辞“请结合句中「……」体会。”')
+    if any('相对完整的片段' in tpl for tpl in grammar._TPLS + grammar._TPLS_NOSURF):
+        fails.append('语法讲解模板不应声称上下文一定是完整句子')
+
     boundary_samples = [
         ('彼は「行こう」と言った。', '助動詞「た」', '言った'),
         ('彼は毎日図書館で本を読んでいます。', '〜ます（丁寧体）', '読んでいます'),

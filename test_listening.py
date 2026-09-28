@@ -84,11 +84,22 @@ d = ls.make_quiz(count=12, scope='corpus')
 check(d['ok'], f'出题成功：{d}')
 meaning_qs = [q for q in d['questions'] if q['qtype'] == 'meaning']
 check(bool(meaning_qs), 'meaning 题型应出现')
+with db.get_conn() as c:
+    attested_translations = {r['translation'] for r in c.execute(
+        "SELECT translation FROM sentences WHERE translation IS NOT NULL AND trim(translation)<>''").fetchall()}
 for q in meaning_qs:
     check(len(q['options']) == 4 and len(set(q['options'])) == 4, f'4 个选项且不重复：{q["options"]}')
     check(q['answer'] in q['options'], f'答案在选项中：{q}')
     langs = {ls._tr_lang(o) for o in q['options']}
     check(len(langs) == 1, f'4 个选项语言必须一致（否则靠文字系统就能蒙对）：{q["options"]} → {langs}')
+    check(all(o in attested_translations for o in q['options']),
+          f'中英选项全部来自数据库真实译文，不机械篡改：{q["options"]}')
+    check(q.get('distractor_source') == 'attested_translation_structural_hard_negative'
+          and len(q.get('distractor_audit') or []) == 3,
+          '译文干扰项必须标记为结构硬负例并携带三项审计证据')
+    for audit in q.get('distractor_audit') or []:
+        check(set(audit) == {'grammar_overlap', 'same_polarity', 'same_tense', 'same_question_type'},
+              f'硬负例审计维度完整：{audit}')
 
 print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])

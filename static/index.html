@@ -2817,8 +2817,11 @@ async function sbOpen(opts){
   }else if(d.scope_auto_all&&(d.scope==='book'||d.scope==='mixed')){
     toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
   }
+  if(d.translation_mix_relaxed)toast('所设译文比例的题源不足，已由另一类题目补足并如实标记');
   sbQuiz={qs:d.questions,i:0,ok:0,ans:[],mode:d.mode,level:d.level,
           scope:d.scope,scopeAutoAll:!!d.scope_auto_all,scopeNote:d.scope_note,
+          translationMode:d.translation_mode,translated:d.actual_translated||0,
+          untranslated:d.actual_untranslated||0,
           bookIds:d.book_ids||[],sel:[],checked:false,
           pairSel:null,pairErr:0,pairDone:0};
   sbRender();
@@ -2829,6 +2832,7 @@ function sbModeBadge(){
   const sl=SB_SCOPE_LABEL[sbQuiz.scope]||'';
   return `<span class="sb-mode ${m==='basic'?'basic':'adv'}">${m==='basic'?'初级·纯净词块':'高级·带混淆'}</span>
     <span class="tag">难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}</span>
+    <span class="tag" title="本组排序题的实际译文构成">译文 ${sbQuiz.translated}／无译文 ${sbQuiz.untranslated}</span>
     ${sl?`<span class="tag" title="实际题源（如与你的配置不符，说明已按规则自动调整，鼠标悬停查看原因）">${sl}${sbQuiz.scopeAutoAll?`·全部${sbQuiz.bookIds.length}本`:''}</span>`:''}`;
 }
 function sbRender(){
@@ -3019,11 +3023,19 @@ async function sbCfgOpen(){
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
         <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">「仅课本/课本＋语料」：在某本书详情页内打开练习只用这本书；在书架页且没有勾选课本时，自动使用书架里<b>全部启用中的课本</b>（不会悄悄换成语料库）；一本课本都没有时才会诚实退回全库语料。练习界面右上角的题源标签会标出实际用了什么。</div></div>
+      <span class="muted">译文条件（组句）</span><select id="sbcTrMode">
+        <option value="with" ${c.translation_mode==='with'?'selected':''}>必须有译文（可安全使用语义混淆）</option>
+        <option value="without" ${c.translation_mode==='without'?'selected':''}>必须无译文（零语义干扰，纯考语序）</option>
+        <option value="mixed" ${(!c.translation_mode||c.translation_mode==='mixed')?'selected':''}>有译文＋无译文混合</option></select>
+      <span class="muted">混合译文比例</span><div class="row" style="gap:8px">有译文 <input id="sbcTrRatio" type="number" min="0" max="100" value="${c.translated_ratio??50}" style="width:72px">% <span class="muted">（其余为无译文；仅混合模式生效）</span></div>
       <span class="muted">每组题数</span><input id="sbcN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
       <span class="muted">题型占比</span><div class="row" style="gap:8px">组句 <input id="sbcTArr" type="number" min="0" max="100" value="${(c.types||{}).arrange??80}" style="width:64px">% ／ 配对 <input id="sbcTPair" type="number" min="0" max="100" value="${(c.types||{}).pairs??20}" style="width:64px">%</div>
       <span class="muted">词块数范围</span><div class="row" style="gap:8px"><input id="sbcMinT" type="number" min="2" max="6" value="${c.min_tiles||3}" style="width:64px"> ～ <input id="sbcMaxT" type="number" min="3" max="14" value="${c.max_tiles||9}" style="width:64px"> 块</div>
+      <span class="muted">混淆策略（高级）</span><select id="sbcDProfile">
+        <option value="precise" ${c.distractor_profile!=='balanced'?'selected':''}>精确最小对立（推荐：时态/极性/格关系，宁缺毋滥）</option>
+        <option value="balanced" ${c.distractor_profile==='balanced'?'selected':''}>均衡扩展（不足时允许经过双门禁的句外词）</option></select>
       <span class="muted">干扰块（高级）</span><div class="row" style="gap:8px"><input id="sbcDN" type="number" min="0" max="6" value="${c.distractors??3}" style="width:64px"> 个
-        <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态变形</span></label>
+        <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态/极性</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDP" ${(c.distractor_kinds||{}).particle!==false?'checked':''}><span>换助词</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDW" ${(c.distractor_kinds||{}).vocab!==false?'checked':''}><span>句外词</span></label></div>
       <span class="muted">多答案（高级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcAlt" ${c.alt_answers!==false?'checked':''}><span>槽位可互换名词（任选其一均判对）</span></label>最多 <input id="sbcAltN" type="number" min="1" max="4" value="${c.alt_max||2}" style="width:64px"> 个</div>
@@ -3034,16 +3046,19 @@ async function sbCfgOpen(){
         <option value="always" ${c.show_furigana==='always'?'selected':''}>始终显示</option>
         <option value="never" ${c.show_furigana==='never'?'selected':''}>从不显示</option></select>
     </div>
-    <div class="muted" style="margin-top:10px;font-size:12.5px">稳健判卷：日语格成分（〜は/〜が/〜を/〜に/〜で、时间词、副词）句内可自由换序 —— 所有语法正确的语序都判对；干扰块经等价性过滤（は↔が、に↔へ 这类意义不变的替换绝不出现），用错必然可判。</div>
+    <div class="muted" style="margin-top:10px;font-size:12.5px;line-height:1.7">稳健判卷：句内格成分的合法换序全部认可。有译文时才允许语义混淆；无译文题始终零语义干扰。精确模式只保留时态/极性与经语料反查的非等价格关系，は↔が、に↔へ 等可能保持意义的替换全部禁用；无法证明唯一错误的候选宁可不出。</div>
     ${stHTML}
     <div class="row" style="margin-top:12px"><button class="btn primary" onclick="sbCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`,660);
 }
 async function sbCfgSave(){
   const body={enabled:$('#sbcOn').checked,mode:$('#sbcMode').value,level:$('#sbcLevel').value,
-    scope:$('#sbcScope').value,count:parseInt($('#sbcN').value)||6,
+    scope:$('#sbcScope').value,translation_mode:$('#sbcTrMode').value,
+    translated_ratio:isNaN(parseInt($('#sbcTrRatio').value))?50:parseInt($('#sbcTrRatio').value),
+    count:parseInt($('#sbcN').value)||6,
     types:{arrange:parseInt($('#sbcTArr').value)||0,pairs:parseInt($('#sbcTPair').value)||0},
     min_tiles:parseInt($('#sbcMinT').value)||3,max_tiles:parseInt($('#sbcMaxT').value)||9,
     distractors:isNaN(parseInt($('#sbcDN').value))?3:parseInt($('#sbcDN').value),
+    distractor_profile:$('#sbcDProfile').value,
     distractor_kinds:{verb_form:$('#sbcDV').checked,particle:$('#sbcDP').checked,vocab:$('#sbcDW').checked},
     alt_answers:$('#sbcAlt').checked,alt_max:parseInt($('#sbcAltN').value)||2,
     swap:$('#sbcSwap').checked,swap_prob:(parseInt($('#sbcSwapP').value)||0)/100,
@@ -3182,11 +3197,13 @@ async function lsCheck(){
     else if(i===lsQuiz.picked)b.classList.add('ng');
   });
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
-  const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
+  const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
+  const meaningNote=q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 译文混淆并非机器篡改：三项均来自其他真实日译句对，并按日文侧语法点、肯否极性、时态、疑问类型及译文长度选取结构硬负例；过于接近、可能同义的译文已排除。</div>`:'';
+  const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。</div>`:'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
-    ${contrastNote}
+    ${contrastNote}${meaningNote}${discNote}
     <div class="quiz-nav">
       <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
       <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
@@ -3223,7 +3240,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">新增「双空最小对立」：一句中同时挖掉分句接续或词汇/格成分，以及句尾极性，四项按 2×2 组合，必须听清两个位置；否定项可令句意完全相反。多分句优先考「ので／のに」等逻辑反转；词汇优先来自同谓语的真实语料搭配，四条候选完整句全部通过语法门禁。Python 分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此系统采用可审计的保守变换，不伪造“智能理解”。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性，四项按 2×2 组合；多分句优先考「ので／のに」等逻辑反转，四条候选完整句全部通过语法门禁。中英译文选项：不自动篡改译文，而从其他真实句对中按日文语法点、肯否极性、时态、疑问类型和译文长度检索结构硬负例，并排除过近、可能同义的译文。分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此所有生成路径均采用可审计的保守门禁。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">

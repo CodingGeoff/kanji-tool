@@ -450,7 +450,7 @@ AUXILIARIES = {
 # ---------------------------------------------------------------
 _TPLS = [
     '「{surface}」是{level}句型「{name}」（接续：{structure}）——{meaning}。在本句「{ctx}」中就是这个用法。',
-    '这里的「{surface}」用到了「{name}」：{meaning}。接续方式为 {structure}，请结合句中相对完整的片段「{ctx}」理解此用法。',
+    '这里的「{surface}」用到了「{name}」：{meaning}。接续方式为 {structure}，请结合句中「{ctx}」体会。',
     '注意「{ctx}」这一段：核心语法是「{name}」（{level}）。{meaning}，形态上表现为 {structure}。',
     '「{name}」登场了：{meaning}。本句里它以「{surface}」的形式出现，前后文是「{ctx}」。',
     '拆解「{ctx}」：这是{level}必考的「{name}」，结构为 {structure}。含义：{meaning}。',
@@ -467,7 +467,7 @@ _TPLS_SINGLE = [
 # 名称里已含「surface」时使用（避免「た」「た」式重复引用）
 _TPLS_NOSURF = [
     '这是{level}句型{name}（接续：{structure}）——{meaning}。本句「{ctx}」中就是这个用法。',
-    '{name}：{meaning}。接续方式为 {structure}，请结合句中相对完整的片段「{ctx}」理解此用法。',
+    '{name}：{meaning}。接续方式为 {structure}，请结合句中「{ctx}」体会。',
     '注意「{ctx}」这一段：核心语法是{name}（{level}）。{meaning}，形态上表现为 {structure}。',
     '{name}登场：{meaning}。前后文是「{ctx}」。',
 ]
