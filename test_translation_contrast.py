@@ -156,8 +156,11 @@ BAD_EN = [
     (r"\b(he|she|it|tom|mary)\s+(am|are|were)\b", '主谓不一致（he are / she am）'),
     (r"\b(i)\s+(is|are|was\s+not\s+been)\b", '主谓不一致（I is / I are）'),
     (r"\bhe'm\b|\bshe're\b|\bi's\b", '错误缩合'),
-    (r"\bdidn't\s+\w+ed\b", "didn't + 过去式"),
-    (r"\bdoesn't\s+\w+s\b", "doesn't + 三单"),
+    # need / succeed / proceed 等动词原形本身就以 ed 结尾，排除掉再判
+    (r"\bdidn't\s+(?!need|succeed|proceed|exceed|feed|speed|bleed|breed|"
+     r"indeed|agreed)\w+ed\b", "didn't + 过去式"),
+    (r"\bdoesn't\s+(?!pass|miss|press|cross|discuss|guess|dress|focus)"
+     r"\w+s\b", "doesn't + 三单"),
     (r"\bto\s+\w+ed\b", 'to + 过去式'),
     (r"\bnot\s+not\b|\bnever\s+not\b", '双重否定'),
     (r"\s{2,}|\s+[.,?!]", '空格/标点错位'),
@@ -233,6 +236,76 @@ if g:
             check(0 <= a <= b <= len(opt), f'diff 区间不得越界：{marks} / {opt}')
         check(bool(marks) == (opt != g['answer']),
               f'只有被改过的选项才有高亮：{opt} {marks}')
+
+# ---------------------------------------------------------------- 9
+# 本轮新增规则的回归：疑问句、do-support 时制、正反问、多词专名、
+# 单复数联动、施受互换后的主谓一致、中文时间状语
+print('\n[9] 新增规则回归')
+
+g = build('これは免税店ですか。', 'Is this a tax-free shop?')
+check(g and set(g['axes']) == {'polarity', 'tense'}
+      and {"Isn't this a tax-free shop?", 'Was this a tax-free shop?'} <= set(g['options']),
+      f'倒装疑问句要能做肯否×时制：{g and g["options"]}')
+
+g = build('これ、誰の時計？', 'Whose watch is this?')
+if g:
+    check(all('is not' not in o and "isn't" not in o for o in g['options']),
+          f'whose/what 这类论元疑问句不许加否定：{g["options"]}')
+
+g = build('トムは私たちを信用していない。', "Tom doesn't trust us.")
+check(g and {'Tom trusts us.', "Tom didn't trust us."} <= set(g['options']),
+      f'do-support 否定式要能翻时制：{g and g["options"]}')
+
+g = build('彼は医者です。', 'He is a doctor.')
+check(g and set(g['options']) == {'He is a doctor.', 'He is not a doctor.',
+                                  'He was a doctor.', 'He was not a doctor.'},
+      f'肯否×时制融合矩阵：{g and g["options"]}')
+
+g = build('朝、シャワーを使ってもいいですか。', '我可不可以早上洗澡？')
+if g:
+    for o in g['options']:
+        check('可不必须' not in o and '可不应该' not in o,
+              f'正反问「可不可以」里的第二个成分不许换：{o}')
+
+g = build('彼女はボストンからシカゴ経由でサンフランシスコへ旅行した。',
+          'She traveled from Boston to San Francisco via Chicago.')
+if g:
+    for o in g['options']:
+        check('San Francisco' in o and 'Boston' in o,
+              f'多词专名要整块搬：{o}')
+
+jf = tc.jp_features('机の上に本が１冊ある。')
+tr = 'There is one book on the desk.'
+num = [x for x in tc._en_slots(tr, jf) if x['axis'] == 'number']
+check(num, '「There is one book」应当能改数量')
+for a in (num[0]['alts'] if num else []):
+    got = tc._tidy_en(tc._apply_edits(tr, a['edits']))
+    check('are' in got and 'books' in got,
+          f'跨单复数换数词要连名词和 be 一起改：{got}')
+
+g = build('彼女にそれを言うのは気が引ける。', "I don't feel like telling her about it.")
+if g:
+    for o in g['options']:
+        check(not re.search(r"\bshe don't\b|\bhe don't\b", o.lower()),
+              f'施受互换后要修主谓一致：{o}')
+
+g = build('学生のころ私はよく彼女に手紙を書いた。', 'I often wrote to her when I was a student.')
+if g:
+    for o in g['options']:
+        check(not re.search(r'\bto (your|my|his|their)\b\s+(when|because|and|but)', o.lower()),
+              f'宾格 her 不许换成属格 your：{o}')
+
+g = build('彼は放課後野球をしました。', '他放学后打棒球。')
+if g:
+    for o in g['options']:
+        check('不放学' not in o and '没放学' not in o,
+              f'时间状语「放学后」不是谓语，不许挂否定：{o}')
+
+g = build('彼は来週東京へ行く。', '他下周将去东京。')
+if g:
+    for o in g['options']:
+        check(not re.search(r'(上周|上個月|去年|昨天).{0,4}(将|將)', o),
+              f'未来标记在场时不许换成过去时间词：{o}')
 
 print()
 if FAILS:
