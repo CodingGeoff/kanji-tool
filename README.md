@@ -1,5 +1,9 @@
 # 日语汉字学习工具
 
+> 🚨 **拉取远程更新：请直接双击根目录的 `pull.bat`**
+> （它会自动关闭 `start.py` 本地服务 → 安全拉取 → 回填本地数据）。
+> **不要手写 `git pull`**，否则会报 `would be overwritten: kanji.db`。
+
 面向「平假名已掌握、汉字是短板」的学习者，目标：无障碍看懂日语字幕。
 
 ## 启动
@@ -120,7 +124,8 @@ git add samples && git commit -m "新增篇章" && git push
 **数据库与 Git（重要）**：`kanji.db` 是要跟着仓库上 Render 的初始数据源，
 所以它必须被跟踪、`.gitignore` 里**不能**写 `*.db`；而 WAL 边车文件
 （`kanji.db-wal` / `kanji.db-shm`）必须忽略，否则 pull 必报 would be overwritten。
-日常四件事都用托管命令，别再手写 git：
+日常四件事都用托管命令，别再手写 git。
+**Windows 用户直接双击根目录的 `pull.bat` 即可一键安全拉取**（自动关 `start.py` → 拉取 → 回填）。
 
 ```bash
 python dbtool.py status     # 体检：数据量 / WAL 状态 / 与 HEAD 的差异
