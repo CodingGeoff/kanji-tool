@@ -127,7 +127,54 @@ def main():
                           '%s verbatim 的答案在原文里找不到：%s' % (tag, q['answer']))
     print('  复核 %d 道，覆盖 %d 种题型' % (total, len(types)))
 
-    print('\n[3] 判分闭环：对的判对、错的判错、闭卷不下发答案')
+    print('\n[3] truth 的错误项必须是「错事实」而不是「坏句子」')
+    n_truth = 0
+    for p in ps:
+        P = D.load(p['id'])
+        text = norm(D.get_passage(p['id'])['text'])
+        for q in D._gen_all(P, random.Random(5)).get('truth', []):
+            n_truth += 1
+            check(norm(q['answer']) in text, 'truth 正确项不是原文句：%s' % q['answer'])
+            for o in q['options']:
+                if o == q['answer']:
+                    continue
+                check(norm(o) not in text, 'truth 错误项其实在原文里：%s' % o)
+                # 数值改写不得造出「NからN」这种上下限相同的假区间
+                check(not re.search(r'([0-9０-９]+)(\S{1,3}?)から\1\2', o),
+                      'truth 错误项里出现上下限相同的区间：%s' % o)
+                # 固有名詞替换不得把复合名切半（「NTT西日本」→「NTT西長崎」）
+                for frag in re.findall(r'[A-Za-zＡ-Ｚ]{2,}[一-龥ァ-ヶ]{2,}', o):
+                    check(frag in text, 'truth 错误项造出了原文没有的复合专名：%s' % frag)
+    check(n_truth >= 6, 'truth 可出题点太少（%d），改写门禁收得过紧' % n_truth)
+    # 主宾互换：新的两个格关系都必须有语料实证。
+    # 「日本擁壁保証協会は…調査を行いました」互换后是「協会を行いました」，
+    # 语料库里「協会を」零出现 —— 这种坏句必须被门禁挡掉。
+    P = next(D.load(p['id']) for p in ps if '擁壁' in p['title'])
+    hit = 0
+    for i, s in enumerate(P.sents):
+        if '協会' in s and 'を行' in s:
+            hit += 1
+            v, _note = D._swap_args(s, P.toks[i])
+            check(v is None, '未实证的主宾互换被放行了：%s' % v)
+    check(hit >= 1, '没找到用来验证主宾互换门禁的那句话')
+    print('  truth 候选 %d 道，错误项均为合法日语且与原文矛盾' % n_truth)
+
+    print('\n[4] 题型配额：一套题不被单一题型占满')
+    for p in ps:
+        for count in (10, 20):
+            quiz = D.make_quiz(p['id'], count=count, seed=9, mode='choice')
+            mix = quiz['type_mix']
+            cap = quiz['type_cap']
+            check(sum(mix.values()) == len(quiz['questions']), 'type_mix 与题数对不上')
+            if not quiz['type_relaxed']:
+                check(max(mix.values()) <= cap,
+                      '%s：%d 题里 %s 超过配额 %d（%s）'
+                      % (p['title'][:10], count, max(mix, key=mix.get), cap, mix))
+            check(max(mix.values()) <= max(cap, len(quiz['questions'])),
+                  '配额放宽后仍应有上限：%s' % mix)
+    print('  8 篇 × count=10/20：单一题型均未超过 1/4 配额（或已如实标记放宽）')
+
+    print('\n[5] 判分闭环：对的判对、错的判错、闭卷不下发答案')
     bad = 0
     for p in ps:
         quiz = D.make_quiz(p['id'], count=8, seed=77, mode='mixed', secure=True)

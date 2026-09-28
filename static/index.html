@@ -1216,7 +1216,12 @@ async function dcStart(id,count,difficulty,study,mode){
           nFresh:d.n_fresh,nInput:d.n_input};
   $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
   dcShell();
-  if(d.n_fresh<d.questions.length)toast(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
+  const msgs=[];
+  if(d.n_fresh<d.questions.length)msgs.push(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
+  const nType=Object.keys(d.type_mix||{}).length;
+  if(nType&&(d.type_relaxed||nType*3<d.questions.length))
+    msgs.push(`本篇可出的题型有限，这套只覆盖 ${nType} 种`);
+  if(msgs.length)toast(msgs.join('；'));
 }
 function dcQuit(){ dcQuiz=null; dcLoad(); }
 
