@@ -35,9 +35,12 @@
   absent         本文未出现词判别（扫读，绝对客观）
   headword       复现词链（全篇出现最多的实词还原）
 """
+import hashlib
 import json
+import os
 import random
 import re
+import threading
 import time
 from collections import Counter, defaultdict
 
@@ -413,6 +416,153 @@ def add_to_corpus(pid):
         except Exception:
             continue
     return n
+
+
+# ================================================================
+# 0.7 内置篇章种子（samples/*.txt）
+# ----------------------------------------------------------------
+# 为什么需要它：仓库根目录的 kanji.db 是 Render 的唯一初始数据源，而篇章
+# 是在**运行时**录入的 —— 免费实例的磁盘又是临时的（重新部署即抹掉）。
+# 结果就是「本地有 8 篇、线上一篇都没有」。
+# 所以把随仓库走的 samples/*.txt 当成内置篇章：每次启动幂等补齐，
+# 既不依赖数据库文件里有没有 passages 表，也不怕容器重建。
+#
+# 幂等规则（三重防重复）：
+#   1. settings 里记下每个文件的内容指纹 → 录过就不再录；
+#      用户删掉某篇后指纹还在，重启也不会「阴魂不散」地回来。
+#   2. 库里已存在同样正文 → 跳过（本地手工录过同一篇的情形）。
+#   3. 库里已存在同名标题 → 跳过（同一篇文章从网页重复粘贴，正文略有出入）。
+# ================================================================
+SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'samples')
+SEED_SETTING = 'discourse_seed_v1'
+_SEED_SOURCES = (('nhk', 'NHK NEWS WEB'),)
+_seed_lock = threading.Lock()
+_seed_done = False
+
+
+def _seed_source(fname):
+    """按文件名前缀标注出处，未知前缀留空（出处只是展示用，宁缺毋滥）。"""
+    stem = os.path.basename(fname).lower()
+    for prefix, label in _SEED_SOURCES:
+        if stem.startswith(prefix + '_') or stem == prefix + '.txt':
+            return label
+    return ''
+
+
+def _seed_meta(path):
+    """可选的同名 .meta.json：{"title","source","level"}。
+    `dbtool.py export-passages` 导出自己的篇章时会写它，
+    这样标题/出处能原样带到云端，而不是只能从正文首行猜。"""
+    mpath = path[:-4] + '.meta.json' if path.lower().endswith('.txt') else path + '.meta.json'
+    try:
+        with open(mpath, encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def seed_files(dirpath=None):
+    d = dirpath or SEED_DIR
+    if not os.path.isdir(d):
+        return []
+    return [os.path.join(d, n) for n in sorted(os.listdir(d))
+            if n.lower().endswith('.txt') and not n.startswith('_')]
+
+
+def _fingerprint(text):
+    return hashlib.sha1(normalize(text).strip().encode('utf-8')).hexdigest()[:16]
+
+
+def _seed_state():
+    try:
+        st = json.loads(db.get_setting(SEED_SETTING) or '{}')
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_seed_state(state):
+    try:
+        db.set_setting(SEED_SETTING, json.dumps(state, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def seed_builtin(dirpath=None, force=False, to_corpus=True):
+    """把 samples/*.txt 录入篇章库（可重复执行，不会产生重复篇章）。
+
+    force=True 只忽略「录过」的记号（用于手动重新载入），
+    正文/标题撞车的去重依旧生效。返回 {'added': [...], 'skipped': [...]}。
+    """
+    init()
+    files = seed_files(dirpath)
+    state = _seed_state()
+    added, skipped = [], []
+    if not files:
+        return {'ok': True, 'added': added, 'skipped': skipped, 'files': 0}
+    with db.get_conn() as c:
+        rows = c.execute('SELECT title, text FROM passages').fetchall()
+    known_text = {_fingerprint(r['text']) for r in rows}
+    known_title = {(r['title'] or '').strip() for r in rows}
+    for path in files:
+        name = os.path.basename(path)
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            skipped.append({'file': name, 'reason': '读取失败：%s' % e})
+            continue
+        fp = _fingerprint(text)
+        if not force and state.get(name) == fp:
+            skipped.append({'file': name, 'reason': '已录入过'})
+            continue
+        if fp in known_text:
+            state[name] = fp
+            skipped.append({'file': name, 'reason': '库中已有同样正文'})
+            continue
+        meta = _seed_meta(path)
+        try:
+            r = import_passage(str(meta.get('title') or ''), text,
+                               source=str(meta.get('source') or _seed_source(name)),
+                               level=str(meta.get('level') or ''),
+                               note='内置篇章 · %s' % name, to_corpus=to_corpus)
+        except Exception as e:
+            skipped.append({'file': name, 'reason': '解析失败：%s' % e})
+            continue
+        if (r.get('title') or '').strip() in known_title:
+            # 同一篇文章已经被手工录过（正文略有出入）→ 撤销本次录入，只留旧的
+            delete_passage(r['id'])
+            state[name] = fp
+            skipped.append({'file': name, 'reason': '库中已有同名篇章'})
+            continue
+        known_text.add(fp)
+        known_title.add((r.get('title') or '').strip())
+        state[name] = fp
+        added.append({'file': name, 'id': r['id'], 'title': r['title'],
+                      'n_sent': r['n_sent'], 'corpus_added': r.get('corpus_added', 0)})
+    _save_seed_state(state)
+    if added:
+        db.log('passage_seed', json.dumps(
+            {'added': len(added), 'titles': [a['title'] for a in added]},
+            ensure_ascii=False))
+    return {'ok': True, 'added': added, 'skipped': skipped, 'files': len(files)}
+
+
+def ensure_seeded(force=False):
+    """进程内只跑一次的补种入口（app 启动时调用，失败绝不影响启动）。"""
+    global _seed_done
+    if os.environ.get('KANJI_SEED_PASSAGES', '1').strip().lower() in ('0', 'off', 'false', 'no'):
+        return {'ok': True, 'added': [], 'skipped': [], 'files': 0, 'disabled': True}
+    with _seed_lock:
+        if _seed_done and not force:
+            return {'ok': True, 'added': [], 'skipped': [], 'files': 0, 'cached': True}
+        try:
+            r = seed_builtin(force=force)
+        except Exception as e:
+            return {'ok': False, 'error': str(e), 'added': [], 'skipped': []}
+        _seed_done = True
+        return r
 
 
 def list_passages():
@@ -1146,11 +1296,40 @@ def _flip_polarity(s, toks):
 
 
 _NUM_RE = re.compile(r'[0-9０-９]+|[一二三四五六七八九十百千万]+')
+_DIGIT_RE = re.compile(r'^[0-9０-９][0-9０-９,，]*$')
 
 
-def _swap_number(s, toks, numbank):
+def _num_value(tok):
+    """数詞的字面数值；不是纯数字（「数」「何」「十数」等）返回 None。
+    只有纯数字才适合互换：把「数年」换成「3年」不构成矛盾（3 年本来就是数年），
+    换出来的不是错误项，是送分项。"""
+    s = tok.replace(',', '').replace('，', '')
+    if not _DIGIT_RE.match(tok):
+        return None
+    try:
+        return int(s.translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+    except ValueError:
+        return None
+
+
+def _num_swappable(a, b):
+    """两个数值能否互换：都得是纯数字，且量级同档。
+    「3年前」的 3 和「2023年」的 2023 共用量词「年」，直接换会造出
+    「2023年前」这种不成话的说法——量级门禁就是拦它的。"""
+    va, vb = _num_value(a), _num_value(b)
+    if va is None or vb is None:
+        return False
+    return (va >= 1000) == (vb >= 1000)
+
+
+def _swap_number(s, toks, numbank, skip=0, used=()):
     """把句中「数詞＋量词」的数值换成本文别处**同一量词**下的另一个数值。
-    只换同量词，保证改写后依然是合法的日语数量表达，错在事实而不是语法。"""
+    只换同量词，保证改写后依然是合法的日语数量表达，错在事实而不是语法。
+
+    skip / used：同一句里可能有多处数量表达，换不同的位置或换成不同的值，
+    就能从一句里稳定产出两个互不相同、且都自然的错误项。
+    """
+    hit = 0
     for j, t in enumerate(toks):
         if t['p2'] != '数詞' or j + 1 >= len(toks):
             continue
@@ -1158,13 +1337,22 @@ def _swap_number(s, toks, numbank):
         if not (nxt['p3'] in ('助数詞可能', '助数詞') or
                 (nxt['p1'] == '接尾辞' and nxt['p2'] == '名詞的')):
             continue
-        alts = [n for n in numbank.get(nxt['s'], []) if n != t['s']]
+        alts = [n for n in numbank.get(nxt['s'], [])
+                if n != t['s'] and n not in used and _num_swappable(t['s'], n)]
         if not alts:
             continue
-        rep = alts[0]
-        new = ''.join(x['s'] for x in toks[:j]) + rep + \
-            ''.join(x['s'] for x in toks[j + 1:])
-        return new, f'数量「{t["s"]}{nxt["s"]}」→「{rep}{nxt["s"]}」，与原文陈述的数量矛盾'
+        if hit < skip:
+            hit += 1
+            continue
+        for rep in alts:
+            new = ''.join(x['s'] for x in toks[:j]) + rep + \
+                ''.join(x['s'] for x in toks[j + 1:])
+            # 「2メートルから3メートル」换成「2メートルから2メートル」这种
+            # 上下限相同的区间是坏说法，不是错事实，换下一个候选值。
+            if f'{rep}{nxt["s"]}から{rep}{nxt["s"]}' in new:
+                continue
+            return (new,
+                    f'数量「{t["s"]}{nxt["s"]}」→「{rep}{nxt["s"]}」，与原文陈述的数量矛盾')
     return None, None
 
 
@@ -1183,15 +1371,27 @@ def _plain_noun(toks, j):
 
 
 def _swap_args(s, toks):
+    """把主语与宾语互换，制造「施受关系相反」的错误项。
+
+    互换后的两个格关系都必须有语料实证，否则造出的是**坏句**而不是**错句**：
+    「日本擁壁保証協会は…調査を行いました」互换成「…協会を行いました」——
+    考生不用回原文，靠语感就知道这句不像话，题目失去区分度。
+    门禁：换到宾语位的名词必须在语料库里出现过「N を」，
+    换到主语位的名词必须出现过「N が/は」。一个不满足就不出这个错误项。
+    """
     ga = wo = None
     for j, t in enumerate(toks):
         if t['p1'] == '助詞' and t['s'] in ('が', 'は') and j and _plain_noun(toks, j - 1):
             if ga is None:
-                ga = (j - 1, toks[j - 1]['s'])
+                ga = (j - 1, toks[j - 1]['s'], t['s'])
         if t['p1'] == '助詞' and t['s'] == 'を' and j and _plain_noun(toks, j - 1):
             if wo is None:
-                wo = (j - 1, toks[j - 1]['s'])
+                wo = (j - 1, toks[j - 1]['s'], t['s'])
     if not ga or not wo or ga[1] == wo[1]:
+        return None, None
+    if corpus_count(wo[1] + ga[2]) < 1:          # 原宾语能否当主语
+        return None, None
+    if corpus_count(ga[1] + 'を') < 1:           # 原主语能否当宾语
         return None, None
     new = []
     for j, t in enumerate(toks):
@@ -1202,7 +1402,63 @@ def _swap_args(s, toks):
         else:
             new.append(t['s'])
     return (''.join(new),
-            f'把动作主体「{ga[1]}」与对象「{wo[1]}」互换，施受关系与原文相反')
+            f'把动作主体「{ga[1]}」与对象「{wo[1]}」互换，施受关系与原文相反'
+            f'（「{wo[1]}{ga[2]}」「{ga[1]}を」在语料库中都有实证，'
+            f'错在事实而不是语法）')
+
+
+_PROPER_KIND = {'地名': '地点', '人名': '人物'}
+_GLUE = ('名詞', '接尾辞', '接頭辞')
+
+
+def _proper_standalone(toks, j):
+    """toks[j] 这个固有名詞是不是**独立**的一个名词短语——
+    左右都不粘着别的名词性成分。否则换掉它只是改了复合名的一半：
+    「NTT西日本」会变成「NTT西長崎」、「首都ワシントン」会变成
+    「首都アメリカ」，那是坏词，不是错事实。"""
+    prv = toks[j - 1] if j else None
+    nxt = toks[j + 1] if j + 1 < len(toks) else None
+    if prv and prv['p1'] in _GLUE:
+        return False
+    if nxt and nxt['p1'] in _GLUE:
+        return False
+    return True
+
+
+def _proper_bank(P):
+    """全篇的固有名詞，按子类（地名/人名/一般）分桶，供「同类替换」造错误项。
+    只收「后面直接跟助词/句读点」的，避免把复合名的一半换掉造出假名字。"""
+    bank = defaultdict(list)
+    for toks in P.toks:
+        for j, t in enumerate(toks):
+            if t['p1'] != '名詞' or t['p2'] != '固有名詞' or len(t['s']) < 2:
+                continue
+            if not _proper_standalone(toks, j):
+                continue
+            if t['s'] not in bank[t['p3'] or '一般']:
+                bank[t['p3'] or '一般'].append(t['s'])
+    return bank
+
+
+def _swap_proper(s, toks, bank, used=()):
+    """把句中的固有名詞换成本文别处出现的**同类**固有名詞（地名↔地名、人名↔人名）。
+    改写后依然是合法日语，只是把事实说错了——正是内容一致题需要的错误项。"""
+    for j, t in enumerate(toks):
+        if t['p1'] != '名詞' or t['p2'] != '固有名詞' or len(t['s']) < 2:
+            continue
+        if not _proper_standalone(toks, j):
+            continue
+        kind = t['p3'] or '一般'
+        alts = [x for x in bank.get(kind, []) if x != t['s'] and x not in used]
+        if not alts:
+            continue
+        rep = alts[0]
+        new = ''.join(x['s'] for x in toks[:j]) + rep + \
+            ''.join(x['s'] for x in toks[j + 1:])
+        label = _PROPER_KIND.get(kind, '名称')
+        return new, (f'把{label}「{t["s"]}」换成本文其它位置出现的「{rep}」，'
+                     f'与原文陈述的{label}矛盾')
+    return None, None
 
 
 def _grammar_ok(text):
@@ -1213,6 +1469,27 @@ def _grammar_ok(text):
         return bool(grammar.is_sentence_grammatically_sound(text))
     except Exception:
         return True
+
+
+def _swap_number2(s, toks, numbank, variants):
+    """第二个数值型错误项：优先换**另一处**数量表达，没有第二处就把同一处
+    换成**另一个**数值，两条路都要保证结果与已有错误项不同。"""
+    v, note = _swap_number(s, toks, numbank, skip=1)
+    if v and v not in variants:
+        return v, note
+    used = [n for ns in numbank.values() for n in ns
+            if any(n in x for x in variants) and n not in s]
+    return _swap_number(s, toks, numbank, used=tuple(used))
+
+
+def _used_propers(variants, bank):
+    """已经被用作替换词的固有名詞，避免两个错误项换成同一个词。"""
+    used = []
+    for names in bank.values():
+        for n in names:
+            if any(n in v for v in variants):
+                used.append(n)
+    return tuple(used)
 
 
 def g_truth(P, rng):
@@ -1227,19 +1504,28 @@ def g_truth(P, rng):
                         (nxt['p1'] == '接尾辞' and nxt['p2'] == '名詞的')):
                     if t['s'] not in numbank[nxt['s']]:
                         numbank[nxt['s']].append(t['s'])
+    bank = _proper_bank(P)
     for i, s in enumerate(P.sents):
         if not (12 <= len(s) <= 70):
             continue
         toks = P.toks[i]
         variants, notes = [], []
+        # 改写器按「错得干净」的程度排序：肯否定翻转最稳，数值/专有名词替换次之，
+        # 施受互换最容易造出坏句（已加语料实证门禁，过不了就不用）。
         for fn in (lambda: _flip_polarity(s, toks),
                    lambda: _swap_number(s, toks, numbank),
+                   lambda: _swap_proper(s, toks, bank),
+                   lambda: _swap_number2(s, toks, numbank, variants),
+                   lambda: _swap_proper(s, toks, bank,
+                                        used=_used_propers(variants, bank)),
                    lambda: _swap_args(s, toks)):
             v, note = fn()
             if v and v != s and v not in variants and v not in P.joined() \
                     and _grammar_ok(v):
                 variants.append(v)
                 notes.append(note)
+            if len(variants) >= 3:
+                break
         if len(variants) < 3:
             continue
         q = _mk('truth',
@@ -1251,7 +1537,7 @@ def g_truth(P, rng):
                 evidence=[f'答案是本文第 {i+1} 句的原文原样'] +
                          [f'干扰项{k+1}：{n}' for k, n in enumerate(notes[:3])],
                 explain='三个错误项都由同一句机械改写而成，实词几乎不变，'
-                        '只在肯否定 / 数值 / 施受关系上与原文矛盾。',
+                        '只在肯否定 / 数值 / 专有名词 / 施受关系上与原文矛盾。',
                 sent_idx=i)
         if _valid(q):
             out.append(q)
@@ -1681,10 +1967,14 @@ def g_compare(P, rng):
         for mode, idx, word in (('max', 0, '最も大きい'), ('min', -1, '最も小さい'),
                                 ('2nd', 1, '2番目に大きい')):
             ans = arr[idx][1]
-            opts = [x[1] for x in arr[:4]]
-            if ans not in opts:
-                opts = opts[:3] + [ans]
-            opts = list(dict.fromkeys(opts))
+            # 选项要围着答案取邻居：问「最小」却给三个最大值，既不像题，
+            # 也会让下面那行「排序」证据和答案对不上（曾经就是这个 bug）。
+            picked = arr[-4:] if mode == 'min' else arr[:4]
+            if all(x[1] != ans for x in picked):
+                picked = picked[:3] + [arr[idx]]
+            picked = list(dict.fromkeys(picked))
+            picked.sort(key=lambda x: -x[0])
+            opts = list(dict.fromkeys(x[1] for x in picked))
             if len(opts) < 4 or ans not in opts:
                 continue
             q = _mk('compare',
@@ -1694,7 +1984,11 @@ def g_compare(P, rng):
                     options=opts[:4], answer=ans,
                     objectivity='rule',
                     evidence=['四个选项都是本文原样出现的数值',
-                              '排序：' + ' > '.join(f'{x[1]}' for x in arr[:4]),
+                              # 排序必须覆盖「这四个选项」且含答案，否则依据无法复核
+                              '四个选项按大小排序：'
+                              + ' > '.join(f'{x[1]}' for x in picked[:4]),
+                              f'本文中「{u}」共出现 {len(arr)} 个不同数值，'
+                              f'其中{word}的是 {ans}',
                               f'规则：数值大小由算术比较唯一确定（{word}＝{ans}）'],
                     explain='扫读全篇把同一单位的数值都找出来再比较——长文报道最常考的信息整合。',
                     sent_idx=arr[idx][2])
@@ -2087,18 +2381,32 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
     picked = []
     order = sorted(pools, key=lambda t: ({'hard': 0, 'medium': 1, 'easy': 2}[
         DIFFICULTY.get(t, 'medium')], t))
-    while len(picked) < count and pools:
-        progressed = False
-        for t in order:
-            if not pools.get(t):
-                pools.pop(t, None)
-                continue
-            picked.append(pools[t].pop())
-            progressed = True
-            if len(picked) >= count:
+
+    # 题型配额：一套题里单一题型最多占 1/4，避免短文出来的 20 道题里
+    # 格助词就占了 5 道、剩下来回考同样的技能。轮转本身已经打散了题型，
+    # 配额负责兜住「别的题型先用光、剩下的全由一种题型填满」这种情况。
+    # 文章本身出不了那么多题型时再逐级放宽，宁可出满题数，并在返回值里
+    # 如实标记放宽过（type_relaxed），页面据此提示「本篇可出题型有限」。
+    strict = max(2, -(-count // 4))
+    counts = Counter()
+    cap_used = strict
+    for cap in (strict, max(3, -(-count // 2)), count):
+        cap_used = cap
+        while len(picked) < count:
+            progressed = False
+            for t in order:
+                if len(picked) >= count:
+                    break
+                if counts[t] >= cap or not pools.get(t):
+                    continue
+                picked.append(pools[t].pop())
+                counts[t] += 1
+                progressed = True
+            if not progressed:
                 break
-        if not progressed:
+        if len(picked) >= count:
             break
+    pools = {t: v for t, v in pools.items() if v}
 
     # 选择 / 填空 分配
     n_input = 0
@@ -2133,6 +2441,8 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
             'available': {t: len(v) for t, v in pools.items()},
             'coverage': sorted({q['qtype'] for q in picked}),
             'n_input': n_input, 'n_fresh': fresh, 'secure': bool(secure),
+            'type_mix': dict(Counter(q['qtype'] for q in picked)),
+            'type_cap': strict, 'type_relaxed': cap_used > strict,
             'difficulty_mix': dict(Counter(q['difficulty'] for q in picked))}
 
 

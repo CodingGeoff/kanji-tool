@@ -91,6 +91,34 @@ python dbtool.py pull     # 备份 → 清理本地库改动 → pull → 把本
    - 记住：**云端磁盘算草稿纸，仓库里的 `kanji.db` 才是正式存档**（详见 `DATABASE.md`）
    - 或升级 Render 付费盘（$7/月起）实现真持久化
 
+#### 想让云端数据真的不丢：挂盘 + `KANJI_DB`
+
+Render 挂载 Disk（Settings → Disks，Mount Path 填 `/data`）后，加一个环境变量：
+
+| Key | Value |
+|---|---|
+| `KANJI_DB` | `/data/kanji.db` |
+
+首次启动会把仓库里的 `kanji.db` **整份复制**到 `/data/kanji.db` 当种子，
+之后所有写入（篇章、复习进度、抓到的语料）都落在持久盘上，重新部署不再清零；
+仓库里的 `kanji.db` 从此只是「出厂数据」，不会再覆盖你的云端数据。
+不设这个变量时行为完全和以前一样（读写仓库目录里的 `kanji.db`）。
+
+#### 「篇章精读」的内容为什么不受影响
+
+篇章是运行时录入的，本来最容易被临时磁盘吃掉。现在 `samples/*.txt` 里的文章
+是**内置篇章**：每次启动自动幂等补齐，不依赖数据库文件里有没有它们。
+
+本地录入的文章要送上云，一条命令：
+
+```bash
+python dbtool.py export-passages      # 篇章 → samples/my_xxx.txt + .meta.json
+git add samples && git commit -m "新增篇章" && git push
+```
+
+推送后 Render 自动重部署，「我的篇章」里就有了，且**重启不丢**。
+不想要这个行为就设 `KANJI_SEED_PASSAGES=0`。详见 [`DISCOURSE.md`](DISCOURSE.md) §4.1 / §4.2。
+
 ---
 
 ## 方案 B：Hugging Face Spaces（免费、用 Docker、无休眠时间更长）

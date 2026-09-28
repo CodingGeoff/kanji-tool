@@ -6,7 +6,34 @@ import time
 import os
 import threading
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'kanji.db')
+REPO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanji.db')
+
+
+def _resolve_db_path():
+    """数据库位置：默认用仓库里的 kanji.db；设了 KANJI_DB 就用那一份。
+
+    云端（Render 免费实例 / HF Space）的容器磁盘是临时的，运行时写进去的
+    篇章、复习进度重新部署就没了。挂一块持久磁盘并设 KANJI_DB=/data/kanji.db
+    即可把数据留住 —— 首次启动会把仓库里的库整份拷过去当种子，之后仓库版
+    只是代码的一部分，不再覆盖你的数据。
+    """
+    p = (os.environ.get('KANJI_DB') or '').strip()
+    if not p:
+        return REPO_DB
+    p = os.path.abspath(os.path.expanduser(p))
+    try:
+        os.makedirs(os.path.dirname(p) or '.', exist_ok=True)
+        if (not os.path.exists(p) or os.path.getsize(p) == 0) and os.path.exists(REPO_DB):
+            import shutil
+            shutil.copyfile(REPO_DB, p)      # 持久盘第一次上线：用仓库库做种子
+            print('[db] 已把仓库数据库复制到持久盘：%s' % p)
+    except Exception as e:                   # pragma: no cover - 落盘失败就退回仓库库
+        print('[db] KANJI_DB=%s 不可用（%s），改用仓库内的 kanji.db' % (p, e))
+        return REPO_DB
+    return p
+
+
+DB_PATH = _resolve_db_path()
 _lock = threading.Lock()
 
 # ---------- 自建课本（v11）需要的表：老库升级时自动补建，不破坏既有数据 ----------

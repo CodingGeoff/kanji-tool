@@ -114,6 +114,28 @@ def _auto_loop():
 
 
 threading.Thread(target=_auto_loop, daemon=True).start()
+
+
+def _seed_passages():
+    """内置篇章补种：samples/*.txt → 篇章库（幂等）。
+
+    云端（Render / HF Space）的磁盘是临时的，运行时录入的篇章重新部署就没了，
+    于是「我的篇章」在正式环境永远是空的。把随仓库走的示例文章在每次启动时
+    补齐，线上就一定有货；本地已有同一篇则自动跳过，不会重复。
+    放后台线程是为了不让形态素词典的首次加载拖慢启动。
+    """
+    try:
+        r = discourse.ensure_seeded()
+        if r.get('added'):
+            print('[app] 内置篇章已补齐 %d 篇：%s'
+                  % (len(r['added']), '、'.join(a['title'][:16] for a in r['added'])))
+        elif r.get('error'):
+            print('[app] 内置篇章补种失败（不影响启动）：', r['error'])
+    except Exception as e:                                   # pragma: no cover
+        print('[app] 内置篇章补种异常（不影响启动）：', e)
+
+
+threading.Thread(target=_seed_passages, daemon=True).start()
 # 句子结构索引后台预热（首次约10秒，之后增量）
 structsim.INDEX.warmup_async()
 # 多源 RAG 联邦索引（rag.MULTI）采用「按需构建」：首次检索时 ensure() 建好索引，
@@ -1865,7 +1887,20 @@ def api_book_translate_lesson(bid, ):
 # ================================================================
 @app.route('/api/discourse/passages')
 def api_discourse_list():
-    return jsonify({'ok': True, 'passages': discourse.list_passages()})
+    # 启动时的后台补种可能还没跑完（首次要加载形态素词典），这里等它一下，
+    # 否则刚部署完打开页面会看到「还没有篇章」。补过之后是空转，无开销。
+    discourse.ensure_seeded()
+    return jsonify({'ok': True, 'passages': discourse.list_passages(),
+                    'builtin': len(discourse.seed_files())})
+
+
+@app.route('/api/discourse/seed', methods=['POST'])
+def api_discourse_seed():
+    """手动载入/重新载入仓库自带的内置篇章（samples/*.txt）。"""
+    d = request.json or {}
+    r = discourse.ensure_seeded(force=bool(d.get('force')))
+    r['passages'] = discourse.list_passages()
+    return jsonify(r)
 
 
 @app.route('/api/discourse/preview', methods=['POST'])
