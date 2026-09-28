@@ -62,6 +62,64 @@ def _gzip_response(resp):
     except Exception:
         pass                          # 压缩失败绝不影响正常响应
     return resp
+
+
+# ---------------------------------------------------------------
+# v26：/api/* 一律返回 JSON，永不返回 HTML 错误页。
+#
+# Flask 默认的 400/404/405/415/500 都是 `<!doctype html>…` 页面。前端所有接口
+# 调用都走 JSON.parse，于是后端只要出一次异常，用户看到的就是浏览器原生的
+#   SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+# ——既不知道哪错了，也不知道该怎么办（这正是本次 RAG 检索报的那条）。
+# 现在统一拦截：接口路径返回 {'error': 中文说明, 'status': 码}，页面路径保持原样。
+# ---------------------------------------------------------------
+from werkzeug.exceptions import HTTPException as _HTTPException
+
+_ERR_MSG = {
+    400: '请求格式有误（服务器无法解析请求内容）',
+    401: '未授权',
+    403: '没有权限执行该操作',
+    404: '接口不存在（可能是前端缓存了旧版页面，刷新试试）',
+    405: '请求方法不被支持',
+    413: '提交的内容过大',
+    415: '请求体不是 JSON 格式',
+    429: '请求过于频繁，请稍后再试',
+    500: '服务器内部错误',
+    502: '上游服务无响应',
+    503: '服务暂时不可用，请稍后重试',
+    504: '服务器处理超时，请重试或缩小检索范围',
+}
+
+
+def _is_api_path():
+    try:
+        return (request.path or '').startswith('/api/')
+    except Exception:
+        return False
+
+
+@app.errorhandler(_HTTPException)
+def _api_http_error(e):
+    if not _is_api_path():
+        return e
+    code = e.code or 500
+    msg = _ERR_MSG.get(code) or (e.description or '请求失败')
+    return jsonify({'error': msg, 'status': code, 'detail': str(e.description or '')[:200]}), code
+
+
+@app.errorhandler(Exception)
+def _api_unhandled_error(e):
+    if isinstance(e, _HTTPException):
+        return _api_http_error(e)
+    app.logger.exception('未捕获异常 %s %s', request.method if request else '?',
+                         request.path if request else '?')
+    if not _is_api_path():
+        raise e
+    return jsonify({'error': '服务器内部错误，请重试；若持续出现请把这条信息反馈给开发者',
+                    'status': 500,
+                    'detail': f'{type(e).__name__}: {e}'[:200]}), 500
+
+
 db.init_db()
 try:
     # 一次性数据迁移：词条索引升级为完整词典展示形（旧库的截断词条平滑改键，幂等）
@@ -526,10 +584,15 @@ def api_fav_word_del(word):
 # ---------- RAG 语义检索 ----------
 @app.route('/api/rag/search', methods=['POST'])
 def api_rag_search():
-    d = request.json or {}
+    # v26：silent=True —— 请求体不是合法 JSON 时给一句中文说明，而不是让 Flask
+    # 抛 400 HTML 页（前端 JSON.parse 会报 Unexpected token '<'）。
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        d = {}
     q = (d.get('q') or '').strip()
     if not q:
-        return jsonify({'error': 'empty'}), 400
+        return jsonify({'error': '请输入检索内容', 'rows': [], 'lyrics': [], 'results': [],
+                        'groups': {}, 'titles': {}, 'meta': {}}), 400
     def _ids(value):
         out = []
         for x in value or []:
@@ -541,10 +604,15 @@ def api_rag_search():
                 out.append(n)
         return out
 
-    sources = d.get('sources') or []
+    sources = d.get('sources')
     if isinstance(sources, str):
         sources = [x.strip() for x in sources.split(',') if x.strip()]
+    elif not isinstance(sources, (list, tuple)):
+        sources = []                       # 传了字典/数字等怪东西 → 当成「不限来源」
+    sources = [str(x) for x in sources if isinstance(x, str)]
     book_ids = _ids(d.get('book_ids') or d.get('books') or [])
+    sort = d.get('sort')
+    sort = sort if sort in ('priority', 'score') else 'priority'
     multi = rag.MULTI.search(
         q,
         limit=_num(d.get('limit'), 10, 1, 50),
@@ -554,15 +622,23 @@ def api_rag_search():
         min_score=_num(d.get('min_score'), 0, 0, 1, cast=float),
         min_affinity=_num(d.get('min_affinity'), 0.18, 0, 1, cast=float),
         book_ids=book_ids,
-        sort=d.get('sort') or 'priority',
+        sort=sort,
     )
     def _annotate(seq):
-        """补注音（前端 ruby 渲染用）；标题命中行无正文，保持空 token。"""
+        """补注音（前端 ruby 渲染用）；标题命中行无正文，保持空 token。
+
+        v26：注音失败不再连累整次检索——一条生僻行让 furigana 抛异常，过去会把
+        整个接口打成 HTML 500（前端就是那句 Unexpected token '<'）。现在退化为
+        「这一条没有假名」，结果照常返回。
+        """
         out = []
         for row in seq:
             item = dict(row)
             txt = item.get('text') or (item.get('title') if item.get('kind') in ('song', 'book') else '') or ''
-            item['tokens'] = furigana.annotate(txt) if txt else []
+            try:
+                item['tokens'] = furigana.annotate(txt) if txt else []
+            except Exception:
+                item['tokens'] = [{'s': txt, 'r': None, 'w': None, 'wr': None}] if txt else []
             out.append(item)
         return out
 
@@ -571,27 +647,40 @@ def api_rag_search():
     results = _annotate(multi.get('results') or [])
     groups = {c: _annotate(v) for c, v in (multi.get('groups') or {}).items()}
     # 句子结构相似检索：输入是整句时，分析成分并匹配结构相似的句子（歌词优先）
+    # v26：整段包在 try 里——结构分析只是锦上添花，它挂了不该把已经查到的命中
+    # 一起埋掉（过去任何一处异常都会让整个接口返回 HTML 500）。
     struct = None
-    if structsim.is_sentence(q):
-        sig = structsim.signature(q)
-        hits = structsim.INDEX.query(q, limit=8,
-                                     per_song=_num(d.get('per_song'), 2, 0, 20),
-                                     book_ids=book_ids,
-                                     sources=sources)
-        srows = []
-        for sc, kind, title, sid, txt, shared in hits:
-            if sc < 0.25:
-                continue
-            item = {'type': kind, 'id': sid, 'title': title, 'text': txt,
-                    'score': round(min(sc, 1.0), 3),
-                    'shared_particles': sorted(shared),
-                    'tokens': furigana.annotate(txt)}
-            srows.append(item)
-        comp = structsim.describe(sig, q)
-        comp['template'] = structsim.structure_template(sig)
-        struct = {'is_sentence': True, 'components': comp, 'rows': srows}
-    db.log('rag', f'语义检索：{q[:24]}（{len(out) + len(lyric_hits)}条结果'
-                 + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
+    try:
+        if structsim.is_sentence(q):
+            sig = structsim.signature(q)
+            hits = structsim.INDEX.query(q, limit=8,
+                                         per_song=_num(d.get('per_song'), 2, 0, 20),
+                                         book_ids=book_ids,
+                                         sources=sources)
+            srows = []
+            for sc, kind, title, sid, txt, shared in hits:
+                if sc < 0.25:
+                    continue
+                try:
+                    toks = furigana.annotate(txt)
+                except Exception:
+                    toks = [{'s': txt, 'r': None, 'w': None, 'wr': None}]
+                item = {'type': kind, 'id': sid, 'title': title, 'text': txt,
+                        'score': round(min(sc, 1.0), 3),
+                        'shared_particles': sorted(shared),
+                        'tokens': toks}
+                srows.append(item)
+            comp = structsim.describe(sig, q)
+            comp['template'] = structsim.structure_template(sig)
+            struct = {'is_sentence': True, 'components': comp, 'rows': srows}
+    except Exception as _sx:
+        app.logger.warning('结构相似检索失败（不影响主检索）：%s', _sx)
+        struct = None
+    try:
+        db.log('rag', f'语义检索：{q[:24]}（{len(out) + len(lyric_hits)}条结果'
+                     + (f'，结构匹配{len(struct["rows"])}条' if struct else '') + '）')
+    except Exception:
+        pass                       # 写历史失败不该影响用户拿到检索结果
     resp = {'rows': out, 'lyrics': lyric_hits, 'results': results,
             'titles': multi.get('titles', {}),
             'groups': groups, 'meta': multi.get('meta', {})}

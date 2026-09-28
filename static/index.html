@@ -986,7 +986,17 @@ const api=(u,opt)=>{
     let data=null;
     if(raw){
       try{ data=JSON.parse(raw); }
-      catch(e){ throw new Error('服务器响应不完整或超时被中断，请重试（如持续出现，可能是数据量较大导致后端处理超时）'); }
+      catch(e){
+        /* v26：区分两种「解析不了」——后端返回 HTML 错误页（Flask/网关的
+           <!DOCTYPE …>，过去用户只看到浏览器原生的 Unexpected token '<'），
+           与响应被中途截断。前者是服务端出错，后者才是超时/断流。 */
+        const head=raw.slice(0,200).trim().toLowerCase();
+        if(head.startsWith('<')){
+          const why=r.status>=500?'服务器内部出错':(r.status===404?'接口不存在（可能是页面缓存了旧版，刷新重试）':'请求被网关拦截');
+          throw new Error(`${why}（HTTP ${r.status}），已记录在服务端日志；请重试或反馈给开发者`);
+        }
+        throw new Error('服务器响应不完整或超时被中断，请重试（如持续出现，可能是数据量较大导致后端处理超时）');
+      }
     }
     if(!r.ok){ throw new Error((data&&(data.error||data.message))||`请求失败（HTTP ${r.status}）`); }
     if(data===null){ throw new Error('服务器未返回内容，请重试'); }
@@ -2284,6 +2294,7 @@ function ragRowHTML(r,i,terms){
         <span class="rank">${i+1}</span>
         <div class="title">${srcTag}</div>
         ${r.title_match?'<span class="tag">整首命中</span>':''}
+        ${r.exact?'<span class="tag" style="background:#e7f2ec;color:#1d6b46;border-color:#bcdccb" title="正文里完整包含你输入的内容，已无条件置顶">精确命中</span>':''}
         <span class="tag" title="综合分：BM25 + 字符亲和 + 词元覆盖 + 短语包含">${pct}%</span>
       </div>
       ${body}
@@ -2378,7 +2389,10 @@ async function ragSearch(){
     </div>`;
   }
   // 统一排名（原标题命中置顶 → 按来源优先级分档）
-  const results=d.results||[];
+  /* v26 兜底：万一 results 为空但分通道确实有命中（后端部分失败 / 页面缓存了旧版
+     前端对上新版后端），也要把命中显示出来，绝不在「明明有」时说「没有找到」。 */
+  const results=(d.results&&d.results.length)?d.results
+    :[...(d.lyrics||[]),...(d.rows||[])].filter(x=>x&&(x.text||x.title_match));
   if(results.length){
     html+=`<div class="rag-group"><h4>🎯 最佳匹配（${results.length}）</h4>
       <div class="rag-grid">${results.map((r,i)=>ragRowHTML(r,i,terms)).join('')}</div></div>`;
@@ -2392,9 +2406,43 @@ async function ragSearch(){
       <div class="rag-grid">${rows.slice(0,20).map((r,i)=>ragRowHTML(r,i,terms)).join('')}</div></details>`;
   });
   if(!results.length && !Object.values(groups).some(v=>v.length)){
-    html+=`<div class="rag-empty">没有找到相关内容：试试更短的关键词、换来源（如「网络语料」）、或去掉课本限定。</div>`;
+    html+=ragEmptyHTML(meta,q);
   }
   $('#ragOut').innerHTML=html;
+}
+/* v26：空结果不再一句「没有找到」打发人。后端会在 meta 里说明真实原因——
+   索引还没建好 / 命中被你自己的来源·课本筛选挡住了 / 确实没有——分别给出
+   对应的下一步动作按钮。用户报「这个歌词里面绝对有」时，缺的就是这句实话。 */
+function ragEmptyHTML(meta,q){
+  meta=meta||{};
+  if(meta.warming){
+    return `<div class="rag-empty">🔄 检索索引正在建立中（首次启动约几秒，语料越多越久），现在还查不到东西。
+      <div style="margin-top:8px"><button class="btn mini" onclick="ragSearch()">重试一次</button></div></div>`;
+  }
+  const ex=meta.excluded||{};
+  const LBL={lyric:'🎵 歌词',textbook:'📖 课本',web:'🌐 网络语料'};
+  const parts=[];
+  ['lyric','textbook','web'].forEach(c=>{
+    if(ex[c]&&ex[c].hits) parts.push(`${LBL[c]}里其实有 ${ex[c].hits} 条${ex[c].exact?'<b>完全包含这句话</b>的':''}命中${ex[c].sample?`（例：${esc(ex[c].sample)}）`:''}，但该来源当前被排除了`);
+  });
+  if(ex.books&&ex.books.hits) parts.push(`其他课本里有 ${ex.books.hits} 条命中${ex.books.sample?`（例：${esc(ex.books.sample)}）`:''}，但被「限定课本」挡住了`);
+  if(parts.length){
+    return `<div class="rag-empty">🔎 当前筛选下没有结果，但——<br>${parts.map(p=>'· '+p).join('<br>')}
+      <div class="row" style="gap:6px;margin-top:10px;justify-content:center;flex-wrap:wrap">
+        <button class="btn mini" onclick="ragSearchAllSources()">放开全部来源重搜</button>
+        <button class="btn mini" onclick="ragClearBooks();ragSearch()">去掉课本限定重搜</button>
+      </div></div>`;
+  }
+  return `<div class="rag-empty">没有找到相关内容：试试更短的关键词、换来源（如「网络语料」）、或去掉课本限定。
+    <div class="row" style="gap:6px;margin-top:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn mini" onclick="ragSearchAllSources()">放开全部来源重搜</button>
+      <button class="btn mini" onclick="ragClearBooks();ragSearch()">去掉课本限定重搜</button>
+    </div></div>`;
+}
+function ragSearchAllSources(){
+  ragSrcOrder=['lyric','textbook','web']; ragSrcSave(); renderRagSources();
+  ragClearBooks();
+  ragSyncMeta(); ragSearch();
 }
 async function doCleanup(){
   toast('清理中…');

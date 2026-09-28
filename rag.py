@@ -20,6 +20,7 @@ RAG 多源语义检索引擎 v2（本地、零外部服务依赖）
 RagIndex 保留全库 BM25 检索，供 /api/rag/similar（找相似例句）兼容使用。
 """
 import math
+import os
 import re
 import threading
 import time
@@ -31,6 +32,10 @@ import corpus_shards
 import federated_search
 
 CHANNELS = ('lyric', 'textbook', 'web')
+# 「精确子串命中」判定的最短查询长度（归一化后字符数）。1~2 字的查询（「波」「学校」）
+# 满库都是字面包含，这个信号没有区分度，仍按来源优先级分档排；3 字以上就是明确的
+# 短语意图（「寄り返す波が」），一旦字面完整命中就无条件置顶。
+EXACT_MIN_LEN = 3
 _CH_PRIOR = {'lyric': 0.03, 'textbook': 0.02, 'web': 0.0}   # 歌词优先、课本次之
 _ORIGIN = {'tatoeba': 'Tatoeba', 'wikipedia': '维基百科', 'wikinews': '维基新闻'}
 
@@ -226,8 +231,13 @@ class _BM25:
 class MultiIndex:
     """歌词 / 课本 / 网络语料 三通道 BM25 联邦索引 + 歌名书名辅助索引。"""
 
+    # 首次建索引时，检索请求最多愿意等多久（秒）。等不到就先按「索引预热中」如实
+    # 告知前端，而不是拿空索引谎报「没有找到相关内容」。可用环境变量覆盖。
+    FIRST_BUILD_WAIT_S = float(os.environ.get('RAG_FIRST_BUILD_WAIT_S', '20'))
+
     def __init__(self):
         self._lock = threading.RLock()
+        self._build_lock = threading.Lock()       # v26：构建互斥（与读数据的 _lock 分开）
         self._bm = {c: _BM25() for c in CHANNELS}
         self._tbm = _BM25()                       # 歌名/书名/课名
         self._wset = {c: {} for c in CHANNELS}    # doc_id -> 词元集合（覆盖度）
@@ -257,24 +267,57 @@ class MultiIndex:
             k = c.execute('SELECT COUNT(*) n, COALESCE(MAX(updated_at),0) t FROM books').fetchone()
         return (f"{a['n']}:{a['m']}", f"{b['n']}:{b['t']}", f"{k['n']}:{k['t']}")
 
-    def ensure(self):
-        """索引就绪保障：签名变化（或首次）→ 同步重建（本地数据量，毫秒~秒级）。"""
-        if self._building:
-            return False
+    def ensure(self, wait=None):
+        """索引就绪保障：签名变化（或首次）→ 重建（本地数据量，毫秒~秒级）。
+
+        v26 修竞态：旧实现第一行是 `if self._building: return False`，于是**建索引
+        期间进来的检索会拿着空索引去查**，稳定返回 0 条命中，前端照实显示「没有找到
+        相关内容」——而数据明明就在库里（用户报「这个歌词里面绝对有」的第二个现象）。
+        触发条件非常日常：进程刚起（app.py 有后台预热线程）、或刚导入歌曲/课本导致
+        签名变化，此时第一个检索必然撞上正在跑的构建。
+
+        现在按「索引可不可用」分两种情况处理，任何一种都不会拿空索引去查：
+          · 从未建好（冷启动）→ 阻塞等待正在跑的那次构建（上限 FIRST_BUILD_WAIT_S），
+            拿到真索引再检索；等不到则返回 False，由 search() 标记 meta.warming。
+          · 已可用但数据变了 → 不阻塞：直接用当前（略旧的）索引返回结果，重建让拿到
+            锁的线程去做。宁可结果旧一秒，也不能凭空变成「查无此句」。
+        """
         try:
             sig = self._sig()
         except Exception:
             return False
         if self._built and sig == self._stamp:
             return False
-        self._building = True
+        timeout = self.FIRST_BUILD_WAIT_S if wait is None else wait
+        if self._built:
+            got = self._build_lock.acquire(blocking=False)   # 有旧索引可用 → 绝不阻塞
+        elif timeout > 0:
+            got = self._build_lock.acquire(timeout=timeout)  # 冷启动 → 等构建完成
+        else:
+            got = self._build_lock.acquire(blocking=False)
+        if not got:
+            return False
         try:
-            self._build()
-            self._stamp = sig
-            self._built = True
+            sig = self._sig()          # 等锁期间别的线程可能已经建好了
+            if self._built and sig == self._stamp:
+                return False
+            self._building = True
+            try:
+                self._build()
+                self._stamp = sig
+                self._built = True
+            finally:
+                self._building = False
         finally:
-            self._building = False
+            self._build_lock.release()
         return True
+
+    def status(self):
+        """索引状态快照（供接口/前端判断「是没命中」还是「索引还没建好」）。"""
+        with self._lock:
+            counts = dict(self._counts)
+        return {'ready': bool(self._built), 'building': bool(self._building),
+                'docs': sum(counts.get(c, 0) for c in CHANNELS), 'counts': counts}
 
     def _build(self):
         rows, songs, books, lessons, bs = [], [], [], [], {}
@@ -397,6 +440,76 @@ class MultiIndex:
         out.sort(key=lambda x: -x[1])
         return out[:topk]
 
+    def _exact_scan(self, ch, qn, cap=24):
+        """精确子串兜底召回：正文里**确确实实含有这串字**的文档必须能被搜到。
+
+        v26：BM25 取 topk、Dice 取 topk，两条通道都是「截断」的——语料一多，一条
+        冷门但完全命中的歌词行完全可能被几十条泛泛相关的句子挤出候选集，用户就会
+        看到「明明歌词里有，却搜不到」。这里用 bigram 倒排做**完备**召回：含有整串
+        qn 的文档，必然含有 qn 的每一个 bigram，取最稀有的几个 posting list 求交
+        即可把候选缩到极小，再做一次真子串校验，零漏召回且几乎不花时间。
+        """
+        if not qn or len(qn) < EXACT_MIN_LEN:
+            return []
+        post = self._dpost.get(ch) or {}
+        nset = self._nset.get(ch) or {}
+        plists = []
+        for g in dict.fromkeys(qn[i:i + 2] for i in range(len(qn) - 1)):
+            s = post.get(g)
+            if not s:
+                return []           # 某个 bigram 全库都没有 → 不可能存在完整子串
+            plists.append(s)
+        if not plists:
+            return []
+        plists.sort(key=len)
+        cand = set(plists[0])
+        for s in plists[1:4]:       # 再与最稀有的几个求交，够把候选压到个位数
+            cand &= s
+            if not cand:
+                return []
+        out = [d for d in cand if qn in (nset.get(d) or '')]
+        return out[:cap]
+
+    def _score_channel(self, ch, qn, qn_len, qtoks, qset, qgrams, qgrams_len,
+                       bm, nset, wset, dset, limit, min_affinity, selected_books):
+        """单通道召回+精排 → [(score, doc_id, exact)]，按得分降序。
+
+        exact=1 表示「归一化后的查询是该文本的子串」——最强的相关性信号，后面排序
+        时无条件排在前面，不会被来源优先级分档或每首歌配额挤掉。
+        """
+        cand = {}
+        for s, d in bm[ch].search(qtoks, topk=max(limit * 4, 40)):
+            cand[d] = s
+        th = min(0.14, max(0.10, min_affinity or 0.14))
+        for d, _dc in self._dice_scan(ch, qgrams, th):
+            cand.setdefault(d, 0.0)
+        exact_ids = set(self._exact_scan(ch, qn))
+        for d in exact_ids:
+            cand.setdefault(d, 0.0)
+        _nset_ch = nset.get(ch, {})
+        _wset_ch = wset.get(ch, {})
+        _dset_ch = dset.get(ch, {})
+        _bm_docs = bm[ch].docs
+        out = []
+        for d, bm_s in cand.items():
+            m = _bm_docs.get(d)
+            if not m:
+                continue
+            if ch == 'textbook' and selected_books:
+                bid = m.get('book_id') or m.get('id')
+                if bid not in selected_books:
+                    continue
+            text_n = _nset_ch.get(d) or normalize(m.get('_text') or m.get('title') or '')
+            s = self._rerank(qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n,
+                             _wset_ch.get(d) or set(), _dset_ch.get(d) or set())
+            if ch == 'textbook' and selected_books and (m.get('book_id') in selected_books):
+                s = min(1.0, s + 0.08)
+            exact = 1 if (d in exact_ids or (qn_len >= EXACT_MIN_LEN and qn in text_n)) else 0
+            if exact or s >= 0.10:      # 精确命中不受 0.10 粗筛门槛影响
+                out.append((s, d, exact))
+        out.sort(key=lambda x: (-x[2], -x[0]))
+        return out
+
     def _qcache_get(self, ckey):
         with self._lock:
             hit = self._qcache.get(ckey)
@@ -512,39 +625,14 @@ class MultiIndex:
         qn_len = len(qn)
         qgrams_len = len(qgrams)
         t_recall = time.time()
-        # 1) 双路召回（BM25 + Dice）→ 2) 精排
+        # 1) 三路召回（BM25 + Dice + 精确子串兜底）→ 2) 精排
         scored = {c: [] for c in CHANNELS}
         for ch in CHANNELS:
             if ch not in enabled_set:
                 continue
-            cand = {}
-            for s, d in bm[ch].search(qtoks, topk=max(limit * 4, 40)):
-                cand[d] = s
-            th = min(0.14, max(0.10, min_affinity or 0.14))
-            for d, dc in self._dice_scan(ch, qgrams, th):
-                if d not in cand:
-                    cand[d] = 0.0
-            # v19: 使用预计算的归一化文本，避免精排循环内重复 normalize
-            _nset_ch = nset.get(ch, {})
-            _wset_ch = wset.get(ch, {})
-            _dset_ch = dset.get(ch, {})
-            _bm_docs = bm[ch].docs
-            for d, bm_s in cand.items():
-                m = _bm_docs.get(d)
-                if not m:
-                    continue
-                if ch == 'textbook' and selected_books:
-                    bid = m.get('book_id') or m.get('id')
-                    if bid not in selected_books:
-                        continue
-                text_n = _nset_ch.get(d) or normalize(m.get('_text') or m.get('title') or '')
-                s = self._rerank(qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n,
-                                 _wset_ch.get(d) or set(), _dset_ch.get(d) or set())
-                if ch == 'textbook' and selected_books and (m.get('book_id') in selected_books):
-                    s = min(1.0, s + 0.08)
-                if s >= 0.10:
-                    scored[ch].append((s, d))
-            scored[ch].sort(key=lambda x: -x[0])
+            scored[ch] = self._score_channel(ch, qn, qn_len, qtoks, qset, qgrams, qgrams_len,
+                                             bm, nset, wset, dset, limit, min_affinity,
+                                             selected_books)
         t_rerank = time.time()
         # 3) 优先级加权 → 4) 融合去重 + 配额
         def boost(ch):
@@ -552,13 +640,15 @@ class MultiIndex:
 
         pool = []
         for ch in CHANNELS:
-            for s, d in scored[ch]:
-                pool.append((s * boost(ch) + _CH_PRIOR[ch], ch, d))
-        pool.sort(key=lambda x: -x[0])
+            for s, d, ex in scored[ch]:
+                pool.append((s * boost(ch) + _CH_PRIOR[ch], ch, d, ex))
+        # v26：精确子串命中排在最前。否则「整段命中的那一行」会被来源优先级加权、
+        # 每首歌配额、甚至 60 条融合上限挤掉——用户看到的就是「明明有却搜不到」。
+        pool.sort(key=lambda x: (-x[3], -x[0]))
         seen, cnt_song, cnt_book = set(), {}, {}
         rows, lyrics, groups = [], [], {c: [] for c in CHANNELS}
         unified = []        # 跨通道统一排名（用户指定的来源优先级在这里体现）
-        for sc, ch, d in pool:
+        for sc, ch, d, ex in pool:
             m = bm[ch].docs[d]
             key = m.get('_text') or ''
             if not key or key in seen:
@@ -571,6 +661,8 @@ class MultiIndex:
             seen.add(key)
             row = self._row(m, sc, ch)
             row['rank'] = round(sc, 3)
+            if ex:
+                row['exact'] = True     # 前端据此打「精确命中」徽标
             if ch == 'lyric':
                 cnt_song[m['id']] = cnt_song.get(m['id'], 0) + 1
                 lyrics.append(row)
@@ -588,30 +680,47 @@ class MultiIndex:
         titles = {'songs': [], 'books': []}
         with self._lock:
             tbm = self._tbm
+        # v26：这里过去用 m['author'] / m['level'] 直取。课名（kind='lesson'）的
+        # payload 只有 {kind,id,book_id,title,book_title}，压根没有这两个键——于是
+        # 「查询词恰好命中某一课的课名」时整个检索接口抛 KeyError → Flask 返回
+        # HTML 500 页 → 前端 JSON.parse 报「SyntaxError: Unexpected token '<',
+        # "<!DOCTYPE "... is not valid JSON」。
+        # 现在一律 .get() 取值，并且课名命中回填的是它**所属课本**的 id（旧代码填
+        # 的是课的 id，点进去会打开一本不存在的书）。
+        seen_books = set()
         for s, d in tbm.search(qtoks, topk=6):
             m = tbm.docs[d]
-            if m['kind'] == 'song' and 'lyric' not in enabled_set:
+            kind = m.get('kind')
+            if kind == 'song' and 'lyric' not in enabled_set:
                 continue
-            if m['kind'] in ('book', 'lesson') and 'textbook' not in enabled_set:
+            if kind in ('book', 'lesson') and 'textbook' not in enabled_set:
                 continue
-            if selected_books and m.get('kind') in ('book', 'lesson'):
-                bid = m.get('id') if m.get('kind') == 'book' else m.get('book_id')
-                if bid not in selected_books:
-                    continue
+            bid = m.get('book_id') if kind == 'lesson' else m.get('id')
+            if selected_books and kind in ('book', 'lesson') and bid not in selected_books:
+                continue
             sc = round(0.85 + 0.1 * s, 3)
-            if m['kind'] == 'song':
+            if kind == 'song':
                 trow = {'type': 'lyric', 'channel': 'lyric', 'kind': 'song',
-                        'id': m['id'], 'title': m['title'], 'artist': m['artist'],
+                        'id': m.get('id'), 'title': m.get('title') or '',
+                        'artist': m.get('artist') or '',
                         'text': '', 'line_no': None, 'score': sc,
                         'affinity': sc, 'title_match': True}
                 titles['songs'].append(trow)
-            else:
-                titles['books'].append({'id': m['id'], 'title': m['title'],
-                                        'author': m['author'], 'level': m['level'],
+            elif kind in ('book', 'lesson'):
+                if bid is None or (kind, bid, m.get('title')) in seen_books:
+                    continue
+                seen_books.add((kind, bid, m.get('title')))
+                btitle = (m.get('book_title') if kind == 'lesson' else m.get('title')) or ''
+                lesson = m.get('title') or '' if kind == 'lesson' else ''
+                titles['books'].append({'id': bid, 'title': btitle or (m.get('title') or ''),
+                                        'author': m.get('author') or '',
+                                        'level': m.get('level') or '',
+                                        'lesson': lesson, 'kind': kind,
                                         'score': round(s, 3),
                                         'row': {'type': 'textbook', 'channel': 'textbook',
-                                                'kind': 'book', 'id': m['id'], 'book_id': m['id'],
-                                                'title': m['title'], 'lesson': '', 'text': '',
+                                                'kind': kind, 'id': bid, 'book_id': bid,
+                                                'title': btitle or (m.get('title') or ''),
+                                                'lesson': lesson, 'text': '',
                                                 'translation': '', 'score': sc, 'title_match': True}})
         # 歌名/书名命中置顶：歌名先出现在歌词列表首位（点击 = 直接打开整首歌），
         # 再跟上逐行歌词命中；同一首歌只保留一条「整首」入口。
@@ -641,11 +750,17 @@ class MultiIndex:
         for t in top_songs + top_books:
             t.setdefault('rank', t['score'])
         pool_all = kept + top_songs + top_books
+        # v26：精确子串命中（-exact）作为第一排序键，凌驾于来源分档之上。用户把
+        # 「网络语料」提到第一优先时，一条整句命中的歌词过去会被几十条泛泛相关的
+        # 语料压到 limit 之外，看起来就像「没搜到」。相关性最强的证据必须先露面。
+        _ex = lambda r: 0 if r.get('exact') else 1
         if sort == 'score':
-            ordered = sorted(pool_all, key=lambda r: (-r['rank'], _pri_idx.get(r['channel'], len(pri)),
+            ordered = sorted(pool_all, key=lambda r: (_ex(r), -r['rank'],
+                                                      _pri_idx.get(r['channel'], len(pri)),
                                                       -len(r.get('text') or '')))
         else:
-            ordered = sorted(pool_all, key=lambda r: (_pri_idx.get(r['channel'], len(pri)),
+            ordered = sorted(pool_all, key=lambda r: (_ex(r),
+                                                      _pri_idx.get(r['channel'], len(pri)),
                                                       -r['score'], -len(r.get('text') or '')))
         results = ordered
         t_done = time.time()
@@ -682,11 +797,17 @@ class MultiIndex:
                           'license':x.get('license'),'attribution':x.get('attribution'),
                           'read_only':True,'storage':'shard'}
                     if sr['score'] >= max(.08, min_score): shard_rows.append(sr)
+                for sr in shard_rows:      # 分片里也可能躺着一条整句命中
+                    if qn and len(qn) >= EXACT_MIN_LEN and qn in normalize(sr['text']):
+                        sr['exact'] = True
                 groups['web'].extend(shard_rows); rows.extend(shard_rows); results.extend(shard_rows)
-                if sort == 'score': results.sort(key=lambda r:-r.get('rank',r.get('score',0)))
-                else: results.sort(key=lambda r:(_pri_idx.get(r['channel'],len(pri)),
+                # 合并分片结果后重排：exact 依旧是第一排序键，否则刚刚置顶的整句
+                # 命中会在这里被重新打散（v26 修）。
+                if sort == 'score': results.sort(key=lambda r:(_ex(r),
+                                                               -r.get('rank',r.get('score',0))))
+                else: results.sort(key=lambda r:(_ex(r),_pri_idx.get(r['channel'],len(pri)),
                                                   -r.get('score',0)))
-                rows.sort(key=lambda r:-r.get('score',0))
+                rows.sort(key=lambda r:(_ex(r),-r.get('score',0)))
                 meta['shards']={'count':fed.get('shards',0),'hits':len(shard_rows),
                                 'candidates':fed.get('total_candidates',0),
                                 'timed_out':fed.get('shard_ms',0)>=federated_search.SHARD_BUDGET_S*1000}
@@ -695,12 +816,74 @@ class MultiIndex:
                 meta['shards']={'count':len(shard_sig),'hits':0,'error':str(exc)[:160]}
         meta['timing']['shard_ms'] = round((time.time() - t_shard0) * 1000)
         meta['ms'] = round((time.time() - t0) * 1000)     # 补上分片阶段耗时，ms 反映端到端真实总耗时
+        # v26：一条都没有时，如实说明「为什么」。空结果有三种完全不同的成因，
+        # 过去前端一律显示同一句「没有找到相关内容」，把「索引还没建好」和
+        # 「被你自己的筛选挡住了」都说成「库里没有」，用户当然不信。
+        status = self.status()
+        meta['index'] = status
+        if not status['ready']:
+            meta['warming'] = True       # 索引尚未就绪：不是「库里没有」，是「还没建好」
+        if not results or not any(r.get('exact') for r in results):
+            ex = self._diagnose(qn, qn_len, qtoks, qset, qgrams, qgrams_len,
+                                bm, nset, wset, dset, limit, min_affinity,
+                                enabled_set, selected_books, deep=not results)
+            if ex:
+                meta['excluded'] = ex
         resp = {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
                 'results': results[:max(limit, 1)],
                 'groups': groups, 'titles': titles, 'meta': meta}
-        self._qcache_put(ckey, resp)
+        if status['ready']:
+            self._qcache_put(ckey, resp)   # 索引没建好时的结果不进缓存，免得错误答案粘住
         return resp
+
+    def _diagnose(self, qn, qn_len, qtoks, qset, qgrams, qgrams_len,
+                  bm, nset, wset, dset, limit, min_affinity,
+                  enabled_set, selected_books, deep=False):
+        """「为什么没搜到」诊断：被当前筛选排除掉的来源/课本里，其实有没有命中？
+
+        触发时机（正常检索零开销）：
+          · deep=True（一条结果都没有）→ 对被排除的通道跑完整召回，报条数+样例；
+          · deep=False（有结果但没有一条是整句命中）→ 只跑极廉价的精确子串扫描，
+            专门回答「我明明记得歌词里有这句」——它确实有，只是被筛选挡住了。
+        返回 {'lyric': {'hits': 1, 'sample': '寄り返す波が', 'exact': True}, 'books': {...}}，
+        前端据此提示并给一键放开筛选重搜的按钮。
+        """
+        out = {}
+        for ch in CHANNELS:
+            if ch in enabled_set:
+                continue
+            try:
+                if deep:
+                    hits = self._score_channel(ch, qn, qn_len, qtoks, qset, qgrams, qgrams_len,
+                                               bm, nset, wset, dset, limit, min_affinity, set())
+                    ids = [(h[1], h[2]) for h in hits]
+                else:
+                    ids = [(d, 1) for d in self._exact_scan(ch, qn, cap=8)]
+            except Exception:
+                continue
+            if ids:
+                m = bm[ch].docs.get(ids[0][0]) or {}
+                out[ch] = {'hits': len(ids), 'sample': (m.get('_text') or m.get('title') or '')[:40],
+                           'exact': bool(ids[0][1])}
+        if selected_books and 'textbook' in enabled_set:
+            try:
+                if deep:
+                    hits = self._score_channel('textbook', qn, qn_len, qtoks, qset, qgrams,
+                                               qgrams_len, bm, nset, wset, dset, limit,
+                                               min_affinity, set())
+                    ids = [(h[1], h[2]) for h in hits]
+                else:
+                    ids = [(d, 1) for d in self._exact_scan('textbook', qn, cap=8)]
+            except Exception:
+                ids = []
+            outside = [x for x in ids
+                       if (bm['textbook'].docs.get(x[0]) or {}).get('book_id') not in selected_books]
+            if outside:
+                m = bm['textbook'].docs.get(outside[0][0]) or {}
+                out['books'] = {'hits': len(outside), 'sample': (m.get('_text') or '')[:40],
+                                'exact': bool(outside[0][1])}
+        return out
 
 
 

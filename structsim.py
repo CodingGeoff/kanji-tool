@@ -9,6 +9,7 @@
 4. 歌词优先：歌词行 +0.05 加成后排序
 索引全内存，后台线程预热，语料/歌词增长时自动增量重建。
 """
+import os
 import re
 import threading
 
@@ -123,8 +124,12 @@ def _bigrams(t):
 
 
 class StructIndex:
+    # 首次建索引时检索最多愿意等多久（秒）；与 rag.MultiIndex 同理。
+    FIRST_BUILD_WAIT_S = float(os.environ.get('STRUCT_FIRST_BUILD_WAIT_S', '20'))
+
     def __init__(self):
         self._lock = threading.Lock()
+        self._build_lock = threading.Lock()   # v26：构建互斥，避免拿空索引去查
         self._sents = {}      # sid -> (text, sig)
         self._song_lines = []  # (song_id, title, line, sig)
         self._book_map = {}    # sid -> set(book_id)
@@ -170,22 +175,44 @@ class StructIndex:
         def run():
             if self._warming:
                 return
-            self._warming = True
-            try:
-                self._build()
-            finally:
-                self._warming = False
+            with self._build_lock:
+                self._warming = True
+                try:
+                    self._build()
+                finally:
+                    self._warming = False
         threading.Thread(target=run, daemon=True).start()
 
     def ensure(self):
+        """v26：与 rag.MultiIndex.ensure 同样的竞态修复。
+
+        旧写法遇到「后台正在预热」(_warming) 就直接跳过构建，于是启动后的头
+        ~10 秒里，任何整句检索都是拿**空索引**去查，结构相似句稳定为 0 条，
+        界面显示「语料库中暂无结构相似句」——不是没有，是还没建好。
+        现在：从未建好 → 等着（有上限）；已可用但数据变了 → 不阻塞，用旧索引先答。
+        """
         rows, songs, book_rows = self._collect()
-        with self._lock:
-            up2date = len(rows) == self._n_sent and len(songs) == self._n_song
-            if up2date:
-                current_books = sum(len(v) for v in self._book_map.values())
-                up2date = current_books == len(book_rows)
-        if not up2date and not self._warming:
-            self._build()
+
+        def _fresh():
+            with self._lock:
+                if len(rows) != self._n_sent or len(songs) != self._n_song:
+                    return False
+                return sum(len(v) for v in self._book_map.values()) == len(book_rows)
+
+        if _fresh():
+            return
+        first = self._n_sent < 0
+        if first:
+            got = self._build_lock.acquire(timeout=max(self.FIRST_BUILD_WAIT_S, 0.1))
+        else:
+            got = self._build_lock.acquire(blocking=False)
+        if not got:
+            return          # 等不到 / 别人正在建 → 用现状，绝不拿空索引硬查
+        try:
+            if not _fresh():
+                self._build()
+        finally:
+            self._build_lock.release()
 
     def lyric_affinity(self, q, limit=8, per_song=3, min_aff=0.18):
         """任意查询（词/短语/句子）→ 歌词行亲和检索：字符bigram Dice + 子串加成。
