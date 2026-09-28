@@ -163,9 +163,10 @@ pairing 同句干扰项、`69.9％` 被切成 `9％`、`そのうえ` 被当成�
 | `GET` | `/api/discourse/passages` | 列表 |
 | `GET` | `/api/discourse/passages/<id>` | 详情（分句 + 题型分布） |
 | `DELETE` | `/api/discourse/passages/<id>` | 删除 |
-| `POST` | `/api/discourse/quiz` | `{passage_id, count, types?, difficulty?, mode?, secure?}` → 一套题（`mode`: choice/input/mixed） |
+| `POST` | `/api/discourse/quiz` | `{passage_id, count, types?, difficulty?, mode?, secure?}` → 一套题（`mode`: choice/input/mixed），响应自带 `rows`（整篇原文行，阅读面板零额外请求） |
 | `POST` | `/api/discourse/grade` | `{quiz_id, qid, response}` → 服务端判分，回传答案与依据 |
 | `GET` | `/api/discourse/passages/<id>/capacity` | 题干数 / 可交付题数 / 题面变体数 / 已做过·未做过 |
+| `GET` | `/api/discourse/passages/capacities` | **所有**篇章的题量统计一次拿全（v23：列表页不再逐篇慢加载） |
 | `POST` | `/api/discourse/answer` | `{passage_id, results:[{qtype, ok, peeked}]}` → 记成绩 |
 | `GET` | `/api/discourse/stats?days=14` | 分题型正确率 |
 | `POST` | `/api/discourse/seed` | `{force?}` → 载入仓库自带的内置篇章（`samples/*.txt`，幂等） |
@@ -198,6 +199,21 @@ print(D.quality_report(txt))                            # 单独做输入体检
 > 超长篇章：直接粘贴即可。切句/分段是线性的，标注结果有缓存，
 > 万字级文章的一次组卷在秒级完成。题目池会随篇幅线性变大（线索越多，
 > 能通过门禁的题也越多）。
+
+### ④ 加载性能架构（v23）
+
+「篇章精读」曾经的三宗罪：列表加载数秒、期间**所有**按钮假死、
+连点「测验模式」后页面闪现一堆题目。三层修复，各管一件事：
+
+| 层 | 手段 | 效果 |
+|---|---|---|
+| **语料实证：倒排索引** | `corpus_count` 不再做 `LIKE '%…%'` 全表扫描（一次组卷要扫上千次 ≈ 3s）。全库压成 **字符 bigram → 句子id集合** 的内存倒排：查询串任一 bigram 缺失 → 必然零命中；否则取最短倒排表为候选，逐句 `in` 精确复核。结果与 SQL **逐条一致**（测试 [25] 断言），实测 1134 个真实查询 2.8s → **0.004s**。语料增删由 `(MAX(rowid), COUNT(*))` 版本戳自动重建（限频 1s/次），录入路径另有立即失效 | 单篇容量统计 **2.8s → 0.17s**（含建索引），之后毫秒级 |
+| **静态缓存 + 批量接口 + 后台预热** | `capacity` / `preview_types` 的生成器结果按「篇章内容 + 语料版本」缓存（`done/fresh` 走曝光日志**实时**算，不缓存）；新增 `/api/discourse/passages/capacities` 一次返回全部；列表接口顺手触发后台 `warm_async()` 预热 | 列表页 1 次请求拿全题量，反复打开标签页 0 开销 |
+| **并发 + 前端忙碌态** | 本地 `app.run` 加 `threaded=True`（此前单线程：一个秒级请求把复习/语料库全部堵死，线上 gunicorn 本来就是 `--threads 8`）；前端所有篇章操作互斥（`dcBusy`）：按钮立刻变「⏳ 正在组卷…」并禁用，连点直接忽略；题量占位行固定高度，统计到达时列表不跳动（按钮不会在点击瞬间挪位——那正是「误入开卷模式」的元凶） | 慢请求进行中其它按钮照常响应；连点不再叠出 N 套题 |
+
+实测（8 篇内置篇章、1.9 万句语料）：冷启动题量批量接口 0.55s、热 0.18s、
+组卷 0.07s、判分 12ms；10 路并发「列表+题量+组卷」全套 0.53s 内全部完成，
+期间 `/api/stats` 响应 15ms。
 
 ---
 
@@ -544,10 +560,13 @@ python test_discourse.py     # 临时库隔离，不碰真实数据
 
 16. **行分类**：整行引语＝正文、「ハンター「…」」＝小标题、说话人标签/图注/栏目标签
     ＝caption、以「？」结尾的首行＝标题，共 19 条断言
-17. **阅读面板**：注音接口逐行拼回原文一致；前端 16 项契约 + 后端 4 条路由
+17. **阅读面板**：注音接口逐行拼回原文一致；前端 16 项契约 + 后端 5 条路由
 18. **长文性能**：5000 字报道冷启动 < 1s，缓存命中后 ~0.03s
+19. **v23 性能**：倒排计数与 SQL LIKE 逐条一致；capacity 二次调用 < 0.5s（静态缓存）；
+    做完题 done/fresh 立刻变化（缓存不含曝光账目）；quiz 响应自带原文 `rows`
 
-另有 `node test_discourse_ui.js`：前端行为测试（最小 DOM 桩，无需浏览器）10 组断言。
+另有 `node test_discourse_ui.js`：前端行为测试（最小 DOM 桩，无需浏览器）12 组断言
+（含连点防抖：组卷进行中再点不叠出第二套题；题量统计走批量接口）。
 
 现状：`ALL PASSED`。**8 篇真实 NHK 报道（擁壁崩壊 / 気象 / 米中 / 原田マハ受賞 /
 長崎電話障害 / AIデータセンター長編 / ジャガイモ輸入 / クマ緊急銃猟）共 562 道题

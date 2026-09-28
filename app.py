@@ -1890,8 +1890,17 @@ def api_discourse_list():
     # 启动时的后台补种可能还没跑完（首次要加载形态素词典），这里等它一下，
     # 否则刚部署完打开页面会看到「还没有篇章」。补过之后是空转，无开销。
     discourse.ensure_seeded()
+    # 列表页一打开就后台预热各篇的题量/题型统计（语料倒排 + 生成器缓存），
+    # 等用户点「开考」时已是热路径。绝不阻塞本响应。
+    discourse.warm_async()
     return jsonify({'ok': True, 'passages': discourse.list_passages(),
                     'builtin': len(discourse.seed_files())})
+
+
+@app.route('/api/discourse/passages/capacities')
+def api_discourse_capacities():
+    """所有篇章的题量统计一次拿全：列表页不再「每篇一个请求」逐个慢加载。"""
+    return jsonify({'ok': True, 'capacities': discourse.all_capacities()})
 
 
 @app.route('/api/discourse/seed', methods=['POST'])
@@ -1933,6 +1942,7 @@ def api_discourse_add():
         return jsonify({'ok': False, 'error': str(e)}), 400
     r['preview'] = discourse.preview_types(r['id'])
     r['ok'] = True
+    discourse.warm_async([r['id']])     # 刚录入的文章：后台把题量统计也算好
     return jsonify(r)
 
 
@@ -2002,4 +2012,8 @@ def api_discourse_stats():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    # threaded=True：本地开发服务器并发处理请求。此前默认单线程，
+    # 篇章题量统计这种秒级请求会把「复习 / 语料库」等所有按钮全部堵死，
+    # 表现就是「点什么都没反应」。线上 gunicorn 本来就是 --threads 8。
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)),
+            debug=False, threaded=True)

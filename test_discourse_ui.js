@@ -8,7 +8,8 @@ const src = fs.readFileSync('static/index.html', 'utf8');
 let script = src.split('<script>').pop().split('</script>')[0];
 // eval 里的 let/const 不会变成全局，测试需要读写模块级状态 → 仅测试期改成 var
 script = script.replace(/\blet dcQuiz=null;/, 'var dcQuiz=null;')
-               .replace(/\blet dcPv=null;/, 'var dcPv=null;');
+               .replace(/\blet dcPv=null;/, 'var dcPv=null;')
+               .replace(/\blet dcBusy=false,dcSeq=0;/, 'var dcBusy=false,dcSeq=0;');
 
 let FAILS = [];
 const check = (c, m) => { if (!c) { FAILS.push(m); console.log('  FAIL:', m); } };
@@ -101,6 +102,7 @@ global.fetch = async (url, opt) => {
   const j = d => ({ json: async () => d, ok: true, status: 200, text: async () => JSON.stringify(d) });
   if (url.includes('/api/discourse/quiz')) return j(QUIZ);
   if (url.includes('/furigana')) return j(FURI);
+  if (url.includes('/capacities')) return j({ ok: true, capacities: { 7: { stems: 119, deliveries: 207, variants: 1451298, fresh: 100, done: 19 } } });
   if (url.includes('/capacity')) return j({ ok: true, capacity: { stems: 119, deliveries: 207, variants: 1451298, fresh: 100, done: 19 } });
   if (url.includes('/api/discourse/grade')) return j(GRADE);
   if (/\/api\/discourse\/passages\/\d+$/.test(url)) return j({ ok: true, passage: PASSAGE, preview: {} });
@@ -210,8 +212,26 @@ try { eval(script); } catch (e) { console.log('脚本加载异常（忽略初始
     `FAB 文案未随状态变化（${fabClosed} → ${fabOpen}）`);
   check(el('dcRcol')._cls.has('open'), '移动端抽屉没有打开');
 
+  console.log('[UI-11] 连点防抖：组卷进行中再点直接忽略，不叠出第二套题');
+  calls.length = 0;
+  const s1 = dcStart(7, 3);                 // 不 await 第一笔，立刻再点一次
+  const s2 = dcStart(7, 3);
+  await Promise.all([s1, s2]);
+  check(calls.filter(c => c.url.includes('/api/discourse/quiz')).length === 1,
+    '连点仍然发出了多次组卷请求（就是「闪过一大堆题目」的根源）');
+  check(dcBusy === false, '忙碌标记没有复位（会卡死后续操作）');
+
+  console.log('[UI-12] 列表加载：题量统计走批量接口，一次请求全拿');
+  calls.length = 0;
+  await dcLoad();
+  await new Promise(r => setTimeout(r, 30));
+  check(calls.some(c => c.url.includes('/api/discourse/passages/capacities')),
+    '没有调用批量题量接口');
+  check(el('dcCap7').innerHTML.includes('题干 <b>119</b>'), '题量统计没有填进列表');
+  check(!calls.some(c => c.url.endsWith('/capacity')), '还在按篇逐个请求题量');
+
   } catch (e) { console.log('运行时异常:', e && e.stack || e); FAILS.push('运行时异常: ' + (e && e.message)); }
   console.log('\n' + '='.repeat(56));
   if (FAILS.length) { console.log(`FAILED: ${FAILS.length} 项`); FAILS.forEach(f => console.log(' -', f)); process.exit(1); }
-  console.log('UI ALL PASSED（10 组前端行为断言）');
+  console.log('UI ALL PASSED（12 组前端行为断言）');
 })();
