@@ -720,19 +720,24 @@ def _noun_candidate_ok(w):
     return True
 
 
-@functools.lru_cache(maxsize=256)
-def _colloc_nouns(particle, pred_key):
-    """语料共现挖掘：与谓语 pred_key 搭配、经 particle 标记的名词分布。
-    返回 ((名词, 出现次数), ...) 按频次降序。只信语料里真实出现过的搭配 ——
-    「语料是语义预言机」：算法不懂句义，但语料中出现过 = 有人写过 = 搭配成立。"""
+@functools.lru_cache(maxsize=16)
+def _colloc_index(particle):
+    """语料共现全量表：扫一遍 LIKE '%particle%' 的语料，每句只分词一次，
+    产出 {pred_key: {noun: count}} —— 供该助词的所有 pred_key 共享。
+
+    性能：老实现按 (particle, pred_key) 分别查询并各自把上千句重新分词一遍；
+    同一个助词（を/が/で…）往往对应许多不同谓语，于是同一批语料被反复扫描、
+    反复分词（组句出题的第一大热点）。这里改成「同一助词只扫描+分词一次」，
+    抽取逻辑与老实现逐字一致，只是采样在该助词的各 pred_key 间共享（本就是
+    ORDER BY RANDOM 抽样，统计意义等价）。"""
     try:
         with db.get_conn() as c:
             rows = c.execute(
                 'SELECT text FROM sentences WHERE text LIKE ? '
                 'ORDER BY RANDOM() LIMIT 1000', (f'%{particle}%',)).fetchall()
     except Exception:
-        return ()
-    counter = {}
+        return {}
+    index = {}
     for r in rows:
         try:
             toks = _tag(r[0] if not hasattr(r, 'keys') else r['text'])
@@ -759,10 +764,20 @@ def _colloc_nouns(particle, pred_key):
             # particle 之后 4 个形态素内找到目标谓语
             for j in range(i + 1, min(i + 5, len(toks))):
                 if toks[j]['p1'] == '動詞':
-                    if _pred_key(toks, j) == pred_key:
-                        counter[noun_surf] = counter.get(noun_surf, 0) + 1
+                    d = index.setdefault(_pred_key(toks, j), {})
+                    d[noun_surf] = d.get(noun_surf, 0) + 1
                     break
+    return index
+
+
+@functools.lru_cache(maxsize=256)
+def _colloc_nouns(particle, pred_key):
+    """语料共现挖掘：与谓语 pred_key 搭配、经 particle 标记的名词分布。
+    返回 ((名词, 出现次数), ...) 按频次降序。只信语料里真实出现过的搭配 ——
+    「语料是语义预言机」：算法不懂句义，但语料中出现过 = 有人写过 = 搭配成立。"""
+    counter = _colloc_index(particle).get(pred_key, {})
     return tuple(sorted(counter.items(), key=lambda kv: -kv[1])[:20])
+
 
 
 SWAP_PARTICLES = ('を', 'が', 'で')
