@@ -168,6 +168,7 @@ pairing 同句干扰项、`69.9％` 被切成 `9％`、`そのうえ` 被当成�
 | `GET` | `/api/discourse/passages/<id>/capacity` | 题干数 / 可交付题数 / 题面变体数 / 已做过·未做过 |
 | `POST` | `/api/discourse/answer` | `{passage_id, results:[{qtype, ok, peeked}]}` → 记成绩 |
 | `GET` | `/api/discourse/stats?days=14` | 分题型正确率 |
+| `POST` | `/api/discourse/seed` | `{force?}` → 载入仓库自带的内置篇章（`samples/*.txt`，幂等） |
 
 ```bash
 curl -X POST localhost:5000/api/discourse/passages \
@@ -384,6 +385,30 @@ passage_results(id, ts, passage_id, qtype, ok)         -- 分题型正确率
 ```
 建表在 `discourse.init()` 里幂等执行，老库自动补建，不动任何既有表。
 录入与练习各写一条 `history`（`passage_import` / `passage_quiz`）。
+
+### 4.1 内置篇章：为什么线上「我的篇章」必须自带货
+
+篇章是**运行时**录入的，而云端（Render 免费实例 / HF Space）的容器磁盘是**临时的**：
+重新部署一次，运行时写进 `kanji.db` 的篇章就全没了；仓库里提交的那份 `kanji.db`
+又长期连 `passages` 表都没有 —— 所以「本地有 8 篇、正式环境一篇都不显示」。
+
+修法不是「记得手动 publish 数据库」，而是让内容随代码走：
+`samples/*.txt` 里的文章被当作**内置篇章**，每次进程启动由
+`discourse.ensure_seeded()` 幂等补齐（后台线程，不拖慢启动；
+`GET /api/discourse/passages` 会等它一下，避免刚部署完看到空列表）。
+
+| 关注点 | 处理 |
+|---|---|
+| 重复录入 | 三重去重：`settings.discourse_seed_v1` 里的内容指纹 → 库中同正文 → 库中同标题 |
+| 用户删掉了某篇 | 指纹记号还在 → 重启**不会**自己长回来；想找回点「📥 载入内置篇章」或 `POST /api/discourse/seed {"force":true}` |
+| 手工录过同一篇 | 正文/标题撞车 → 跳过，不会出现两份 |
+| 出处标注 | 按文件名前缀（`nhk_*` → `NHK NEWS WEB`），`note` 记 `内置篇章 · 文件名` |
+| 并入语料库 | 默认 `to_corpus=True`，组句 / 听力 / 挖空的 **📰 我的篇章** 题源同时有货 |
+| 关掉它 | 环境变量 `KANJI_SEED_PASSAGES=0` |
+
+想让**自己**的文章也随部署上线：把 `.txt` 丢进 `samples/` 提交即可（一篇一个文件，
+空行分段）。想让运行时录入的篇章也不丢，挂持久盘并设 `KANJI_DB=/data/kanji.db`
+（见 `DEPLOY.md`）。
 
 切句规则：句末标点 `。！？!?` 切分，**引号 `「」『』（）` 内的句点不切**
 （`彼は「今日は雨です。明日は晴れです。」と言った。` → 1 句）。

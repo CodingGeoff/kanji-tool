@@ -35,9 +35,12 @@
   absent         本文未出现词判别（扫读，绝对客观）
   headword       复现词链（全篇出现最多的实词还原）
 """
+import hashlib
 import json
+import os
 import random
 import re
+import threading
 import time
 from collections import Counter, defaultdict
 
@@ -413,6 +416,137 @@ def add_to_corpus(pid):
         except Exception:
             continue
     return n
+
+
+# ================================================================
+# 0.7 内置篇章种子（samples/*.txt）
+# ----------------------------------------------------------------
+# 为什么需要它：仓库根目录的 kanji.db 是 Render 的唯一初始数据源，而篇章
+# 是在**运行时**录入的 —— 免费实例的磁盘又是临时的（重新部署即抹掉）。
+# 结果就是「本地有 8 篇、线上一篇都没有」。
+# 所以把随仓库走的 samples/*.txt 当成内置篇章：每次启动幂等补齐，
+# 既不依赖数据库文件里有没有 passages 表，也不怕容器重建。
+#
+# 幂等规则（三重防重复）：
+#   1. settings 里记下每个文件的内容指纹 → 录过就不再录；
+#      用户删掉某篇后指纹还在，重启也不会「阴魂不散」地回来。
+#   2. 库里已存在同样正文 → 跳过（本地手工录过同一篇的情形）。
+#   3. 库里已存在同名标题 → 跳过（同一篇文章从网页重复粘贴，正文略有出入）。
+# ================================================================
+SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'samples')
+SEED_SETTING = 'discourse_seed_v1'
+_SEED_SOURCES = (('nhk', 'NHK NEWS WEB'),)
+_seed_lock = threading.Lock()
+_seed_done = False
+
+
+def _seed_source(fname):
+    """按文件名前缀标注出处，未知前缀留空（出处只是展示用，宁缺毋滥）。"""
+    stem = os.path.basename(fname).lower()
+    for prefix, label in _SEED_SOURCES:
+        if stem.startswith(prefix + '_') or stem == prefix + '.txt':
+            return label
+    return ''
+
+
+def seed_files(dirpath=None):
+    d = dirpath or SEED_DIR
+    if not os.path.isdir(d):
+        return []
+    return [os.path.join(d, n) for n in sorted(os.listdir(d))
+            if n.lower().endswith('.txt') and not n.startswith('_')]
+
+
+def _fingerprint(text):
+    return hashlib.sha1(normalize(text).strip().encode('utf-8')).hexdigest()[:16]
+
+
+def _seed_state():
+    try:
+        st = json.loads(db.get_setting(SEED_SETTING) or '{}')
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_seed_state(state):
+    try:
+        db.set_setting(SEED_SETTING, json.dumps(state, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def seed_builtin(dirpath=None, force=False, to_corpus=True):
+    """把 samples/*.txt 录入篇章库（可重复执行，不会产生重复篇章）。
+
+    force=True 只忽略「录过」的记号（用于手动重新载入），
+    正文/标题撞车的去重依旧生效。返回 {'added': [...], 'skipped': [...]}。
+    """
+    init()
+    files = seed_files(dirpath)
+    state = _seed_state()
+    added, skipped = [], []
+    if not files:
+        return {'ok': True, 'added': added, 'skipped': skipped, 'files': 0}
+    with db.get_conn() as c:
+        rows = c.execute('SELECT title, text FROM passages').fetchall()
+    known_text = {_fingerprint(r['text']) for r in rows}
+    known_title = {(r['title'] or '').strip() for r in rows}
+    for path in files:
+        name = os.path.basename(path)
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            skipped.append({'file': name, 'reason': '读取失败：%s' % e})
+            continue
+        fp = _fingerprint(text)
+        if not force and state.get(name) == fp:
+            skipped.append({'file': name, 'reason': '已录入过'})
+            continue
+        if fp in known_text:
+            state[name] = fp
+            skipped.append({'file': name, 'reason': '库中已有同样正文'})
+            continue
+        try:
+            r = import_passage('', text, source=_seed_source(name),
+                               note='内置篇章 · %s' % name, to_corpus=to_corpus)
+        except Exception as e:
+            skipped.append({'file': name, 'reason': '解析失败：%s' % e})
+            continue
+        if (r.get('title') or '').strip() in known_title:
+            # 同一篇文章已经被手工录过（正文略有出入）→ 撤销本次录入，只留旧的
+            delete_passage(r['id'])
+            state[name] = fp
+            skipped.append({'file': name, 'reason': '库中已有同名篇章'})
+            continue
+        known_text.add(fp)
+        known_title.add((r.get('title') or '').strip())
+        state[name] = fp
+        added.append({'file': name, 'id': r['id'], 'title': r['title'],
+                      'n_sent': r['n_sent'], 'corpus_added': r.get('corpus_added', 0)})
+    _save_seed_state(state)
+    if added:
+        db.log('passage_seed', json.dumps(
+            {'added': len(added), 'titles': [a['title'] for a in added]},
+            ensure_ascii=False))
+    return {'ok': True, 'added': added, 'skipped': skipped, 'files': len(files)}
+
+
+def ensure_seeded(force=False):
+    """进程内只跑一次的补种入口（app 启动时调用，失败绝不影响启动）。"""
+    global _seed_done
+    if os.environ.get('KANJI_SEED_PASSAGES', '1').strip().lower() in ('0', 'off', 'false', 'no'):
+        return {'ok': True, 'added': [], 'skipped': [], 'files': 0, 'disabled': True}
+    with _seed_lock:
+        if _seed_done and not force:
+            return {'ok': True, 'added': [], 'skipped': [], 'files': 0, 'cached': True}
+        try:
+            r = seed_builtin(force=force)
+        except Exception as e:
+            return {'ok': False, 'error': str(e), 'added': [], 'skipped': []}
+        _seed_done = True
+        return r
 
 
 def list_passages():
