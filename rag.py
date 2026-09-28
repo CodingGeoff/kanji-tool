@@ -659,6 +659,11 @@ class MultiIndex:
                            'merge_ms': round((t_done - t_rerank) * 1000)}}
         # 6) 大型只读分片按需召回，不把数百万文档常驻内存。作为 web 通道参与
         # 统一去重与排序；kanji.db 中已有同文时保留可编辑的主库版本。
+        # v25：这一步此前不计入 meta.timing/meta.ms——分片全表扫描一旦变慢
+        # （分片多、或分片存放在对象存储/网络盘上），前端进度条会一直停在
+        # 「精排」而看不出真实耗时在哪；现在显式记录 shard_ms 并把它计入总 ms，
+        # 同时受 federated_search.SHARD_BUDGET_S 墙钟预算保护，不会无界拖长。
+        t_shard0 = time.time()
         if 'web' in enabled_set and shard_sig:
             try:
                 fed = federated_search.search(q, limit=max(limit * 3, 30),
@@ -683,10 +688,13 @@ class MultiIndex:
                                                   -r.get('score',0)))
                 rows.sort(key=lambda r:-r.get('score',0))
                 meta['shards']={'count':fed.get('shards',0),'hits':len(shard_rows),
-                                'candidates':fed.get('total_candidates',0)}
+                                'candidates':fed.get('total_candidates',0),
+                                'timed_out':fed.get('shard_ms',0)>=federated_search.SHARD_BUDGET_S*1000}
                 meta['hits']['web']=len(groups['web'])
             except Exception as exc:
                 meta['shards']={'count':len(shard_sig),'hits':0,'error':str(exc)[:160]}
+        meta['timing']['shard_ms'] = round((time.time() - t_shard0) * 1000)
+        meta['ms'] = round((time.time() - t0) * 1000)     # 补上分片阶段耗时，ms 反映端到端真实总耗时
         resp = {'rows': rows[:max(limit, 1)],
                 'lyrics': merged[:max(8, limit)],
                 'results': results[:max(limit, 1)],
@@ -747,6 +755,11 @@ def warmup_async(delay=0.0):
     - 就绪后仍以 ensure() 的数据签名校验为唯一真源：数据一变即自动重建，
       故「预热」与「检索结果始终对应最新数据」不冲突（预热只是提前把成本付掉）。
     - 顺带预热 RagIndex（/api/rag/similar 用），同样只在后台付一次。
+    - v25：额外持续在后台补建分片 bigram 倒排索引（见 corpus_shards.ensure_shard_index /
+      federated_search.warm_shard_indices），避免第一个用户的检索撞上「索引不存在→
+      回退全表扫描」的慢路径——这正是「精排阶段耗时 20+ 秒、偶发 JSON 解析失败」的根因。
+      分批小预算构建，不占满 CPU；构建完仍持续低频轮询，新增分片（对象存储同步/下载）
+      随时会被发现，不需要重启进程。
     """
     def _run():
         try:
@@ -756,4 +769,10 @@ def warmup_async(delay=0.0):
             INDEX.ensure()
         except Exception:
             pass
+        while True:
+            try:
+                built = federated_search.warm_shard_indices(budget_s=2.0, max_shards=4)
+            except Exception:
+                built = 0
+            time.sleep(0.5 if built else 30.0)
     threading.Thread(target=_run, daemon=True).start()

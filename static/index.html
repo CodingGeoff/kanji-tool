@@ -937,6 +937,12 @@ async function showAbout(){
 .dc-blank.ok{background:#e7f2ec;border-color:var(--accent2);color:var(--accent2)}
 .dc-blank.ng{background:#fbe9ea;border-color:var(--accent);color:var(--accent)}
 .dc-blank ruby rt{font-size:.5em}
+/* v26：句子插入题的空位标——比挖空框更轻量（不是「填词」，是「选一个位置」），
+   用实心圆点数字嵌在句间，视觉上像正式阅读题的 (1)(2)(3)(4) 编号。 */
+.dc-ins-mark{display:inline-flex;align-items:center;justify-content:center;
+  width:1.7em;height:1.7em;margin:0 6px;padding:0;vertical-align:middle;
+  background:var(--accent2);color:#fff;border-radius:50%;
+  font-size:.78em;font-weight:700;line-height:1;transform:translateY(-2px)}
 .dc-opt{display:flex;align-items:center;gap:12px;width:100%;text-align:left;margin:8px 0;
   padding:12px 14px;font-size:17.5px;line-height:1.6;border:2px solid var(--line);border-radius:14px;
   background:#fff;cursor:pointer;transition:.15s;white-space:normal;word-break:break-word;font-family:inherit}
@@ -963,7 +969,33 @@ async function showAbout(){
 
 <script>
 const $=s=>document.querySelector(s);
-const api=(u,opt)=>fetch(u,opt?Object.assign({headers:{'Content-Type':'application/json'}},opt):undefined).then(r=>r.json());
+/* v25：api() 加固——此前 fetch(...).then(r=>r.json()) 一旦响应体为空/被截断
+   （请求耗时太久，被反向代理或应用服务器中途掐断连接），r.json() 会直接抛出
+   浏览器原生的 "SyntaxError: Unexpected end of JSON input"，用户只看得到这句
+   天书。现在先读文本，能解析就正常返回；解析失败/响应非 2xx 时抛出中文错误，
+   并加一个可配置的超时（默认 60s，RAG 检索等已知会快很多，可按需传更短的）。 */
+const api=(u,opt)=>{
+  const o=opt?Object.assign({headers:{'Content-Type':'application/json'}},opt):{};
+  const timeoutMs=o.timeoutMs||60000;
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),timeoutMs);
+  o.signal=ac.signal;
+  return fetch(u,o).then(async r=>{
+    let raw='';
+    try{ raw=await r.text(); }catch(e){ throw new Error('网络中断，响应未接收完整，请重试'); }
+    let data=null;
+    if(raw){
+      try{ data=JSON.parse(raw); }
+      catch(e){ throw new Error('服务器响应不完整或超时被中断，请重试（如持续出现，可能是数据量较大导致后端处理超时）'); }
+    }
+    if(!r.ok){ throw new Error((data&&(data.error||data.message))||`请求失败（HTTP ${r.status}）`); }
+    if(data===null){ throw new Error('服务器未返回内容，请重试'); }
+    return data;
+  }).catch(e=>{
+    if(e&&e.name==='AbortError') throw new Error('请求超时，请检查网络后重试');
+    throw e;
+  }).finally(()=>clearTimeout(timer));
+};
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
 function esc(s){return (s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function jsArg(s){return JSON.stringify(s??'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}
@@ -1250,7 +1282,7 @@ async function dcPreview(ev){
       ${d.samples.map(x=>`<div class="sent-item" style="margin-top:6px">
         <div class="row" style="gap:6px"><span class="tag">${esc(x.type_label)}</span><span class="tag">${x.difficulty}</span><span class="tag">${x.text_policy==='open'?'开卷·扫读':'闭卷'}</span></div>
         <div style="margin-top:6px;font-size:14.5px"><b>${esc(x.prompt).replace(/\n/g,'<br>')}</b></div>
-        <div class="jp" style="white-space:pre-wrap;margin-top:4px">${esc(x.context)}</div>
+        <div class="jp" style="white-space:pre-wrap;margin-top:4px">${x.qtype==='insert'?dcInsertCtxHTML(x.context):esc(x.context)}</div>
         <div class="muted" style="margin-top:4px;font-size:13px">选项：${x.options.map(o=>esc(o)).join(' / ')} → 正解：<b>${esc(x.answer)}</b></div>
         <div class="muted" style="margin-top:2px;font-size:12px">依据：${esc((x.evidence||[])[0]||'')}</div>
       </div>`).join('')}</details>`:''}
@@ -1442,6 +1474,32 @@ function dcBlankHTML(ctx){
     .replace(/（＿+）/g,'<span class="dc-blank">？</span>')
     .replace(/＿+/g,'<span class="dc-blank">？</span>');
 }
+/* v26：句子插入题的题面此前是「（①）」独占一行、下一句另起一行」，读起来像
+   断成了好几截。服务端数据仍按「标号行 / 句子行」分行存储（保留可机器校验的
+   结构，见 discourse.py insert_rebuild 约定），这里只在渲染时把标号行拼回相邻
+   句子的开头，变成行内小圆标——效果等同真实 N1 读解「(1)(2)(3)(4)」的排版。
+   结尾处若插入点在全文最后（后面没有句子了），标号就挂在上一句末尾，不再单独占行。 */
+function dcInsertCtxHTML(ctx){
+  const isMark=s=>/^（[①②③④]）$/.test(s.trim());
+  const lines=String(ctx||'').split('\n');
+  const out=[];
+  for(let i=0;i<lines.length;i++){
+    if(isMark(lines[i])){
+      const chip=`<span class="dc-ins-mark">${esc(lines[i].trim().slice(1,-1))}</span>`;
+      if(i+1<lines.length && !isMark(lines[i+1])){
+        out.push(chip+esc(lines[i+1]));
+        i++;
+      }else if(out.length){
+        out[out.length-1]+=chip;
+      }else{
+        out.push(chip);
+      }
+    }else{
+      out.push(esc(lines[i]));
+    }
+  }
+  return out.join('<br>');
+}
 function dcFillBlanks(parts,ok){
   /* 判分后把正解填进空框：答对＝绿，答错＝红（还是填正解，一眼看到该填什么） */
   document.querySelectorAll('#dcQcol .dc-blank').forEach((b,i)=>{
@@ -1475,7 +1533,7 @@ function dcRender(keepPick){
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
     <div class="dc-prompt">${dcBlankHTML(q.prompt).replace(/\n/g,'<br>')}</div>
-    <div class="jp dc-ctx">${dcBlankHTML(q.context)}</div>
+    <div class="jp dc-ctx">${q.qtype==='insert'?dcInsertCtxHTML(q.context):dcBlankHTML(q.context)}</div>
     <div class="row" style="margin-top:12px;gap:8px">
       ${(DC_SEALED.has(q.qtype)&&!dcQuiz.checked&&!dcQuiz.study)
         ? `<span class="muted" style="font-size:12.5px">🔒 排序/插入题：所有材料已在题面中。原文＝正确顺序，作答阶段不提供，判分后可对照回看。</span>`
@@ -2255,6 +2313,19 @@ async function ragSearch(){
   ragProgStep(0);
   const _t1=setTimeout(()=>{if(my===_ragSeq)ragProgStep(1)},260);
   const _t2=setTimeout(()=>{if(my===_ragSeq)ragProgStep(2)},700);
+  // v25：超过 3 秒还没返回时，在「精排」阶段旁边加一行实时等待秒数，避免看起来像卡死
+  // （真实卡顿绝大多数在这之后才发生——网络语料分片全表扫描，见 rag.py/federated_search.py 的修复）。
+  const _tHintStart=Date.now();
+  const _tHint=setInterval(()=>{
+    if(my!==_ragSeq)return;
+    const el=document.querySelector('#ragOut .rag-prog');
+    if(!el)return;
+    const sec=((Date.now()-_tHintStart)/1000).toFixed(0);
+    let hint=el.querySelector('.rag-wait-hint');
+    if(!hint){ hint=document.createElement('div'); hint.className='rag-wait-hint muted';
+      hint.style.cssText='font-size:12px;margin-top:4px'; el.appendChild(hint); }
+    hint.textContent=`已等待 ${sec} 秒…`;
+  },1000);
   const body={
     q,
     limit:+($('#ragLimit').value||10),
@@ -2265,9 +2336,10 @@ async function ragSearch(){
     book_ids:ragSelectedBooks()
   };
   let d;
-  try{ d=await api('/api/rag/search',{method:'POST',body:JSON.stringify(body)}); }
-  catch(e){ if(my!==_ragSeq)return; clearTimeout(_t1); clearTimeout(_t2);
-    $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(String(e))+'</div>'; return; }
+  try{ d=await api('/api/rag/search',{method:'POST',body:JSON.stringify(body),timeoutMs:20000}); }
+  catch(e){ clearInterval(_tHint); if(my!==_ragSeq)return; clearTimeout(_t1); clearTimeout(_t2);
+    $('#ragOut').innerHTML='<div class="rag-empty">检索失败：'+esc(e&&e.message?e.message:String(e))+'</div>'; return; }
+  clearInterval(_tHint);
   if(my!==_ragSeq)return;
   clearTimeout(_t1); clearTimeout(_t2); ragProgStep(3);
   const meta=d.meta||{};
@@ -2285,7 +2357,14 @@ async function ragSearch(){
       · 排序：<b>${esc(meta.sort==='score'?'相关性优先（来源加权）':'按来源优先级分档')}</b>
       · 命中 歌词 ${hits.lyric||0} / 课本 ${hits.textbook||0} / 语料 ${hits.web||0}
       ${meta.book_ids&&meta.book_ids.length?` · 限定 ${meta.book_ids.map(id=>esc((ragBooks.find(b=>b.id===id)||{}).title||('#'+id))).join(' / ')}`:''}
-      ${meta.ms!=null?` · ⏱ ${meta.ms} ms${meta.timing?` <span title="召回${meta.timing.recall_ms}ms · 精排${meta.timing.rerank_ms}ms · 合并${meta.timing.merge_ms}ms" style="cursor:help;border-bottom:1px dotted var(--sub)">(召回${meta.timing.recall_ms}+精排${meta.timing.rerank_ms}+合并${meta.timing.merge_ms})</span>`:''}`:''}</div>
+      ${meta.ms!=null?` · ⏱ ${meta.ms} ms${meta.timing?(()=>{
+        const t=meta.timing;const shardMs=t.shard_ms||0;
+        const parts=[`召回${t.recall_ms}ms`,`精排${t.rerank_ms}ms`,`合并${t.merge_ms}ms`];
+        if(shardMs)parts.push(`网络语料分片${shardMs}ms${meta.shards&&meta.shards.timed_out?'（已达预算上限，提前收工）':''}`);
+        const short=[`召回${t.recall_ms}`,`精排${t.rerank_ms}`,`合并${t.merge_ms}`];
+        if(shardMs)short.push(`分片${shardMs}`);
+        return ` <span title="${esc(parts.join(' · '))}" style="cursor:help;border-bottom:1px dotted var(--sub)">(${short.join('+')})</span>`;
+      })():''}`:''}</div>
   </div>`;
   // 句子成分分析（整句输入时）
   if(d.struct){

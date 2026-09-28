@@ -1258,10 +1258,18 @@ def _starts_with_cue(s):
     return None
 
 
+_INSERT_MARKS = ['①', '②', '③', '④']
+
+
 def g_insert(P, rng):
     """句子还原插入：被抽走的句子必须带「向前指」的线索，且线索只在唯一位置成立。
     一个段落块里凡满足条件的句子都各出一道（旧实现只取第一道就 break），
-    段落线索多时题量随之增加；每块封顶 3 道，避免同段刷屏。"""
+    段落线索多时题量随之增加；每块封顶 3 道，避免同段刷屏。
+
+    v26：空位标号与选项数量此前不一致——题面把段落里全部 N 个空位（N 可能 5、6…）
+    都标出来，但选项永远只裁到 4 个，学习者会看到「①②③④⑤」却只能选 4 项，
+    不知道哪些标号其实不可选。现在只在题面里标出「确实进入选项」的那些空位
+    （最多 4 个，用①～④顺序重新编号，与选项一一对应），其余空位不再显示标号。"""
     out = []
     for idxs in P.units():
         if len(idxs) < 4:
@@ -1284,20 +1292,26 @@ def g_insert(P, rng):
             if any(key in P.cwords[k] for k in others if k != idxs[pos - 1]):
                 continue
             rest = [P.sents[k] for k in idxs if k != i]
+            # 抽走后剩 len(rest) 句、共 n_gaps=len(rest)+1 个空位（0-based，
+            # gap g 表示「插在 rest[g] 之前」，g==len(rest) 表示「插在全段末尾」）；
+            # 原句排在第 pos 位（0-based），还原后应落在 gap=pos。
+            n_gaps = len(rest) + 1
+            correct_gap = pos
+            if n_gaps <= len(_INSERT_MARKS):
+                chosen = list(range(n_gaps))
+            else:
+                other_gaps = [g for g in range(n_gaps) if g != correct_gap]
+                rng.shuffle(other_gaps)
+                chosen = sorted([correct_gap] + other_gaps[:len(_INSERT_MARKS) - 1])
+            label = {g: _INSERT_MARKS[k] for k, g in enumerate(chosen)}
             body = []
-            for n, txt in enumerate(rest):
-                body.append(f'（{n+1}）')
-                body.append(txt)
-            body.append(f'（{len(rest)+1}）')
-            # 抽走后剩 len(rest) 句、共 len(rest)+1 个空位；原句排在第 pos 位
-            # （0-based），还原后应落在「第 pos 句之后」＝ 第 pos+1 号空位。
-            correct = f'（{pos + 1}）'
-            opts = [f'（{n}）' for n in range(1, len(rest) + 2)]
-            if len(opts) > 4:
-                # 保留正确位置 + 3 个随机错误位置
-                wrong = [o for o in opts if o != correct]
-                rng.shuffle(wrong)
-                opts = wrong[:3] + [correct]
+            for g in range(n_gaps):
+                if g in label:
+                    body.append(f'（{label[g]}）')
+                if g < len(rest):
+                    body.append(rest[g])
+            correct = f'（{label[correct_gap]}）'
+            opts = [f'（{label[g]}）' for g in chosen]
             q = _mk('insert',
                     title='句子还原插入',
                     prompt='次の一文を戻すのに最も適切な位置を選べ：\n「' + P.sents[i] + '」',
@@ -2615,10 +2629,26 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
     # 配额负责兜住「别的题型先用光、剩下的全由一种题型填满」这种情况。
     # 文章本身出不了那么多题型时再逐级放宽，宁可出满题数，并在返回值里
     # 如实标记放宽过（type_relaxed），页面据此提示「本篇可出题型有限」。
+    #
+    # v26：修「同一篇文章很容易刷到做过的原题」——问题不在 seen_stems() 本身
+    # （它确实把每个题型内部按「没做过优先、做过的按最久未做」排好了序），而在
+    # 于配额是按「每种题型」硬性分配的：像插入题/小标题题这种天生样本量很小
+    # 的题型，往往全篇只有一两个 stem，一旦做过一次，后面配额依然会把它挤进
+    # 每一套题里——哪怕这篇文章别的题型还有大把没做过的存货。于是用户体感就是
+    # 「这道我做过啊，怎么又出来了」。
+    # 修法：前两轮（strict / 半放宽）只从「这个题型还有没做过的题」的池子里取，
+    # 让内容充足的题型优先把新鲜题占满；只有到最后一轮（彻底放宽）才允许把
+    # 已经做过、但某题型只剩这些存货的题重新收进来凑够题量——保证「有新的就先
+    # 给新的」，而不是被样本量最小的题型拖着每次都重复。
     strict = max(2, -(-count // 4))
     counts = Counter()
     cap_used = strict
-    for cap in (strict, max(3, -(-count // 2)), count):
+    has_history = fresh_first and bool(seen)
+
+    def _is_fresh(q):
+        return base_stem(q.get('stem', '')) not in seen
+
+    for cap, allow_stale in ((strict, False), (max(3, -(-count // 2)), False), (count, True)):
         cap_used = cap
         while len(picked) < count:
             progressed = False
@@ -2627,6 +2657,8 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
                     break
                 if counts[t] >= cap or not pools.get(t):
                     continue
+                if not allow_stale and has_history and not _is_fresh(pools[t][-1]):
+                    continue    # 这个题型的新鲜题已耗尽，先让给还有新鲜题的题型
                 picked.append(pools[t].pop())
                 counts[t] += 1
                 progressed = True
