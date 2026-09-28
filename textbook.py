@@ -1201,6 +1201,7 @@ SOURCE_LABELS = {
     'manual': '✍️ 手动添加',
     'import': '📥 导入备份',
     'book': '📖 课本句子',
+    'passage': '📰 篇章精读',
 }
 
 
@@ -1230,12 +1231,13 @@ def resolve_book_scope(scope, book_ids):
     """统一解析出题题源。
 
     返回 dict：
-      scope       —— 修正后的真实 scope（corpus/book/mixed/lyric）
+      scope       —— 修正后的真实 scope（corpus/book/mixed/lyric/passage）
+                     passage＝只用「篇章精读」里录入并已并入语料库的文章句子
       ids         —— 校验后确实存在的课本 id 列表
       auto_all    —— 是否因为「没显式选课本」而自动使用了全部课本
       note        —— None，或 'no_books_fallback_corpus'（书架为空被迫退回全库）
     """
-    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else 'corpus'
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric', 'passage') else 'corpus'
     raw_ids = []
     for b in (book_ids or []):
         try:

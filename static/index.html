@@ -213,6 +213,40 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* ===== 篇章精读：答题 + 原文 双栏 / 移动端抽屉 ===== */
+.dc-split{display:flex;gap:16px;align-items:flex-start;max-width:1460px;margin:0 auto}
+.dc-qcol{flex:1 1 0;min-width:0}
+.dc-rcol{flex:0 0 440px;position:sticky;top:10px;max-height:calc(100vh - 20px);
+  display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;overflow:hidden}
+.dc-rbar{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);
+  flex-wrap:wrap;background:var(--card);position:sticky;top:0;z-index:2}
+.dc-rbar .btn{padding:3px 9px;font-size:12.5px}
+.dc-reader{overflow:auto;padding:12px 14px 40px;line-height:2.1;font-size:16px;-webkit-overflow-scrolling:touch}
+.dc-reader h4{margin:16px 0 6px;font-size:15.5px;color:var(--accent2);border-left:3px solid var(--accent2);padding-left:8px}
+.dc-reader .cap{color:var(--sub);font-size:13px;margin:6px 0}
+.dc-reader p{margin:0 0 12px}
+.dc-s{transition:background .3s}
+.dc-s.hit{background:rgba(255,193,7,.35);border-radius:4px;box-shadow:0 0 0 3px rgba(255,193,7,.35)}
+.dc-locked{flex:0 0 440px;position:sticky;top:10px}
+.dc-fab{display:none}
+@media(max-width:1060px){
+  .dc-split{display:block}
+  .dc-rcol{position:fixed;left:0;right:0;bottom:0;top:auto;flex:none;width:auto;z-index:70;
+    max-height:80vh;border-radius:16px 16px 0 0;transform:translateY(102%);
+    transition:transform .25s ease;box-shadow:0 -10px 30px rgba(0,0,0,.35)}
+  .dc-rcol.open{transform:translateY(0)}
+  .dc-locked{position:static;margin-top:12px}
+  .dc-fab{display:flex;position:fixed;right:14px;bottom:18px;z-index:71;align-items:center;gap:6px;
+    padding:11px 16px;border-radius:24px;border:none;background:var(--accent);color:#fff;
+    font-size:15px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
+  .dc-reader{font-size:17px;padding-bottom:70px}
+}
+@media(max-width:560px){
+  .dc-reader{line-height:2.2}
+  #dcQuizView .sb-tile{font-size:15.5px}
+}
+
 .psy-section{margin-top:14px}
 /* v18: RAG 分阶段检索进度条 + AI 翻译面板 */
 .rag-prog{margin-top:10px}
@@ -237,6 +271,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
     <button data-tab="review" class="active">今日复习<span class="badge hidden" id="dueBadge"></span></button>
     <button data-tab="learn">学新字</button>
     <button data-tab="books">我的课本<span class="badge hidden" id="bkBadge"></span></button>
+    <button data-tab="discourse">篇章精读</button>
     <button data-tab="corpus">语料库</button>
     <button data-tab="kanji">汉字库</button>
     <button data-tab="favs">收藏夹</button>
@@ -618,6 +653,38 @@ body.ktv-song.showhdr header{display:flex;position:static}
   <div id="bkQuizView" class="hidden"></div>
 </section>
 
+<!-- ============ 篇章精读 ============ -->
+<section id="tab-discourse" class="hidden">
+  <div id="dcMain">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>📖 录入长篇文章</b>
+        <span class="muted" style="font-size:12.5px">整篇粘进来即可（空行分段）。系统只做「可逐字核对」的客观题，不做主观理解题。</span>
+      </div>
+      <div class="row" style="margin-top:8px;gap:8px">
+        <input id="dcTitle" placeholder="标题（留空自动取首句）" style="flex:1;min-width:160px">
+        <input id="dcSource" placeholder="出处（可留空）" style="flex:1;min-width:140px">
+      </div>
+      <textarea id="dcText" rows="10" style="width:100%;margin-top:8px;font-size:15px;line-height:1.9"
+        placeholder="ここに日本語の文章をまるごと貼り付けてください。段落は空行で区切ります。"></textarea>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" onclick="dcPreview()">① 先预览（不入库）</button>
+        <button class="btn" id="dcConfirmBtn" onclick="dcImport()" disabled>② 确认录入</button>
+        <label class="advtog" title="勾选后这篇文章的句子会并入语料库，组句 / 听力 / 挖空 / 语料检索立刻就能练到它">
+          <input type="checkbox" id="dcToCorpus" checked><span>同时并入语料库（组句·听力·挖空共用）</span></label>
+        <span class="muted" id="dcImportHint" style="font-size:12.5px"></span>
+      </div>
+      <div id="dcPreviewBox"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="row" style="justify-content:space-between"><b>我的篇章</b>
+        <span class="muted" id="dcStatLine" style="font-size:12.5px"></span></div>
+      <div id="dcList" style="margin-top:8px"></div>
+    </div>
+  </div>
+  <div id="dcQuizView" class="hidden"></div>
+</section>
+
 <!-- ============ 历史 ============ -->
 <section id="tab-history" class="hidden">
   <div class="stat-grid" id="histStats"></div>
@@ -818,6 +885,40 @@ async function showAbout(){
 .psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* ===== 篇章精读：答题 + 原文 双栏 / 移动端抽屉 ===== */
+.dc-split{display:flex;gap:16px;align-items:flex-start;max-width:1460px;margin:0 auto}
+.dc-qcol{flex:1 1 0;min-width:0}
+.dc-rcol{flex:0 0 440px;position:sticky;top:10px;max-height:calc(100vh - 20px);
+  display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;overflow:hidden}
+.dc-rbar{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);
+  flex-wrap:wrap;background:var(--card);position:sticky;top:0;z-index:2}
+.dc-rbar .btn{padding:3px 9px;font-size:12.5px}
+.dc-reader{overflow:auto;padding:12px 14px 40px;line-height:2.1;font-size:16px;-webkit-overflow-scrolling:touch}
+.dc-reader h4{margin:16px 0 6px;font-size:15.5px;color:var(--accent2);border-left:3px solid var(--accent2);padding-left:8px}
+.dc-reader .cap{color:var(--sub);font-size:13px;margin:6px 0}
+.dc-reader p{margin:0 0 12px}
+.dc-s{transition:background .3s}
+.dc-s.hit{background:rgba(255,193,7,.35);border-radius:4px;box-shadow:0 0 0 3px rgba(255,193,7,.35)}
+.dc-locked{flex:0 0 440px;position:sticky;top:10px}
+.dc-fab{display:none}
+@media(max-width:1060px){
+  .dc-split{display:block}
+  .dc-rcol{position:fixed;left:0;right:0;bottom:0;top:auto;flex:none;width:auto;z-index:70;
+    max-height:80vh;border-radius:16px 16px 0 0;transform:translateY(102%);
+    transition:transform .25s ease;box-shadow:0 -10px 30px rgba(0,0,0,.35)}
+  .dc-rcol.open{transform:translateY(0)}
+  .dc-locked{position:static;margin-top:12px}
+  .dc-fab{display:flex;position:fixed;right:14px;bottom:18px;z-index:71;align-items:center;gap:6px;
+    padding:11px 16px;border-radius:24px;border:none;background:var(--accent);color:#fff;
+    font-size:15px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
+  .dc-reader{font-size:17px;padding-bottom:70px}
+}
+@media(max-width:560px){
+  .dc-reader{line-height:2.2}
+  #dcQuizView .sb-tile{font-size:15.5px}
+}
+
 .psy-section{margin-top:14px}
 
 </style>
@@ -986,6 +1087,327 @@ function renderGrammar(){
 }
 function fmtTime(ts){if(!ts)return '—';const d=new Date(ts*1000);return d.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
 
+/* ================= 篇章精读（v22） ================= */
+const DC_TYPE={connective:'接续词还原',anaphora:'指示语照应',particle:'格助词还原',polite_tense:'文体×时制',
+  insert:'句子插入',order:'语序重排',truth:'内容一致',fact:'数值检索',quote:'引语话者',absent:'扫读辨词',headword:'复现词链'};
+const DC_OBJ={verbatim:'答案＝原文原样',contradiction:'错误项与原文显式矛盾',rule:'答案由写死的规则唯一确定'};
+let dcQuiz=null;
+async function dcLoad(){
+  $('#dcQuizView').classList.add('hidden'); $('#dcMain').classList.remove('hidden');
+  let d; try{ d=await api('/api/discourse/passages'); }catch(e){ return; }
+  const ps=d.passages||[];
+  $('#dcList').innerHTML = ps.length? ps.map(p=>`
+    <div class="sent-item">
+      <div class="row" style="justify-content:space-between;gap:8px">
+        <b>${esc(p.title)}</b>
+        <span class="muted" style="font-size:12.5px">${p.n_para}段 · ${p.n_sent}句 · ${p.n_char}字${p.source?' · '+esc(p.source):''}</span>
+      </div>
+      <div class="row" style="margin-top:6px;gap:6px">
+        <button class="btn primary" onclick="dcStart(${p.id},10)">测验模式（10题·闭卷）</button>
+        <button class="btn" onclick="dcStart(${p.id},20)">20题</button>
+        <button class="btn" onclick="dcStart(${p.id},12,'hard')">只练难题</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,true)">精读模式（对照原文·不计分）</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,false,'input')">填空模式（最难·不给选项）</button>
+        <button class="btn" onclick="dcInfo(${p.id})">题量 / 题型 / 原文</button>
+        <button class="btn danger" onclick="dcDel(${p.id})">删除</button>
+      </div>
+      <div class="muted" id="dcCap${p.id}" style="font-size:12.5px;margin-top:4px"></div>
+      <div id="dcInfo${p.id}"></div>
+    </div>`).join('') : '<div class="muted" style="padding:14px">还没有篇章。把一整篇日语文章粘进上面的框里即可。</div>';
+  for(const p of ps){
+    api('/api/discourse/passages/'+p.id+'/capacity').then(c=>{
+      const el=$('#dcCap'+p.id); if(!el||!c.ok)return; const x=c.capacity;
+      el.innerHTML=`题干 <b>${x.stems}</b> 个 · 选择/填空两种形态共 <b>${x.deliveries}</b> 道 · `+
+        `换干扰项后不同题面 <b>${x.variants>=10000?(x.variants/10000).toFixed(1)+'万':x.variants}</b> 种 · `+
+        `<b style="color:${x.fresh?'var(--accent2)':'var(--sub)'}">还没做过 ${x.fresh}</b> / 已做过 ${x.done}`;
+    }).catch(()=>{});
+  }
+  try{ const st=await api('/api/discourse/stats?days=14');
+    const s2=st.stats||{}; $('#dcStatLine').textContent = s2.total? `近14天：${s2.ok}/${s2.total} 正确（${s2.rate}%）`:'';
+  }catch(e){}
+}
+let dcPv=null;
+async function dcPreview(){
+  const text=$('#dcText').value.trim();
+  if(text.length<20){toast('正文太短');return;}
+  $('#dcImportHint').textContent='解析中…';
+  let d; try{ d=await api('/api/discourse/preview',{method:'POST',body:JSON.stringify({title:$('#dcTitle').value,text,sample:3})}); }
+  catch(e){ $('#dcImportHint').textContent=''; toast('解析失败'); return; }
+  if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'解析失败'); return; }
+  dcPv=d; $('#dcImportHint').textContent=''; $('#dcConfirmBtn').disabled=false;
+  const cnt=Object.entries(d.counts).filter(([k,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const q=d.quality||{};
+  $('#dcPreviewBox').innerHTML=`<div style="margin-top:12px;border-top:1px dashed var(--line);padding-top:12px">
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <span class="tag">标题：${esc(d.title||'（无）')}</span>
+      <span class="tag">${d.n_para} 段 / ${d.n_sent} 句 / ${d.n_char} 字</span>
+      <span class="tag">小标题 ${d.n_heading}</span>
+      <span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">可出题 ${d.total_questions} 道</span>
+    </div>
+    ${d.dropped_lines&&d.dropped_lines.length?`<div class="muted" style="margin-top:8px;font-size:12.5px">已自动剔除的界面行：${d.dropped_lines.map(x=>`<code>${esc(x)}</code>`).join('、')}</div>`:''}
+    <div class="muted" style="margin-top:8px;font-size:12.5px">
+      ${q.n_issue?`⚠️ 体检提示 ${q.n_issue} 条（只是提示，不影响录入）：<ul style="margin:4px 0 0 18px">${(q.issues||[]).slice(0,5).map(i=>`<li>第${i.idx+1}句「${esc(i.text)}…」：${esc(i.tags.join('；'))}</li>`).join('')}</ul>`
+        :'✅ 体检通过：没有发现切句异常、乱码或语法可疑的句子'}
+    </div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${cnt.map(([k,v])=>`<span class="tag">${DC_TYPE[k]||k} ${v}</span>`).join('')||'<span class="muted">这篇文本线索太少，出不了题</span>'}
+    </div>
+    ${(d.samples||[]).length?`<details style="margin-top:10px" open><summary class="muted" style="cursor:pointer">样题预览（${d.samples.length} 道，按难度优先）</summary>
+      ${d.samples.map(x=>`<div class="sent-item" style="margin-top:6px">
+        <div class="row" style="gap:6px"><span class="tag">${esc(x.type_label)}</span><span class="tag">${x.difficulty}</span><span class="tag">${x.text_policy==='open'?'开卷·扫读':'闭卷'}</span></div>
+        <div style="margin-top:6px;font-size:14.5px"><b>${esc(x.prompt).replace(/\n/g,'<br>')}</b></div>
+        <div class="jp" style="white-space:pre-wrap;margin-top:4px">${esc(x.context)}</div>
+        <div class="muted" style="margin-top:4px;font-size:13px">选项：${x.options.map(o=>esc(o)).join(' / ')} → 正解：<b>${esc(x.answer)}</b></div>
+        <div class="muted" style="margin-top:2px;font-size:12px">依据：${esc((x.evidence||[])[0]||'')}</div>
+      </div>`).join('')}</details>`:''}
+    <div class="muted" style="margin-top:10px;font-size:12.5px">确认无误后点「② 确认录入」。</div>
+  </div>`;
+}
+async function dcImport(){
+  const text=$('#dcText').value.trim();
+  if(text.length<60){toast('正文太短，篇章题需要上下文（至少 60 字）');return;}
+  $('#dcImportHint').textContent='录入中…';
+  const d=await api('/api/discourse/passages',{method:'POST',body:JSON.stringify(
+    {title:$('#dcTitle').value,source:$('#dcSource').value,text,to_corpus:$('#dcToCorpus').checked})});
+  if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'录入失败'); return; }
+  $('#dcImportHint').textContent=`已录入：${d.n_para}段 / ${d.n_sent}句 / 可出题 ${Object.values(d.preview).reduce((a,b)=>a+b,0)} 道${d.corpus_added?` / 并入语料库 ${d.corpus_added} 句`:''}`;
+  $('#dcText').value='';$('#dcTitle').value='';$('#dcSource').value='';
+  $('#dcPreviewBox').innerHTML='';$('#dcConfirmBtn').disabled=true;dcPv=null;
+  dcLoad();
+}
+async function dcDel(id){ if(!confirm('删除这篇文章？'))return; await api('/api/discourse/passages/'+id,{method:'DELETE'}); dcLoad(); }
+async function dcInfo(id){
+  const box=$('#dcInfo'+id);
+  if(box.innerHTML){box.innerHTML='';return;}
+  const d=await api('/api/discourse/passages/'+id);
+  if(!d.ok)return;
+  const pv=d.preview||{};
+  box.innerHTML=`<div style="margin-top:8px">
+    <div class="row" style="gap:6px;flex-wrap:wrap">${Object.keys(DC_TYPE).map(t=>
+      `<span class="tag" style="${pv[t]?'':'opacity:.35'}">${DC_TYPE[t]} ${pv[t]||0}</span>`).join('')}</div>
+    <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">原文（${d.passage.n_sent} 句）</summary>
+      <div class="jp" style="margin-top:6px;line-height:2;font-size:15px">${(d.passage.sentences||[]).map(x=>esc(x.text)).join('')}</div>
+    </details></div>`;
+}
+async function dcStart(id,count,difficulty,study,mode){
+  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify(
+    {passage_id:id,count,difficulty:difficulty||undefined,mode:mode||'mixed',secure:true})});
+  if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
+  let rows=[];
+  try{ const p=await api('/api/discourse/passages/'+id); rows=(p.passage.sentences||[]); }catch(e){}
+  dcQuiz={pid:id,quizId:d.quiz_id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
+          study:!!study,rows,furi:null,furiOn:false,peeked:false,readerOpen:false,
+          nFresh:d.n_fresh,nInput:d.n_input};
+  $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
+  dcShell();
+  if(d.n_fresh<d.questions.length)toast(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
+}
+function dcQuit(){ dcQuiz=null; dcLoad(); }
+
+/* ---------- 阅读面板（桌面右栏 / 手机底部抽屉） ---------- */
+function dcFontSize(delta){
+  let v=parseInt(localStorage.getItem('dcFont')||'16',10);
+  if(delta)v=Math.max(13,Math.min(26,v+delta));
+  localStorage.setItem('dcFont',v);
+  const el=$('#dcReader'); if(el)el.style.fontSize=v+'px';
+  return v;
+}
+function dcReaderHTML(){
+  const rows=dcQuiz.rows||[];
+  const furi=dcQuiz.furiOn&&dcQuiz.furi?Object.fromEntries(dcQuiz.furi.map(r=>[r.idx,r.tokens])):null;
+  let html='',bodyN=0;
+  for(const r of rows){
+    const tk=furi&&furi[r.idx];
+    const txt=tk?rubyHTML(tk):esc(r.text);
+    if(r.kind==='heading'){html+=`<h4>${txt}</h4>`;}
+    else if(r.kind==='caption'){html+=`<div class="cap">${txt}</div>`;}
+    else{html+=`<p><span class="dc-s" id="dcS${bodyN}">${txt}</span></p>`;bodyN++;}
+  }
+  return html||'<div class="muted">（没有正文）</div>';
+}
+function dcShell(){
+  const fs=parseInt(localStorage.getItem('dcFont')||'16',10);
+  $('#dcQuizView').innerHTML=`<div class="dc-split">
+    <div class="dc-qcol" id="dcQcol"></div>
+    <aside class="dc-rcol" id="dcRcol">
+      <div class="dc-rbar">
+        <b style="font-size:13.5px">📄 原文</b>
+        <span class="muted" id="dcReadNote" style="font-size:12px"></span>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="dcFontSize(-1)">A−</button>
+        <button class="btn" onclick="dcFontSize(1)">A＋</button>
+        <button class="btn" id="dcFuriBtn" onclick="dcToggleFuri()">ふりがな</button>
+        <button class="btn" onclick="dcCloseReader()">✕</button>
+      </div>
+      <div class="dc-reader jp" id="dcReader" style="font-size:${fs}px">${dcReaderHTML()}</div>
+    </aside>
+  </div>
+  <button class="dc-fab" id="dcFab" onclick="dcFabTap()">📄 原文</button>`;
+  dcRender();
+}
+function dcMobile(){ return window.matchMedia('(max-width:1060px)').matches; }
+function dcOpenReader(force){
+  const q=dcQuiz.qs[dcQuiz.i];
+  if(!force&&!dcQuiz.study&&q.text_policy!=='open'&&!dcQuiz.peeked&&!dcQuiz.checked){dcPeek();return;}
+  dcQuiz.readerOpen=true;
+  const el=$('#dcRcol'); if(el){el.style.display='flex';el.classList.add('open');}
+  dcSyncFab();   // 打开后按钮要立刻变成「收起」，否则再点一次会以为没反应
+}
+function dcCloseReader(){
+  dcQuiz.readerOpen=false;
+  const el=$('#dcRcol');
+  if(el){el.classList.remove('open'); if(!dcMobile())el.style.display='none';}
+  dcSyncFab();
+}
+function dcFabTap(){ dcQuiz.readerOpen?dcCloseReader():dcOpenReader(); }
+function dcSyncFab(){
+  const f=$('#dcFab'); if(!f)return;
+  const q=dcQuiz.qs[dcQuiz.i];
+  const free=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked||dcQuiz.checked;
+  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文（记为参考）');
+}
+async function dcToggleFuri(){
+  if(!dcQuiz.furi){
+    $('#dcFuriBtn').textContent='…';
+    try{ const d=await api('/api/discourse/passages/'+dcQuiz.pid+'/furigana'); dcQuiz.furi=d.rows||[]; }
+    catch(e){ toast('注音失败'); $('#dcFuriBtn').textContent='ふりがな'; return; }
+  }
+  dcQuiz.furiOn=!dcQuiz.furiOn;
+  $('#dcFuriBtn').textContent=dcQuiz.furiOn?'✓ ふりがな':'ふりがな';
+  const el=$('#dcReader'); const top=el.scrollTop;
+  el.innerHTML=dcReaderHTML(); el.scrollTop=top;
+}
+function dcJump(i){
+  dcOpenReader(true);
+  setTimeout(()=>{
+    const el=document.getElementById('dcS'+i); if(!el)return;
+    el.scrollIntoView({block:'center',behavior:'smooth'});
+    el.classList.add('hit'); setTimeout(()=>el.classList.remove('hit'),2600);
+  },60);
+}
+function dcPeek(){
+  dcQuiz.peeked=true;
+  dcRender(true);
+  dcOpenReader(true);
+  dcSyncFab();
+  toast('本题记为「参考原文」，不计入闭卷成绩');
+}
+/* ---------- 题目区 ---------- */
+function dcRender(keepPick){
+  const q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
+  if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
+  const DIFF={easy:'易',medium:'中',hard:'难'};
+  const open=dcQuiz.study||q.text_policy==='open';
+  $('#dcQcol').innerHTML=`<div class="card quiz-wrap" style="max-width:none">
+    <div class="quiz-top">
+      <button class="btn" onclick="dcQuit()">‹ 退出</button>
+      <span class="quiz-prog">📖 ${esc(dcQuiz.title)} ${dcQuiz.i+1} / ${n}</span>
+      <span class="sb-badges"><span class="tag">${esc(q.type_label||q.qtype)}</span>
+        <span class="tag">难度 ${DIFF[q.difficulty]||q.difficulty}</span>
+        <span class="tag">${q.answer_format==='input'?'填空':'选择'}</span>
+        <span class="tag">${open?'开卷·扫读':'闭卷'}</span>
+        ${dcQuiz.study?'<span class="tag">精读·不计分</span>':''}</span>
+      <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${dcQuiz.ok}</span>
+    </div>
+    <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
+    <div style="margin-top:14px;font-size:16px"><b>${esc(q.prompt).replace(/\n/g,'<br>')}</b></div>
+    <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap;word-break:break-word">${esc(q.context)}</div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文':'🔒 看原文（本题记为参考，不计入闭卷分）'}</button>
+      <span class="muted" style="font-size:12.5px">${open?'扫读题：对着原文找答案就是本题要练的能力':'闭卷题：先凭上下文作答，作答后可随意回看'}</span>
+    </div>
+    <div class="sb-area" id="dcOpts" style="margin-top:14px">
+      ${q.answer_format==='input'
+        ? `<input id="dcInput" style="width:100%;font-size:18px;padding:10px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
+           <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案在服务器上，判完才回传</div>`
+        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px;white-space:normal;word-break:break-word" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+    </div>
+    <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${(q.answer_format==='input'||dcQuiz.picked!=null)?'':'disabled'}>检查</button></div>
+    <div id="dcExp"></div></div>`;
+  const note=$('#dcReadNote');
+  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题':'闭卷题');
+  const rc=$('#dcRcol');
+  if(rc){
+    if(dcMobile()){ rc.classList.toggle('open',!!dcQuiz.readerOpen); rc.style.display='flex'; }
+    else{
+      const show=open||dcQuiz.readerOpen||dcQuiz.peeked;
+      rc.style.display=show?'flex':'none';
+      dcQuiz.readerOpen=show;
+    }
+  }
+  dcSyncFab();
+  if(q.answer_format==='input'&&!keepPick){const el=$('#dcInput');if(el)el.focus();}
+  if(!keepPick)window.scrollTo(0,0);
+}
+function dcPick(k){
+  if(dcQuiz.checked)return;
+  dcQuiz.picked=k;
+  document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>b.classList.toggle('sel',i===k));
+  $('#dcCheckBtn').disabled=false;
+}
+async function dcCheck(){
+  if(dcQuiz.checked)return;
+  const q=dcQuiz.qs[dcQuiz.i];
+  let resp;
+  if(q.answer_format==='input'){
+    resp=($('#dcInput')||{}).value||'';
+    if(!resp.trim()){toast('先写点什么');return;}
+  }else{
+    if(dcQuiz.picked==null)return;
+    resp=String(dcQuiz.picked);
+  }
+  let r;
+  try{ r=await api('/api/discourse/grade',{method:'POST',body:JSON.stringify({quiz_id:dcQuiz.quizId,qid:q.qid,response:resp})}); }
+  catch(e){ toast('判分失败'); return; }
+  if(!r.ok){ toast(r.message||'这套题已过期，请重新开始'); return; }
+  const ok=!!r.correct, peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
+  dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
+  dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
+  if(q.answer_format==='input'){
+    const el=$('#dcInput'); if(el){el.disabled=true;el.style.borderColor=ok?'var(--accent2)':'var(--accent)';}
+  }else{
+    document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
+      b.classList.remove('sel');
+      if(q.options[i]===r.answer)b.classList.add('ok');
+      else if(i===dcQuiz.picked)b.classList.add('ng');
+    });
+  }
+  $('#dcExp').innerHTML=`<div class="quiz-exp">
+    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b>
+      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（参考原文作答，不计入闭卷成绩）</span>':''}</div>
+    <div style="margin-top:8px;font-size:15px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
+    <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(r.explain||'')}</div>
+    <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
+      <b>判定依据（${DC_OBJ[r.objectivity]||r.objectivity}）</b>
+      <ul style="margin:4px 0 0 18px">${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
+    <div class="quiz-nav">
+      ${q.sent_idx!=null?`<button class="btn" onclick="dcJump(${q.sent_idx})">📄 跳到原文出处</button>`:''}
+      <button class="btn primary" onclick="dcNext()">${dcQuiz.i+1>=dcQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+    </div>
+  </div>`;
+  dcSyncFab();
+}
+function dcNext(){
+  dcQuiz.i++;
+  if(dcQuiz.i>=dcQuiz.qs.length)dcFinish(); else dcRender();
+}
+async function dcFinish(){
+  try{ await api('/api/discourse/answer',{method:'POST',body:JSON.stringify({passage_id:dcQuiz.pid,results:dcQuiz.ans})}); }catch(e){}
+  const n=dcQuiz.qs.length;
+  const closed=dcQuiz.ans.filter(a=>!a.peeked), cn=closed.length;
+  const pct=cn?Math.round(100*dcQuiz.ok/cn):0;
+  const by={};dcQuiz.ans.forEach(a=>{by[a.qtype]=by[a.qtype]||[0,0];by[a.qtype][1]++;if(a.ok)by[a.qtype][0]++;});
+  $('#dcQuizView').innerHTML=`<div class="card quiz-wrap">
+    <div class="quiz-top"><button class="btn" onclick="dcQuit()">‹ 返回篇章列表</button><b>📖 篇章精读完成</b></div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">闭卷得分 <b style="color:var(--accent2);font-size:34px">${dcQuiz.ok}</b> / ${cn}${cn?`（${pct}%）`:''}
+      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题参考了原文（开卷/精读），单独统计不计入闭卷分`:''}</div></div>
+    <div class="row" style="justify-content:center;gap:6px;margin-top:10px;flex-wrap:wrap">
+      ${Object.keys(by).map(t=>`<span class="tag">${DC_TYPE[t]||t} ${by[t][0]}/${by[t][1]}</span>`).join('')}</div>
+    <div class="quiz-nav" style="justify-content:center">
+      <button class="btn primary" onclick="dcStart(${dcQuiz.pid},${n})">再来一组</button>
+      <button class="btn" onclick="dcQuit()">返回</button></div></div>`;
+}
+
 /* ---------- 导航 ---------- */
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));
@@ -993,7 +1415,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.body.classList.remove('ktv-song','showhdr');   // 离开 KTV 歌词视图时退出沉浸模式
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  ({review:loadReview,learn:loadNew,books:loadBooks,corpus:()=>{loadCorpus(1);aiLoad();},kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
+  ({review:loadReview,learn:loadNew,books:loadBooks,discourse:dcLoad,corpus:()=>{loadCorpus(1);aiLoad();},kanji:()=>loadKanji(1),favs:loadFavs,ktv:ktvLoad,history:loadHistory}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ---------- 统计 ---------- */
@@ -2848,7 +3270,7 @@ async function sbOpen(opts){
           pairSel:null,pairErr:0,pairDone:0};
   sbRender();
 }
-const SB_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
+const SB_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词',passage:'📰 我的篇章'};
 function sbModeBadge(){
   const m=sbQuiz.mode;
   const sl=SB_SCOPE_LABEL[sbQuiz.scope]||'';
@@ -2884,7 +3306,7 @@ function sbRender(){
   }
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${q.swap?'把词块排成一个语法正确的句子':'把词块排成句子'}</b></div>
-    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:`<div class="muted" style="margin-top:6px;line-height:1.7">（此句暂无译文：仍须填满全部 <b>${q.n_required}</b> 个句子槽位来复原完整目标句；只组成一个分句不算完成。${q.alt_group?'同一槽位出现多个候选时任选其一，不必把候选全部用上。':''}日语允许的完整句语序均认可。）</div>`}
+    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:''}
     ${q.swap?`<div class="sb-swapnote">✨ 语料变体题：原句的「${esc(q.swap.from)}${esc(q.swap.particle)}」已按语料真实搭配换成「${esc(q.swap.to)}${esc(q.swap.particle)}」，语法结构不变</div>`:''}
     <div class="sb-area ans jp" id="sbAns"><span class="ph">点击下方词块，按顺序组成句子…</span></div>
     <div class="sb-area jp" id="sbBank">
@@ -2893,7 +3315,7 @@ function sbRender(){
     <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
-      <span class="muted" id="sbNeed" style="font-size:12.5px">${q.translation?'已填 0 块':`已填 0 块（需要 ${q.n_required} 个必要槽位）`}</span>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 块</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -2914,14 +3336,16 @@ function sbSyncTiles(){
     const b=document.getElementById('sbT'+k);
     if(b)b.style.visibility=sbQuiz.sel.includes(k)?'hidden':'visible';
   });
-  const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
-  const need=$('#sbNeed');
-  if(need){
-    // 只报「放了几块」：原先按 tile_map 只数真槽位，等于每点一块就告诉你它是不是
-    // 混淆块，一路试过去就能反推出正确块集合。有译文时连必要块数也不必再报。
-    const n=sbQuiz.sel.length;
-    need.textContent=q.translation?`已填 ${n} 块`:`已填 ${n} 块（需要 ${q.n_required} 个必要槽位）`;
+  // 槽位不够就不让提交：与其提交后再用文字提示「只组成一个分句不算完成」，
+  // 不如直接把「检查」按钮锁住——不泄露任何关于哪些块是干扰块的信息。
+  const need_n=q.n_required||1;
+  const btn=$('#sbCheckBtn');
+  if(btn){
+    btn.disabled=sbQuiz.sel.length<need_n;
+    btn.title=btn.disabled?'还没有复原出完整的句子':'';
   }
+  const need=$('#sbNeed');
+  if(need)need.textContent=`已填 ${sbQuiz.sel.length} 块`;
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
 async function sbCheck(){
@@ -3045,7 +3469,8 @@ async function sbCfgOpen(){
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
-        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option>
+        <option value="passage" ${c.scope==='passage'?'selected':''}>📰 我的篇章（精读里录入的文章）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">「仅课本/课本＋语料」：在某本书详情页内打开练习只用这本书；在书架页且没有勾选课本时，自动使用书架里<b>全部启用中的课本</b>（不会悄悄换成语料库）；一本课本都没有时才会诚实退回全库语料。练习界面右上角的题源标签会标出实际用了什么。</div></div>
       <span class="muted">译文条件（组句）</span><select id="sbcTrMode">
         <option value="with" ${c.translation_mode==='with'?'selected':''}>必须有译文（可安全使用语义混淆）</option>
@@ -3096,7 +3521,7 @@ async function sbCfgSave(){
 /* ---------- v21 听力练习（听后选义 / 听音辨句：先听录音再作答） ---------- */
 let lsQuiz=null, lsCfgCache=null, _lsAudio=null, _lsPlays=0;
 const LS_LV=['any','N5','N4','N3','N2','N1'];
-const LS_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
+const LS_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词',passage:'📰 我的篇章'};
 async function lsCfgLoad(force){
   if(!lsCfgCache||force){
     try{const d=await api('/api/listening/cfg');lsCfgCache=d.cfg;lsCfgCache._stats=d.stats||[];}
@@ -3193,13 +3618,10 @@ function lsRender(){
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
   const hint={contrast:'四个选项的实词完全相同，只有语法关系不同（谁对谁做／做没做／什么时候／因为还是虽然）——必须听懂整句才能选对',meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
-  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
-  const zoneTip=(q.contrast_zones||[]).length?`；要听清<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
-  const axisTip=q.qtype==='contrast'&&(q.contrast_axis_labels||[]).length?`<div class="muted" style="font-size:12.5px;margin-top:4px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`:'';
+
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
-    ${axisTip}
     ${clozePrompt}
     <div style="margin-top:12px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
@@ -3247,7 +3669,7 @@ async function lsCheck(){
   const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
   const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
   const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。<br>注意这一题型天然偏易：四条句子各有独有词汇，听清一个词就能排除其余三条。想要真正逼自己听懂整句，请把「译文最小对立」的占比调高。</div>`:'';
-  const twistNote=q.qtype==='contrast'?lsContrastNote(q):'';
+  const twistNote=q.qtype==='contrast'?(lsAxisTip(q)+lsContrastNote(q)):'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
@@ -3267,6 +3689,12 @@ function lsDiffHTML(answer,option){
   while(j<answer.length-i&&j<option.length-i&&answer[answer.length-1-j]===option[option.length-1-j])j++;
   const mid=option.slice(i,option.length-j);
   return esc(option.slice(0,i))+(mid?`<b style="color:var(--accent)">${esc(mid)}</b>`:'')+esc(option.slice(option.length-j));
+}
+function lsAxisTip(q){
+  if(q.qtype!=='contrast'||!(q.contrast_axis_labels||[]).length)return '';
+  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
+  const zoneTip=(q.contrast_zones||[]).length?`；考点位置：<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
+  return `<div class="muted" style="font-size:12.5px;margin-top:6px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`;
 }
 function lsContrastNote(q){
   const rows=(q.distractor_audit||[]).map(a=>{
@@ -3318,7 +3746,8 @@ async function lsCfgOpen(){
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
-        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option></select>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option>
+        <option value="passage" ${c.scope==='passage'?'selected':''}>📰 我的篇章（精读里录入的文章）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">规则与组句练习一致：未勾选具体课本时自动用书架里全部启用中的课本，绝不会悄悄换成语料库。</div></div>
       <span class="muted">译文选项难度</span><div><select id="lscMeaningDifficulty">
         <option value="advanced" ${c.meaning_difficulty!=='standard'?'selected':''}>高级：同主题关键词硬负例</option>

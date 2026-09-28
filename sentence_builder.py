@@ -126,7 +126,7 @@ def _sanitize_cfg(cfg):
         cfg['mode'] = 'basic'
     if cfg.get('level') not in (['any'] + LEVELS):
         cfg['level'] = 'any'
-    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
+    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric', 'passage'):
         cfg['scope'] = 'corpus'
     if cfg.get('translation_mode') not in ('with', 'without', 'mixed'):
         cfg['translation_mode'] = 'mixed'
@@ -207,6 +207,7 @@ _BAD_TEXT_RE = re.compile(r'[「」『』（）()\[\]【】〈〉《》…‥・
 
 _CONTENT_POS = {'名詞', '代名詞', '動詞', '形容詞', '形状詞', '副詞',
                 '連体詞', '接続詞', '感動詞', '接頭辞', '記号'}
+_WEEKDAY_STEMS = {'月曜', '火曜', '水曜', '木曜', '金曜', '土曜', '日曜'}
 _CASE_P = {'が', 'を', 'に', 'で', 'へ', 'と', 'から', 'まで', 'より'}
 # 意义保持型助词替换对（生成干扰块时禁用：换了句意几乎不变，判错不公平）
 _EQUIV_PAIRS = {('は', 'が'), ('が', 'は'), ('に', 'へ'), ('へ', 'に'),
@@ -245,6 +246,10 @@ def _attach(cur, tok):
         return True
     # かもしれない：か+も 之后的动词附着
     if len(cur) >= 2 and cur[-2]['s'] == 'か' and last['s'] == 'も' and p1 == '動詞':
+        return True
+    # 曜日：UniDic 把「日曜日」切成「日曜+日」，且「日曜」是副詞可能名词，
+    # 会被下面的规则挡住，导致出现「…の日曜｜日までに」这种不成词的块。
+    if p1 == '名詞' and tok['s'] == '日' and last['s'] in _WEEKDAY_STEMS:
         return True
     # 复合名词：名詞+名詞 合并（但时间词「昨日/毎日」等副詞可能名词不吞后词）
     if p1 in ('名詞',) and last['p1'] in ('名詞', '接尾辞') and last['p3'] != '副詞可能':
@@ -1125,6 +1130,15 @@ def _fetch_pool(scope, ids, need):
         rows += textbook.fetch_book_sentence_rows(ids, need)
     if scope == 'lyric':
         rows += _lyric_pool(need)
+    if scope == 'passage':
+        try:
+            with db.get_conn() as c:
+                rows += [dict(r) for r in c.execute(
+                    "SELECT id sid, text text, translation translation, source source "
+                    "FROM sentences WHERE source='passage' ORDER BY RANDOM() LIMIT ?",
+                    (need,)).fetchall()]
+        except Exception:
+            pass
     if scope == 'corpus' or scope == 'mixed':
         try:
             with db.get_conn() as c:
@@ -1324,7 +1338,7 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
                 'count': 0, 'questions': []}
     mode = mode if mode in ('basic', 'advanced') else cfg['mode']
     level = level if level in (['any'] + LEVELS) else cfg['level']
-    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else cfg['scope']
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric', 'passage') else cfg['scope']
     try:
         count = max(1, min(int(count), 20)) if count else cfg['count']
     except Exception:

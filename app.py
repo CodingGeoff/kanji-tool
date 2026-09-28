@@ -25,6 +25,7 @@ import performance_tasks
 import assessment_bank
 import corpus_shards
 import federated_search
+import discourse
 
 app = Flask(__name__, static_folder='static')
 
@@ -1856,6 +1857,112 @@ def api_book_translate_lesson(bid, ):
     db.log('ai_translate', f'课本 #{bid} 翻译 {translated}/{len(sids)} 句（{cfg.source_tag}）')
     return jsonify({'ok': True, 'translated': translated, 'total': len(sids),
                     'results': results, 'source': cfg.source_tag})
+
+
+# ================================================================
+# 篇章精读（v22）：长篇文章录入 + 全自动客观题
+# ================================================================
+@app.route('/api/discourse/passages')
+def api_discourse_list():
+    return jsonify({'ok': True, 'passages': discourse.list_passages()})
+
+
+@app.route('/api/discourse/preview', methods=['POST'])
+def api_discourse_preview():
+    """不落库的预览：解析结构 + 质量体检 + 可出题型 + 样题。"""
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 20:
+        return jsonify({'ok': False, 'error': '正文太短'}), 400
+    try:
+        return jsonify(discourse.preview(text, title=d.get('title') or '',
+                                         sample=_num(d.get('sample'), 3, 0, 8)))
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'解析失败：{e}'}), 400
+
+
+@app.route('/api/discourse/passages', methods=['POST'])
+def api_discourse_add():
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 60:
+        return jsonify({'ok': False, 'error': '正文太短（至少 60 字），篇章题需要上下文'}), 400
+    try:
+        r = discourse.import_passage(d.get('title') or '', text,
+                                     source=d.get('source') or '',
+                                     level=d.get('level') or '',
+                                     note=d.get('note') or '',
+                                     to_corpus=bool(d.get('to_corpus')))
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    r['preview'] = discourse.preview_types(r['id'])
+    r['ok'] = True
+    return jsonify(r)
+
+
+@app.route('/api/discourse/passages/<int:pid>/to-corpus', methods=['POST'])
+def api_discourse_to_corpus(pid):
+    n = discourse.add_to_corpus(pid)
+    return jsonify({'ok': True, 'added': n})
+
+
+@app.route('/api/discourse/passages/<int:pid>')
+def api_discourse_get(pid):
+    p = discourse.get_passage(pid)
+    if not p:
+        return jsonify({'ok': False, 'error': '不存在'}), 404
+    return jsonify({'ok': True, 'passage': p,
+                    'preview': discourse.preview_types(pid)})
+
+
+@app.route('/api/discourse/passages/<int:pid>', methods=['DELETE'])
+def api_discourse_del(pid):
+    return jsonify({'ok': discourse.delete_passage(pid)})
+
+
+@app.route('/api/discourse/quiz', methods=['POST'])
+def api_discourse_quiz():
+    d = request.json or {}
+    pid = d.get('passage_id')
+    if not pid:
+        return jsonify({'ok': False, 'reason': '未指定篇章'}), 400
+    count = _num(d.get('count'), 10, 1, 40)
+    diff = d.get('difficulty') if d.get('difficulty') in ('easy', 'medium', 'hard') else None
+    mode = d.get('mode') if d.get('mode') in ('choice', 'input', 'mixed') else 'mixed'
+    return jsonify(discourse.make_quiz(
+        pid, count=count, types=d.get('types'), difficulty=diff, mode=mode,
+        fresh_first=d.get('fresh_first', True) is not False,
+        secure=d.get('secure', True) is not False))
+
+
+@app.route('/api/discourse/grade', methods=['POST'])
+def api_discourse_grade():
+    """服务端判分：secure 模式下答案与解析都不下发到浏览器，判完才回传。"""
+    d = request.json or {}
+    r = discourse.grade(d.get('quiz_id'), d.get('qid'), d.get('response'))
+    return jsonify(r), (200 if r.get('ok') else 410)
+
+
+@app.route('/api/discourse/passages/<int:pid>/furigana')
+def api_discourse_furigana(pid):
+    return jsonify({'ok': True, 'rows': discourse.furigana_rows(pid)})
+
+
+@app.route('/api/discourse/passages/<int:pid>/capacity')
+def api_discourse_capacity(pid):
+    return jsonify({'ok': True, 'capacity': discourse.capacity(pid)})
+
+
+@app.route('/api/discourse/answer', methods=['POST'])
+def api_discourse_answer():
+    d = request.json or {}
+    return jsonify(discourse.record_results(d.get('passage_id'), d.get('results') or []))
+
+
+@app.route('/api/discourse/stats')
+def api_discourse_stats():
+    days = _num(request.args.get('days'), 14, 1, 90)
+    return jsonify({'ok': True, 'stats': discourse.stats(days)})
 
 
 if __name__ == '__main__':
