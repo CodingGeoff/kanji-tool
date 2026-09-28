@@ -212,6 +212,13 @@ def _migrate():
             updated_at REAL
         )''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title)')
+        # v22 出题语法缓存：规则版本变化时由调用方传入新版本，旧缓存自动失效。
+        for ddl in ("ALTER TABLE sentences ADD COLUMN grammar_cache TEXT",
+                    "ALTER TABLE sentences ADD COLUMN grammar_cache_version INTEGER DEFAULT 0"):
+            try:
+                c.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         # v20 注音引擎版本号：存量 tokens 落后于当前引擎时 get_song 惰性重注（见 ktv.ANNO_VER）
         try:
             c.execute('ALTER TABLE songs ADD COLUMN anno_ver INTEGER DEFAULT 0')
@@ -351,6 +358,20 @@ def add_sentence(text, translation, source, url, tokens, kanji_words, orig_text=
             c.execute('INSERT OR IGNORE INTO kanji_index(kanji,sentence_id,word,word_reading) VALUES(?,?,?,?)',
                       (kanji, sid, word, wr))
         return sid
+
+
+def save_grammar_cache(sid, payload, version):
+    """保存可失效的出题语法分析结果；失败不影响出题（只会回退内存分析）。"""
+    if not sid or payload is None:
+        return False
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        with _lock, get_conn() as c:
+            c.execute('UPDATE sentences SET grammar_cache=?, grammar_cache_version=? WHERE id=?',
+                      (raw, int(version), int(sid)))
+        return True
+    except Exception:
+        return False
 
 
 def update_sentence(sid, text=None, translation=None, tokens=None, kanji_words=None, orig_text=None,

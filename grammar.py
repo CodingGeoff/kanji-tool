@@ -18,7 +18,15 @@
 """
 import hashlib
 import re
+from functools import lru_cache
 import fugashi
+
+# 语法引擎是出题热路径：同一句在「门禁」和「找挖空点」阶段会被调用两次，
+# 而且同一批句子会在多个请求中反复出现。有限 LRU 缓存只缓存纯函数结果，
+# 不改变任何判定规则；版本升级时重启进程即可自动清空。
+_ANALYSIS_CACHE_SIZE = 4096
+_CHECK_CACHE_SIZE = 4096
+
 
 _tagger = fugashi.Tagger()
 
@@ -1312,8 +1320,8 @@ def _context(words, s, e, radius=2):
     return b + c_ + a
 
 
-def analyze(text: str):
-    """返回按 N5→N1 排序的语法点列表"""
+def _analyze_uncached(text: str):
+    """返回按 N5→N1 排序的语法点列表（内部实现）。"""
     words = [w for w in _tagger(text) if w.surface]
     spans = _char_spans(text, words)          # 形态素 → 原文字符偏移（挖空定位用）
     found = []
@@ -1507,6 +1515,18 @@ def analyze(text: str):
 
 
 # ===============================================================
+@lru_cache(maxsize=_ANALYSIS_CACHE_SIZE)
+def analyze(text: str):
+    """缓存版语法分析；返回值按约定只读，避免同句重复形态素分析。"""
+    return _analyze_uncached(text)
+
+
+def clear_analysis_cache():
+    """语法规则/词典热更新后使用（通常仅测试或开发工具需要）。"""
+    analyze.cache_clear()
+    check_sentence_grammar.cache_clear()
+
+
 # 基本语法检查器（句子完整性、形态素连贯性与质检门禁）
 # ===============================================================
 
@@ -1525,7 +1545,7 @@ _DANGLING_CONJ = ('ば', 'つつ', 'ながら', 'ても', 'でも', 'たり', '�
 _RANDOM_KANA_RE = re.compile(r'[あいうえおかきくけこさしすせそたちつてとなにぬねの]{7,}')
 
 
-def check_sentence_grammar(text: str, strict_mode: bool = False) -> dict:
+def _check_sentence_grammar_uncached(text: str, strict_mode: bool = False) -> dict:
     """
     单句全方位基础语法质检：
     1. 句子边界与格式：长度合理、包含日文字符、无垃圾标记、无版权出处附注、括号匹配、句末标点合规。
@@ -1769,6 +1789,12 @@ def check_sentence_grammar(text: str, strict_mode: bool = False) -> dict:
         'ending_type': ending_type,
         'token_count': len(words),
     }
+
+
+@lru_cache(maxsize=_CHECK_CACHE_SIZE)
+def check_sentence_grammar(text: str, strict_mode: bool = False) -> dict:
+    """缓存版严格质检；严格/普通模式分别缓存，判定逻辑不变。"""
+    return _check_sentence_grammar_uncached(text, strict_mode=strict_mode)
 
 
 def is_sentence_grammatically_sound(text: str, strict_mode: bool = False) -> bool:

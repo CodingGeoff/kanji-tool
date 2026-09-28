@@ -1279,12 +1279,13 @@ def fetch_book_sentence_rows(ids, need):
     try:
         with db.get_conn() as c:
             for bid in ids:
-                rows += [dict(r) for r in c.execute(
-                    'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
-                    'bs.book_id book_id, b.title book_title, l.title lesson_title '
-                    'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
-                    'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
-                    'WHERE bs.book_id=? ORDER BY RANDOM() LIMIT ?', (bid, per)).fetchall()]
+                q = ('SELECT s.id sid, s.text text, s.translation translation, s.source source, '
+                     's.grammar_cache grammar_cache, s.grammar_cache_version grammar_cache_version, '
+                     'bs.book_id book_id, b.title book_title, l.title lesson_title '
+                     'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
+                     'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
+                     'WHERE bs.book_id=? ORDER BY bs.sentence_id LIMIT ?')
+                rows += [dict(r) for r in c.execute(q, (bid, per)).fetchall()]
     except Exception:
         pass
     random.shuffle(rows)
@@ -3665,6 +3666,29 @@ _CLOZE_FILLERS = ('ている', 'てしまう', 'について', 'ことにする'
                   'ことがある', 'ために', 'ようだ')
 
 _END_PUNCT = ('。', '！', '？', '!', '?')
+_GRAMMAR_CACHE_VERSION = 1
+
+
+def _decode_grammar_cache(row):
+    """从 SQLite 行安全读取可失效的语法缓存；损坏/旧版本一律回退重算。"""
+    try:
+        raw = row['grammar_cache']
+        if not raw or int(row['grammar_cache_version'] or 0) != _GRAMMAR_CACHE_VERSION:
+            return {}
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _random_id_clause(column, max_table):
+    """SQLite 快速随机起点：避免 ORDER BY RANDOM() 扫描并排序整个语料表。
+
+    从随机 rowid 起点顺序取样，边界不足时调用方仍会自然接受较少候选；
+    句子最终还要通过完整质量门禁，因此不会放宽题目质量标准。
+    """
+    return (f"{column} >= (abs(random()) % "
+            f"(SELECT COALESCE(MAX({column}), 1) FROM {max_table}))")
 
 
 def _cloze_sentence_ok(text):
@@ -3685,7 +3709,9 @@ def _cloze_sentence_ok(text):
         return False
     if re.search(r'[{}\[\]_＿http]|\\d{7,}', text):
         return False
-    if not grammar.is_sentence_grammatically_sound(text, strict_mode=True):
+    # grammar.check_sentence_grammar 同时完成门禁与形态素级检查，结果由 grammar
+    # 的有界缓存复用；不要再调用一次 is_sentence_grammatically_sound。
+    if not grammar.check_sentence_grammar(text, strict_mode=True).get('ok'):
         return False
     return True
 
@@ -3829,7 +3855,18 @@ def _cloze_candidates(text, min_o, meta=None):
     if not _cloze_sentence_ok(text):
         return []
     try:
-        pts = [g for g in grammar.analyze(text)
+        cached = (meta or {}).get('_grammar_cache') or {}
+        if cached.get('version') == _GRAMMAR_CACHE_VERSION and isinstance(cached.get('patterns'), list):
+            analyzed = cached['patterns']
+        else:
+            analyzed = grammar.analyze(text)
+            # 只持久化已通过严格门禁的句子；语料增长不会改变旧题质量，规则
+            # 变更只需递增版本号即可安全重建。
+            if meta and meta.get('sid'):
+                db.save_grammar_cache(meta['sid'],
+                                      {'version': _GRAMMAR_CACHE_VERSION, 'patterns': analyzed},
+                                      _GRAMMAR_CACHE_VERSION)
+        pts = [g for g in analyzed
                if g.get('kind') == 'pattern' and _lv(g.get('level')) >= min_o]
     except Exception:
         return []
@@ -3902,8 +3939,10 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
         scope = 'corpus'
         with db.get_conn() as c:
             rows = [dict(r) for r in c.execute(
-                'SELECT id sid, text text, translation translation, source source '
-                'FROM sentences ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()]
+                'SELECT id sid, text text, translation translation, source source, '
+                'grammar_cache grammar_cache, grammar_cache_version grammar_cache_version '
+                f'FROM sentences WHERE {_random_id_clause("id", "sentences")} '
+                'ORDER BY id LIMIT ?', (need,)).fetchall()]
 
     pool = []
     for r in rows:
@@ -3913,7 +3952,8 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
                 'source': r['source'] if 'source' in keys else '',
                 'book_id': r['book_id'] if 'book_id' in keys else None,
                 'book_title': r['book_title'] if 'book_title' in keys else None,
-                'lesson': r['lesson_title'] if 'lesson_title' in keys else None}
+                'lesson': r['lesson_title'] if 'lesson_title' in keys else None,
+                '_grammar_cache': _decode_grammar_cache(r)}
         pool += _cloze_candidates(r['text'], min_o, meta)
         if len(pool) >= count * 6:                   # 候选够多就停（省分析耗时）
             break
@@ -4358,10 +4398,12 @@ def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
             with db.get_conn() as c:
                 rows = c.execute(
                     f'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
+                    f's.grammar_cache grammar_cache, s.grammar_cache_version grammar_cache_version, '
                     f'bs.book_id book_id, b.title book_title, l.title lesson_title '
                     f'FROM book_sentences bs JOIN sentences s ON s.id=bs.sentence_id '
                     f'JOIN books b ON b.id=bs.book_id LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
-                    f'WHERE bs.book_id IN ({ph}) ORDER BY RANDOM() LIMIT ?', ids + [need]).fetchall()
+                    f'WHERE bs.book_id IN ({ph}) AND {_random_id_clause("bs.sentence_id", "book_sentences")} '
+                    f'ORDER BY bs.sentence_id LIMIT ?', ids + [need]).fetchall()
         except Exception:
             rows = []
         min_o = _lv(min_book)
@@ -4369,6 +4411,7 @@ def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
             meta = {'sid': r['sid'], 'translation': r['translation'], 'source': r['source'],
                     'book_id': r['book_id'], 'book_title': r['book_title'],
                     'lesson': r['lesson_title'] if 'lesson_title' in r.keys() else None,
+                    '_grammar_cache': _decode_grammar_cache(r),
                     'origin_type': 'book'}
             pools['book'] += _cloze_candidates(r['text'], min_o, meta)
 
@@ -4378,14 +4421,17 @@ def make_cloze_multi(book_ids=None, total=None, ratios=None, difficulty=None,
         try:
             with db.get_conn() as c:
                 rows = c.execute(
-                    'SELECT id sid, text text, translation translation, source source '
-                    'FROM sentences WHERE source != \"book\" OR source IS NULL '
-                    'ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()
+                    'SELECT id sid, text text, translation translation, source source, '
+                    'grammar_cache grammar_cache, grammar_cache_version grammar_cache_version '
+                    'FROM sentences WHERE (source != \"book\" OR source IS NULL) '
+                    f'AND {_random_id_clause("id", "sentences")} '
+                    'ORDER BY id LIMIT ?', (need,)).fetchall()
         except Exception:
             rows = []
         min_o = _lv(min_corpus)
         for r in rows:
             meta = {'sid': r['sid'], 'translation': r['translation'], 'source': r['source'],
+                    '_grammar_cache': _decode_grammar_cache(r),
                     'origin_type': 'corpus'}
             pools['corpus'] += _cloze_candidates(r['text'], min_o, meta)
 
