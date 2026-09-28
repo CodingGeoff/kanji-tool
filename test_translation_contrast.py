@@ -12,6 +12,7 @@
 
 不联网、不读数据库，纯函数测试，单独跑几秒钟结束。
 """
+import random as _rnd
 import re
 import sys
 
@@ -152,26 +153,76 @@ check(build('長い文です。', long_tr) is None or len(build('長い文です
 
 # ---------------------------------------------------------------- 7
 print('== 7. 改写结果不得是病句 ==')
+# 这份清单是拿 7500 道真题扫出来的：每一条都对应过一个真实冒出来的病句或
+# 「不用听懂就能排除」的破绽。扫描只针对**改写引入**的毛病——原译文自己就有的
+# 写法（There is not much difference…）不算账。
 BAD_EN = [
     (r"\b(he|she|it|tom|mary)\s+(am|are|were)\b", '主谓不一致（he are / she am）'),
     (r"\b(i)\s+(is|are|was\s+not\s+been)\b", '主谓不一致（I is / I are）'),
+    (r"\b(we|they|you)\s+(was|does|has)\b", '主谓不一致（they was / you has）'),
+    (r"\b(he|she|it)\s+(don't|do|have)\b", '主谓不一致（he don\'t）'),
     (r"\bhe'm\b|\bshe're\b|\bi's\b", '错误缩合'),
     # need / succeed / proceed 等动词原形本身就以 ed 结尾，排除掉再判
     (r"\bdidn't\s+(?!need|succeed|proceed|exceed|feed|speed|bleed|breed|"
      r"indeed|agreed)\w+ed\b", "didn't + 过去式"),
-    (r"\bdoesn't\s+(?!pass|miss|press|cross|discuss|guess|dress|focus)"
-     r"\w+s\b", "doesn't + 三单"),
+    (r"\b(will|would|can|could|must|should|may|might)\s+(?!need)\w+ed\b",
+     '情态动词 + 变位形'),
+    (r"\b(will|would|can|could|must|should|may|might)\s+"
+     r"(will|would|can|could|must|should|may|might|to)\b", '两个情态动词叠在一起'),
+    (r"\b(don't|doesn't|didn't)\s+(is|are|was|were|been)\b", 'do 支撑 + be'),
     (r"\bto\s+\w+ed\b", 'to + 过去式'),
-    (r"\bnot\s+not\b|\bnever\s+not\b", '双重否定'),
+    (r"\bnot\s+not\b|\bnever\s+not\b|\bnot\s+no\b|\bno\s+not\b", '双重否定'),
+    (r"\bthere\s+(is|are|was|were)\s+not\s+(a|an)\b",
+     'there is not a（英语要说 there is no）'),
+    (r"\b(is|are|was|were|am)\s+not\s+some\b|\b(don't|doesn't|didn't)\s+\w+\s+some\b",
+     '否定辖域里的 some 没换成 any'),
+    (r"\ba\s+[aeiou]", 'a + 元音（应为 an）'),
+    (r"\ban\s+(?!hour|honest|honou?r|heir)[bcdfghjklmnpqrstvwxyz]",
+     'an + 辅音（应为 a）'),
+    (r"\b(a|an)\s+(water|meat|rain|snow|wind|milk|tea|beer|police)\b",
+     '冠词 + 不可数名词'),
+    (r"\b(two|three|four|five|ten)\s+[a-z]+(?<!s)\b\s+(is|was)\b",
+     '复数主语 + 单数动词'),
+    (r"\b(was|were|did)\b[^.?!]*\b(tomorrow|next (week|month|year))\b",
+     '过去式 + 未来时间词'),
+    (r"\b(have|has|'ve)\s+\w+(ed|en)\b[^.?!]*"
+     r"\b(yesterday|last (week|month|year|night)|ago)\b", '完成体 + 过去时间词'),
     (r"\s{2,}|\s+[.,?!]", '空格/标点错位'),
 ]
 BAD_ZH = [
     (r'[不没沒][了着過过]', '否定词直接接体标记'),
     (r'把[^，。！？]{0,6}[不没沒]', '把字句里插否定'),
     (r'[很太更最][不没沒]了', '程度副词后乱加否定'),
+    (r'没[多少好坏壞大小高低快慢难難易贵貴忙累远遠近早晚胖瘦弱热熱冷重]'
+     r'(?![\u4e00-\u9fff])', '「没」否定形容词（该用「不」）'),
+    (r'[不没沒][的得地]', '否定词后接「的得地」'),
+    (r'(从不|從不|从来|從來|有时|有時|总是|總是|经常|經常)都', '换频度词后残留「都」'),
+    (r'[不没沒].{0,3}[不没沒]', '一句里两个否定'),
+    (r'(将|將|会|會)[\u4e00-\u9fff]{1,2}了(?<!行了)(?<!好了)(?<!对了)(?<!算了)(?<!成了)',
+     '未来标记 + 了'),
+    (r'(昨天|上周|上週|去年|前天|刚才|剛才)[^。，,]{0,8}(将|將|会去|會去|要去)',
+     '过去时间词 + 未来标记'),
     (r'的的|了了|是是', '叠字错误'),
     (r'[，。！？]{2,}', '标点重复'),
 ]
+# 把词劈开：答案里的词在选项里被插进一个字劈开（「美国」→「美了国」）
+SPLIT_WORDS = set(tc._ZH_VERBS) | {it[2] for grp in tc._NOUN_GROUPS for it in grp} | {
+    '美国', '美國', '中国', '中國', '日本', '英国', '英國', '东京', '東京', '大学',
+    '大學', '老师', '老師', '学生', '學生', '朋友', '公司', '医院', '醫院', '电影',
+    '電影', '问题', '問題', '时间', '時間', '东西', '東西', '事情', '工作'}
+
+
+def split_words(answer, option):
+    bad = []
+    for i in range(len(answer) - 1):
+        bi = answer[i:i + 2]
+        if bi in SPLIT_WORDS and bi not in option:
+            for ch in '了':
+                if answer[i] + ch + answer[i + 1] in option:
+                    bad.append(answer[i] + ch + answer[i + 1])
+    return bad
+
+
 SAMPLE = CASES_EN + CASES_ZH + [
     ('彼女は意地悪女だ。', "She's a big teaser."),
     ('私には助けてくれる誰かが必要だ。', 'I need someone to help me.'),
@@ -192,12 +243,19 @@ for seed in (1, 2, 3):
         if not got:
             continue
         rules = BAD_EN if got['lang'] == 'en' else BAD_ZH
+        ans_low = got['answer'].lower() if got['lang'] == 'en' else got['answer']
         for opt in got['options']:
             n_opt += 1
-            low = opt.lower()
+            low = opt.lower() if got['lang'] == 'en' else opt
             for pat, why in rules:
+                # 原译文自己就这么写的不算改写的账
+                if re.search(pat, ans_low):
+                    continue
                 check(not re.search(pat, low),
                       f'{jp}：改写产出病句（{why}）→ {opt}')
+            if got['lang'] == 'zh':
+                check(not split_words(got['answer'], opt),
+                      f'{jp}：改写把词劈开了 → {opt}')
 check(n_opt >= 60, f'病句扫描样本量足够（实得 {n_opt} 个选项）')
 
 # ---------------------------------------------------------------- 8
@@ -206,9 +264,15 @@ g = build('トムはメアリーに電話しました。', 'Tom called Mary.')
 check(g and {'Mary called Tom.'} <= set(g['options']),
       f'施受互换要真的换过来：{g and g["options"]}')
 
+# 存现句的方位轴（最终选的是哪条轴由难度排序决定，这里直接查槽位）
+_jf = tc.jp_features('机の上に本があります。')
+_pl = [x for x in tc._en_slots('There is a book on the desk.', _jf)
+       if x['axis'] == 'place']
+check(_pl and any('under' in a['note'] for a in _pl[0]['alts']),
+      f'存现句要能改方位：{_pl}')
 g = build('机の上に本があります。', 'There is a book on the desk.')
-check(g and any('under the desk' in o for o in g['options']),
-      f'存现句要能改方位：{g and g["options"]}')
+check(g and all('is not a' not in o for o in g['options']),
+      f'存现句否定要用 there is no：{g and g["options"]}')
 
 g = build('彼女は私に手紙を書いた。', 'She wrote me a letter.')
 check(g and all(not re.search(r'\bshe wrote her\b|\bi wrote me\b', o.lower())
@@ -306,6 +370,46 @@ if g:
     for o in g['options']:
         check(not re.search(r'(上周|上個月|去年|昨天).{0,4}(将|將)', o),
               f'未来标记在场时不许换成过去时间词：{o}')
+
+# ---------------------------------------------------------------- 10
+# 难度：日语谓语后置，人称在句首、否定/时制在句尾。只考这两头的题目
+# 「只听开头认人称、只听结尾认否定」就能做对，必须被如实标成 easy，
+# 且在有别的选择时不能被优先选中。
+print('\n[10] 难度分级：别让人只听开头结尾就能选对')
+
+g = build('彼女は毎日本を読む。', 'She reads a book every day.')
+check(g and 'difficulty' in g and 'zones' in g, '每道题都要带难度与听辨区标注')
+
+g = build('彼は医者です。', 'He is a doctor.')
+check(g and g['difficulty'] == 'easy' and g['zones'] == ['tail'],
+      f'只改句尾谓语的题必须标成 easy：{g and (g["difficulty"], g["zones"])}')
+
+g = build('私は毎朝コーヒーを飲みます。', 'I drink coffee every morning.')
+check(g and 'mid' in g['zones'] and g['difficulty'] == 'hard',
+      f'能考句中成分时要优先出，并标成 hard：{g and (g["axes"], g["difficulty"])}')
+check(g and any('tea' in o for o in g['options']),
+      f'具体名词轴要真的换掉句中那个词：{g and g["options"]}')
+
+# 同一句话里既能考句首人称、又能考句中宾语时，要挑句中的那个
+g = build('私は昨日彼に会わなかった。', 'I did not meet him yesterday.')
+check(g and 'mid' in g.get('zones', []),
+      f'有句中可考点时不该只考句首人称：{g and (g["axes"], g["zones"])}')
+
+# min_difficulty 是硬门槛：够不着就返回 None，而不是降级出题
+g_easy = build('彼は医者です。', 'He is a doctor.')
+g_hard = tc.build_contrast('彼は医者です。', 'He is a doctor.',
+                           rng=_rnd.Random(7), min_difficulty='hard')
+check(g_easy and g_hard is None,
+      'min_difficulty=hard 时，只考句尾的题必须被挡掉')
+
+# 具体名词轴的安全闸
+jf_n = tc.jp_features('私は肉を食べる。')
+check(not [x for x in tc._en_slots('I eat meat.', jf_n) if x['axis'] == 'lexical'],
+      '光杆不可数名词不能换成可数名词（I eat egg ✗）')
+jf_n2 = tc.jp_features('私は、喫茶店でコーヒーを一杯飲んだ。')
+check(not [x for x in tc._zh_slots('我在咖啡店里喝了一杯咖啡。', jf_n2)
+           if x['axis'] == 'lexical'],
+      '复合词里的名词不能换（咖啡店 → 茶店 ✗）')
 
 print()
 if FAILS:

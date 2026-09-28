@@ -64,7 +64,7 @@ def collect(rows, lang, per_axis, seed=20260928, scan=6000):
             continue
         if not got:
             continue
-        key = '+'.join(got['axes'])
+        key = f"{got.get('difficulty', '?')}｜{'+'.join(got['axes'])}"
         if len(buckets[key]) < per_axis:
             buckets[key] = buckets[key] + [(r['text'], got)]
     return buckets
@@ -78,9 +78,13 @@ def render(buckets, out=sys.stdout, md=False):
         w('由 `python contrast_sample.py --md CONTRAST_REVIEW.md` 生成。\n\n')
         w('机器已自动核验：四项互不相同、答案未被改写、2×2 每轴 2:2、'
           '除审计申报外不引入新实词、改写结果不是病句。\n\n')
-        w('**人工只需判断一件事**：标 ✘ 的三项里，有没有哪一条其实也能当这句日文的合法译文？'
+        w('> 分组标题里的 `hard/medium/easy` 是「这道题逼你听日文的哪一段」：\n'
+          '> `head`=句首人称、`mid`=句中数量·方位·对象·具体名词、`tail`=句尾否定·时制。\n'
+          '> 只落在 head+tail 的题（只听开头和结尾就能选对）标为 easy，出卷时最后才用。\n\n')
+        w('**人工只需判断一件事**：标 ✘ 的三项里，'
+          '有没有哪一条其实也能当这句日文的合法译文？'
           '（若有，请记下题号，那说明对应那条轴的日文侧证据规则需要收紧。）\n\n')
-        w(f'本表共 {total} 题，按语法轴分层抽样。\n\n')
+        w(f'本表共 {total} 题，按「难度｜语法轴」分层抽样。\n\n')
     n = 0
     for key in sorted(buckets, key=lambda k: (-len(buckets[k]), k)):
         items = buckets[key]
@@ -93,7 +97,9 @@ def render(buckets, out=sys.stdout, md=False):
         for jp, got in items:
             n += 1
             if md:
-                w(f'\n**{n}. 日文**：{jp}　`{got["structure"]}`\n\n')
+                w(f'\n**{n}. 日文**：{jp}　`{got["structure"]}`'
+                  f'　难度 `{got.get("difficulty", "?")}`'
+                  f'（听辨区：{"+".join(got.get("zones", []))}）\n\n')
                 for a in got['audit']:
                     mark = '✔' if a['is_answer'] else '✘'
                     note = '；'.join(
@@ -102,7 +108,8 @@ def render(buckets, out=sys.stdout, md=False):
                       + (f'　<sub>{note}</sub>' if note else '') + '\n')
                 w(f'- 依据：{"；".join(got["evidence"])}\n')
             else:
-                w(f'\n{n}. {jp}   [{got["structure"]}]\n')
+                w(f'\n{n}. {jp}   [{got["structure"]}] '
+                  f'{got.get("difficulty", "?")} {got.get("zones", [])}\n')
                 for a in got['audit']:
                     mark = ' ✔ ' if a['is_answer'] else ' ✘ '
                     note = '；'.join(

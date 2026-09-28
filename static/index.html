@@ -2893,7 +2893,7 @@ function sbRender(){
     <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
-      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 / ${q.n_required} 个必要槽位</span>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">${q.translation?'已填 0 块':`已填 0 块（需要 ${q.n_required} 个必要槽位）`}</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -2917,8 +2917,10 @@ function sbSyncTiles(){
   const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
   const need=$('#sbNeed');
   if(need){
-    const real=sbQuiz.sel.filter(k=>(q.spec.tile_map||{})[q.tiles[k].id]>=0).length;
-    need.textContent=`已填 ${real} / ${q.n_required} 个必要槽位${sbQuiz.sel.length>real?`（另有 ${sbQuiz.sel.length-real} 个混淆块）`:''}`;
+    // 只报「放了几块」：原先按 tile_map 只数真槽位，等于每点一块就告诉你它是不是
+    // 混淆块，一路试过去就能反推出正确块集合。有译文时连必要块数也不必再报。
+    const n=sbQuiz.sel.length;
+    need.textContent=q.translation?`已填 ${n} 块`:`已填 ${n} 块（需要 ${q.n_required} 个必要槽位）`;
   }
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
@@ -3191,7 +3193,9 @@ function lsRender(){
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
   const hint={contrast:'四个选项的实词完全相同，只有语法关系不同（谁对谁做／做没做／什么时候／因为还是虽然）——必须听懂整句才能选对',meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
-  const axisTip=q.qtype==='contrast'&&(q.contrast_axis_labels||[]).length?`<div class="muted" style="font-size:12.5px;margin-top:4px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}</div>`:'';
+  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
+  const zoneTip=(q.contrast_zones||[]).length?`；要听清<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
+  const axisTip=q.qtype==='contrast'&&(q.contrast_axis_labels||[]).length?`<div class="muted" style="font-size:12.5px;margin-top:4px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`:'';
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
@@ -3271,7 +3275,8 @@ function lsContrastNote(q){
     return `<div style="margin:4px 0;line-height:1.7">${lsDiffHTML(q.answer,a.option)}<br><span class="muted" style="font-size:12.5px">${tag}</span></div>`;
   }).join('');
   const ev=(q.jp_evidence||[]).map(x=>`<li>${esc(x)}</li>`).join('');
-  return `<div class="muted" style="font-size:13px;margin-top:8px;line-height:1.7">🧪 译文最小对立：四个选项由<b>同一条真实译文</b>按纯语法规则改写而成，实词一个没换${q.contrast_structure==='matrix_2x2'?'；两个考点组成 2×2，每个考点上正确值与错误值各占两项，光比选项无法反推答案':'；同一处给出四个互斥取值'}。</div>
+  const diffTxt={hard:'难（必须听清句子中段，只抓开头结尾不够）',medium:'中（考点在句子中段）',easy:'易（考点集中在句首人称／句尾谓语）'}[q.contrast_difficulty]||'';
+  return `<div class="muted" style="font-size:13px;margin-top:8px;line-height:1.7">🧪 译文最小对立：四个选项由<b>同一条真实译文</b>按纯语法规则改写而成，实词一个没换${q.contrast_structure==='matrix_2x2'?'；两个考点组成 2×2，每个考点上正确值与错误值各占两项，光比选项无法反推答案':'；同一处给出四个互斥取值'}${diffTxt?`。难度：<b>${diffTxt}</b>`:''}。</div>
     <div style="margin-top:6px">${rows}</div>
     ${ev?`<div class="muted" style="font-size:12.5px;margin-top:6px;line-height:1.7">改写依据（日文侧显式证据，没有证据的改写一律不生成）：<ul style="margin:4px 0 0 18px">${ev}</ul></div>`:''}`;
 }

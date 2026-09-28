@@ -516,7 +516,7 @@ def _get_global_sound_sentences():
 # ================================================================
 # 题型 0：译文最小对立（四个选项＝同一条译文的语法改写）
 # ================================================================
-def _build_contrast_q(row):
+def _build_contrast_q(row, min_difficulty=None):
     """把这句话的真实译文改写成四个只差语法关系的选项。
 
     与 meaning 题的根本区别：meaning 的干扰项是**别的句子**的译文，选项之间
@@ -526,13 +526,17 @@ def _build_contrast_q(row):
 
     所有改写都要求日文侧有显式证据（见 translation_contrast.jp_features），
     没有证据就返回 None，主流程会换别的题型——绝不靠猜。
+
+    min_difficulty：日语谓语后置，人称在句首、否定/时制在句尾。只考这两头的
+    题目（「他/我 × 去了/没去」）听中间一段全漏也能答对。出卷时先只要
+    'hard'（必须听清句子中段：数量/方位/施受/具体名词…），凑不满再放宽。
     """
     text = (row.get('text') or '').strip()
     tr = (row.get('translation') or '').strip()
     if not text or not tr or not _sound_sentence(text):
         return None
     try:
-        got = tcon.build_contrast(text, tr)
+        got = tcon.build_contrast(text, tr, min_difficulty=min_difficulty)
     except Exception:
         # 单句改写出错不该拖垮整份卷子，但也不能装作无事发生——打日志，
         # 主流程会自动换成别的题型。
@@ -551,6 +555,8 @@ def _build_contrast_q(row):
         'tr_lang': got['lang'], 'contrast_structure': got['structure'],
         'contrast_axes': got['axes'], 'contrast_axis_labels': got['axis_labels'],
         'jp_evidence': got['evidence'],
+        'contrast_difficulty': got.get('difficulty'),
+        'contrast_zones': got.get('zones'),
         'distractor_source': 'rule_perturbed_translation_minimal_pair',
         'distractor_audit': got['audit'],
     }
@@ -862,8 +868,10 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     meaning_ctx = _meaning_search_context(translation_pool) if translation_pool else _get_global_translation_index()
     sentence_pool = rows
 
+    contrast_floor = ['hard']          # 先只收「必须听句子中段」的对立题
+
     builders = {
-        'contrast': _build_contrast_q,
+        'contrast': lambda row: _build_contrast_q(row, contrast_floor[0]),
         'meaning': lambda row: _build_meaning_q(
             row, translation_pool, meaning_difficulty, meaning_ctx),
         'discriminate': lambda row: _build_discriminate_q(row, sentence_pool),
@@ -912,14 +920,21 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             used.add(key)
             questions.append(got)
 
-    # 第一轮：严格匹配指定等级 + 严格按题型配额
+    # 第一轮：严格匹配指定等级 + 严格按题型配额 + 只要难的对立题
     _fill_from(rows, relax_level=False)
 
-    # 第二轮：配额填不满（如某题型对句子要求高）时，放开题型限制补齐
+    # 第二轮：难题不够，放宽到「至少要听句中一处」的中等难度，再到全部
+    for floor in ('medium', None):
+        if len(questions) >= count or made['contrast'] >= targets['contrast']:
+            break
+        contrast_floor[0] = floor
+        _fill_from(rows, relax_level=False)
+
+    # 第三轮：配额填不满（如某题型对句子要求高）时，放开题型限制补齐
     if len(questions) < count:
         _fill_from(rows, relax_level=False, strict_mix=False)
 
-    # 第三轮：如果题数仍未满且指定了级别，放宽级别限制
+    # 第四轮：如果题数仍未满且指定了级别，放宽级别限制
     if len(questions) < count and level != 'any':
         _fill_from(rows, relax_level=True)
         if len(questions) < count:

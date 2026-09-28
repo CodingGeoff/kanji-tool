@@ -181,6 +181,9 @@ for txt, tr in CONTRAST_CASES:
           f'审计信息与选项同序且逐项齐全：{q["distractor_audit"]}')
     check(sum(1 for a in q['distractor_audit'] if a['is_answer']) == 1,
           '四项中恰有一项被标记为正确答案')
+    check(q.get('contrast_difficulty') in ('easy', 'medium', 'hard')
+          and q.get('contrast_zones'),
+          f'每道对立题都要带难度与听辨区（供出卷优先挑难题）：{q.get("contrast_difficulty")}')
     for a in q['distractor_audit']:
         if a['is_answer']:
             continue
@@ -233,6 +236,15 @@ d_c = ls.make_quiz(count=6, scope='corpus')
 check(d_c['ok'] and any(q['qtype'] == 'contrast' for q in d_c['questions']),
       f'contrast 占比 100% 时能真的出到该题型：{[q["qtype"] for q in d_c["questions"]]}')
 ls.save_listening_cfg({'types': {'contrast': 40, 'meaning': 20, 'discriminate': 10, 'cloze': 30}})
+
+# 出卷时先挑「必须听句子中段」的难题，easy（只考句首人称＋句尾否定）垫底
+_hard_probe = ls.make_quiz(None, 12, 'any', 'corpus')
+_cs = [x for x in _hard_probe['questions'] if x['qtype'] == 'contrast']
+if len(_cs) >= 3:
+    _easy = [x for x in _cs if x.get('contrast_difficulty') == 'easy']
+    check(len(_easy) <= max(1, len(_cs) // 3),
+          f'对立题应以难题为主，easy 只能垫底：'
+          f'{[x.get("contrast_difficulty") for x in _cs]}')
 
 print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])

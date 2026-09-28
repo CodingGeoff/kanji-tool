@@ -307,6 +307,8 @@ def jp_features(text):
         'causative': causative,
         'giving': giving,
         'te_iru': te_iru,
+        'text': text,
+        'surfaces': tuple(surfaces),
         'ok': bool(toks),
     }
 
@@ -784,6 +786,9 @@ def _en_question_slots(tr, words, jf):
     past_now = aux in ('was', 'were', 'did', 'had', "wasn't", "weren't",
                        "didn't", "hadn't")
     jp_past = bool(jf['tail_past'] and jf['past_count'] >= 1)
+    if (jp_past and _EN_PAST_TIME_RE.search(tr)) or \
+            (not jp_past and _EN_FUTURE_TIME_RE.search(tr)):
+        return out            # 句里写明了时间，翻时制会自相矛盾
     if past_now == jp_past:
         ev = ("日文句尾带过去助動詞「た」，问的是已经发生的事" if jp_past else
               "日文句里没有过去助動詞「た」，问的不是已经完成的事")
@@ -846,7 +851,22 @@ def _en_slots(tr, jf):
 
     # ---------- 轴 6~N：封闭类词表替换 ----------
     slots += _lex_table_slots(tr, jf, 'en')
+    slots += _noun_slots(tr, jf, 'en')
     return slots
+
+
+def _en_some_to_any(tr, words, main):
+    """否定辖域里的 some 要换成 any："I didn't have some trouble" ✗。"""
+    out = []
+    for k in range(main['j'] + 1, len(words)):
+        low = words[k][0].lower()
+        if low in ('some', 'somebody', 'someone', 'something', 'somewhere'):
+            rep = {'some': 'any', 'somebody': 'anybody', 'someone': 'anyone',
+                   'something': 'anything', 'somewhere': 'anywhere'}[low]
+            if words[k][0][:1].isupper():
+                rep = rep[:1].upper() + rep[1:]
+            out.append((words[k][1], words[k][2], rep))
+    return out
 
 
 def _have_is_aux(words, i):
@@ -870,10 +890,37 @@ def _en_polarity_slot(tr, words, main, subj, jf):
     # 频度副词与否定会互相纠缠（"He always doesn't go" 是病句），直接不碰
     if any(x[0].lower() in _FREQ_ADVERBS for x in words):
         return []
+    # 句子已经用 no / nothing / without 表达了否定，再加 not 就是双重否定
+    if not main['neg'] and re.search(
+            r"\b(no|none|nothing|nobody|no one|nowhere|neither|nor|without|"
+            r"hardly|barely|scarcely|unable|fail(s|ed)? to)\b", tr, re.I):
+        return []
 
     # (a) 译文是肯定的 → 造否定；要求日文全句没有任何否定形态素
     if not main['neg'] and jf['neg_count'] == 0:
         ev = "日文句里没有任何否定形态素（ない／ぬ／ません），句尾谓语是肯定的"
+        # 存现句："There is not a book" 是别扭的英文，地道说法是 "There is no book"
+        # （there 不一定在句首："In addition to the fog, there was a heavy swell."）
+        if (head in _BE_FORMS and i + 1 < len(words)
+                and ((i and words[i - 1][0].lower() == 'there')
+                     or words[0][0].lower() == 'there')):
+            nxt = words[i + 1][0].lower()
+            if nxt in ('a', 'an', 'some', 'any'):
+                s, e = words[i + 1][1], words[i + 1][2]
+                return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
+                              [{'edits': [(s, e, 'no')],
+                                'note': f'{words[i + 1][0]} → no'}], 0.95, (s, e))]
+            if (nxt.isdigit() or nxt in _EN_NUM_WORDS or nxt in _DETERMINERS
+                    or en_base_of(nxt)):
+                return []            # 数词/限定词/动词开头，改不稳，交给别的轴
+            s, e = words[i + 1][1], words[i + 1][2]
+            return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
+                          [{'edits': [(s, s, 'no ')],
+                            'note': f'{words[i + 1][0]} → no {words[i + 1][0]}'}],
+                          0.9, (s, e))]
+
+        some_fix = _en_some_to_any(tr, words, main)
+
         aux = (head in _BE_FORMS or head in _MODALS or head in _DO_FORMS
                or (head in _HAVE_FORMS and _have_is_aux(words, i)))
         if aux:
@@ -891,7 +938,8 @@ def _en_polarity_slot(tr, words, main, subj, jf):
             else:
                 new = w(i) + ' not'
             return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
-                          [{'edits': [(s, e, new)], 'note': f'{w(i)} → {new}'}],
+                          [{'edits': [(s, e, new)] + some_fix,
+                            'note': f'{w(i)} → {new}'}],
                           0.95, (s, e))]
         # do-support：主语和动词必须紧挨着，中间插了副词会改出病句
         if main['i'] != subj['end'] + 1:
@@ -911,7 +959,8 @@ def _en_polarity_slot(tr, words, main, subj, jf):
                 return []
             s, e = words[i][1], words[i][2]
             return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
-                          [{'edits': [(s, e, new)], 'note': f'{w(i)} → {new}'}],
+                          [{'edits': [(s, e, new)] + some_fix,
+                            'note': f'{w(i)} → {new}'}],
                           0.95, (s, e))]
         return []
 
@@ -958,9 +1007,25 @@ def _en_polarity_slot(tr, words, main, subj, jf):
     return []
 
 
+_EN_PAST_TIME_RE = re.compile(
+    r"\b(yesterday|last (night|week|month|year|time|summer|winter)|ago|"
+    r"back then|at that time|in those days|the other day)\b", re.I)
+_EN_FUTURE_TIME_RE = re.compile(
+    r"\b(tomorrow|next (week|month|year|time|summer|winter)|soon|later|"
+    r"tonight|someday|in the future)\b", re.I)
+
+
 def _en_tense_slot(tr, words, main, subj, jf):
-    """时制翻转。日文侧证据：句尾「た」的有无（显式时制标记）。"""
+    """时制翻转。日文侧证据：句尾「た」的有无（显式时制标记）。
+
+    句子里写明了时间的，只能往对得上的方向翻：「I enjoyed yesterday」改成
+    「I will enjoy yesterday」是自相矛盾，不用听懂时制也能排除，等于白送分。
+    """
     i, j = main['i'], main['j']
+    if jf['tail_past'] and jf['past_count'] >= 1 and _EN_PAST_TIME_RE.search(tr):
+        return []
+    if not jf['tail_past'] and jf['past_count'] == 0 and _EN_FUTURE_TIME_RE.search(tr):
+        return []
     head = words[i][0].lower()
     s, e = words[i][1], words[i][2]
 
@@ -1307,11 +1372,12 @@ _TABLE = [
      r'想要|想', ['必须', '必須'], ('modal', 'want'), ('modal', 'must')),
     # ---- 中文：频度 / 量化 ----
     ('quant', '频度（总是 / 从不 / 有时）',
-     r'总是|總是|一直', ['从不', '從不', '有时', '有時'], ('quant', 'always'), ('quant', 'never')),
+     r'(?:总是|總是|一直)都?', ['从不', '從不', '有时', '有時'], ('quant', 'always'),
+     ('quant', 'never')),
     ('quant', '频度（总是 / 从不 / 有时）',
      r'从不|從不|从来不|從來不', ['总是', '總是'], ('quant', 'never'), ('quant', 'always')),
     ('quant', '频度（总是 / 从不 / 有时）',
-     r'经常|經常', ['从不', '從不'], ('quant', 'often'), ('quant', 'never')),
+     r'(?:经常|經常)都?', ['从不', '從不'], ('quant', 'often'), ('quant', 'never')),
     ('quant', '频度（总是 / 从不 / 有时）',
      r'有时|有時|偶尔|偶爾', ['总是', '總是'], ('quant', 'sometimes'), ('quant', 'always')),
     ('quant', '范围（只有 / 也）',
@@ -1363,8 +1429,23 @@ def _lex_table_slots(tr, jf, lang):
             continue
         if any(a < m.end() and m.start() < b for a, b in anota):
             continue
+        # 「並不總是」里的频度词前面挂着否定，换成别的频度词就成了「並不有时」
+        if axis == 'quant' and lang == 'zh' and \
+                re.search(r'[不没沒並并]$', tr[:m.start()]):
+            continue
+        # 「will have to」→「will may」：前面已经有情态动词/to，这个位置不能换情态词
+        if axis == 'modal' and lang == 'en' and re.search(
+                r"\b(will|would|can|could|shall|should|must|may|might|to|'ll|'d)\s+$",
+                tr[:m.start()], re.I):
+            continue
+        has_neg = bool(re.search(r'[不没沒無无未]', tr) if lang == 'zh'
+                       else re.search(r"\b(not|n't|no|never|none|nothing)\b", tr, re.I))
         cands = []
         for rep in repls:
+            # 句子里已经有否定了，再塞一个否定性频度词就是双重否定
+            if has_neg and rep in ('从不', '從不', '从来不', '從來不', 'never',
+                                   'rarely', 'seldom', '还没', '還沒'):
+                continue
             if lang == 'zh':
                 if _is_trad(rep) != zh_trad and _zh_pair(rep, zh_trad) is not None:
                     rep = _zh_pair(rep, zh_trad)
@@ -1641,10 +1722,14 @@ def _en_number_agreement(tr, m, old_value, new_word):
     if new_value is None and new_word.isdigit():
         new_value = int(new_word)
     if new_value is None or (old_value == 1) == (new_value == 1):
-        return []
+        return _en_article_edit(tr, m, new_word) or []
     noun_fix = _en_noun_number_edit(tr, m, new_value != 1)
     if noun_fix is None:
         return None
+    art = _en_article_edit(tr, m, new_word)
+    if art is None:
+        return None
+    noun_fix = art + noun_fix
     to_plural = new_value != 1
     table = {'is': 'are', 'was': 'were', 'has': 'have', "isn't": "aren't",
              "wasn't": "weren't", "hasn't": "haven't"}
@@ -1680,6 +1765,161 @@ _JP_PAST_TIME = {'昨日', '一昨日', '先週', '先月', '去年', '昨夜', 
 _JP_FUTURE_TIME = {'明日', '明後日', '来週', '来月', '来年', '今晩'}
 
 
+# ================================================================
+# 六之二、具体名词最小对立（听句子中段用）
+# ================================================================
+# 「人称 × 肯否」只考句首和句尾，中段全漏掉也能答对。这张表专治这一点：
+# 四个选项只差句子**中间**那一个具体名词，不听清中段就没法排除。
+# 每组词互斥（一句话里不会既是咖啡又是茶），三种写法一一对应，
+# 出题前会核对：日文里确实出现了这个词，且替换值对应的日文词**不在**句中。
+# 只收「听得见、译得准、不会同指」的常用词——拿不准的一律不进表。
+_NOUN_GROUPS = [
+    # 同组的词必须在同一类谓语下都说得通：能喝的跟能喝的换，能吃的跟能吃的换。
+    # 「I drink water → I drink meat」这种荒唐选项不用听懂也能排除，等于白送分。
+    [('コーヒー', 'coffee', '咖啡'), ('お茶', 'tea', '茶'),
+     ('ビール', 'beer', '啤酒'), ('ミルク', 'milk', '牛奶'),
+     ('水', 'water', '水')],
+    [('犬', 'dog', '狗'), ('猫', 'cat', '猫'), ('鳥', 'bird', '鸟'),
+     ('馬', 'horse', '马')],
+    [('本', 'book', '书'), ('新聞', 'newspaper', '报纸'),
+     ('雑誌', 'magazine', '杂志'), ('手紙', 'letter', '信')],
+    [('電車', 'train', '电车'), ('バス', 'bus', '公交车'),
+     ('自転車', 'bicycle', '自行车'), ('飛行機', 'plane', '飞机')],
+    [('学校', 'school', '学校'), ('会社', 'company', '公司'),
+     ('病院', 'hospital', '医院'), ('図書館', 'library', '图书馆')],
+    [('駅', 'station', '车站'), ('空港', 'airport', '机场'),
+     ('公園', 'park', '公园'), ('銀行', 'bank', '银行')],
+    [('父', 'father', '父亲'), ('母', 'mother', '母亲'),
+     ('兄', 'brother', '哥哥'), ('姉', 'sister', '姐姐')],
+    [('先生', 'teacher', '老师'), ('学生', 'student', '学生'),
+     ('医者', 'doctor', '医生'), ('警察', 'police', '警察')],
+    [('肉', 'meat', '肉'), ('魚', 'fish', '鱼'), ('卵', 'egg', '鸡蛋'),
+     ('パン', 'bread', '面包')],
+    [('日本語', 'Japanese', '日语'), ('英語', 'English', '英语'),
+     ('中国語', 'Chinese', '中文'), ('フランス語', 'French', '法语')],
+    [('夏', 'summer', '夏天'), ('冬', 'winter', '冬天'),
+     ('春', 'spring', '春天'), ('秋', 'autumn', '秋天')],
+    [('雨', 'rain', '雨'), ('雪', 'snow', '雪'), ('風', 'wind', '风')],
+    [('手', 'hand', '手'), ('足', 'foot', '脚'), ('目', 'eye', '眼睛'),
+     ('耳', 'ear', '耳朵')],
+]
+# 这些日文词互为子串或常同现，逐字核对时容易误判，整组作废
+_NOUN_CONFLICT = {'本': ('日本', '本当', '本屋'), '手': ('手紙', '上手', '下手', '相手'),
+                  '目': ('目的', '駄目'), '足': ('不足', '満足'),
+                  '父': ('祖父',), '母': ('祖母',), '水': ('水曜',),
+                  '兄': ('兄弟',), '姉': ('姉妹',)}
+
+
+# 不可数名词：前面有 a/an 时不能拿它做替换值（"I ate a water" ✗）
+_EN_MASS_NOUN = {'water', 'meat', 'fish', 'rain', 'snow', 'wind', 'coffee',
+                 'tea', 'beer', 'milk', 'japanese', 'english', 'chinese',
+                 'french', 'spring', 'summer', 'autumn', 'winter', 'police'}
+# 中文量词：名词前挂着量词时换词会量词不搭（「一本报纸」✗），整条放弃
+_ZH_CLASSIFIER = set('本份张張只隻条條头頭辆輛台杯瓶个個位名间間家块塊件双雙副把匹'
+                     '封首部篇幅棵朵粒颗顆座扇面支枝根串群批套身顶頂床盏盞碗盘盤'
+                     '袋箱包盒罐幢栋棟艘架节節門门科课課场場段句行列')
+# 名词后面跟这些字多半是复合词（咖啡店／学校长／电车票），不能只换前半截
+_ZH_NOUN_SUFFIX = set('店館馆屋厂廠员員師师票費费色語语系班組组長长家業业室站场場会會节節日')
+_ZH_NOUN_PREFIX = set('小大老新旧舊女男')
+
+
+def _en_article_edit(tr, m, new_word):
+    """换名词后把 a / an 改对（an egg → a fish）。不需要改就返回 []。"""
+    mh = re.search(r'\b(a|an|A|An)\s+$', tr[:m.start()])
+    if not mh:
+        return []
+    cur = mh.group(1)
+    want = 'an' if new_word[:1].lower() in 'aeiou' else 'a'
+    if cur[:1].isupper():
+        want = want[:1].upper() + want[1:]
+    if want.lower() == cur.lower():
+        return []
+    return [(mh.start(1), mh.end(1), want)]
+
+
+def _noun_slots(tr, jf, lang):
+    """具体名词最小对立：只换句中那一个名词，其余一字不动。"""
+    jp = jf.get('text') or ''
+    if not jp:
+        return []
+    idx = 1 if lang == 'en' else 2
+    out = []
+    for group in _NOUN_GROUPS:
+        hit = None
+        for item in group:
+            jw = item[0]
+            if jw not in jp:
+                continue
+            # 「本」出现在「日本」里不算数
+            if any(bad in jp for bad in _NOUN_CONFLICT.get(jw, ())):
+                continue
+            if hit:                      # 同组出现两个词，指代不清，整组放弃
+                hit = None
+                break
+            hit = item
+        if not hit:
+            continue
+        word = hit[idx]
+        pattern = rf'\b{re.escape(word)}\b' if lang == 'en' else re.escape(word)
+        m = re.search(pattern, tr, flags=re.IGNORECASE if lang == 'en' else 0)
+        if not m:
+            continue
+        if lang == 'zh':
+            if tr[max(0, m.start() - 1):m.start()] in _ZH_CLASSIFIER:
+                continue                 # 「一本书」换成「一本报纸」量词不搭
+            if tr[m.end():m.end() + 1] in _ZH_NOUN_SUFFIX:
+                continue                 # 「咖啡店」里的「咖啡」不是独立成分
+            if tr[max(0, m.start() - 1):m.start()] in _ZH_NOUN_PREFIX:
+                continue
+        has_article = bool(re.search(r'\b(a|an)\s+$', tr[:m.start()], re.I))
+        # 光杆名词（I eat meat）只能换成同样不可数的词，换成 egg 就该带冠词了
+        bare_en = lang == 'en' and not re.search(
+            r"(\b(a|an|the|my|your|his|her|our|their|its|this|that|these|those|"
+            r"some|any|no|one|two|three|four|five|of|every|each)\b|'s)\s+$",
+            tr[:m.start()], re.I)
+        cands = []
+        for other in group:
+            if other is hit:
+                continue
+            if other[0] in jp or any(bad in jp for bad in _NOUN_CONFLICT.get(other[0], ())):
+                continue
+            rep = other[idx]
+            if lang == 'en' and has_article and rep.lower() in _EN_MASS_NOUN:
+                continue                 # 「a water」「a meat」不是英文
+            if lang == 'en' and bare_en and rep.lower() not in _EN_MASS_NOUN:
+                continue                 # 「I eat meat」→「I eat egg」缺冠词
+            if lang == 'zh':
+                if _is_trad(tr) and _zh_pair(rep, True) is not None:
+                    rep = _zh_pair(rep, True)
+                if rep in tr:
+                    continue
+            elif re.search(rf'\b{re.escape(rep)}\b', tr, flags=re.IGNORECASE):
+                continue
+            # 大小写跟着原词走（句首的 Coffee → Tea）
+            if lang == 'en' and m.group()[:1].isupper():
+                rep = rep[:1].upper() + rep[1:]
+            cands.append(rep)
+            if len(cands) >= 3:
+                break
+        if len(cands) < 3:
+            continue                     # 凑不齐三个互斥值就不出这条轴
+        ev = f'日文里明确说的是「{hit[0]}」，换成同类的别的东西就与录音不符'
+        alts = []
+        for c in cands:
+            edits = [(m.start(), m.end(), c)]
+            if lang == 'en':
+                art = _en_article_edit(tr, m, c)
+                if art is None:
+                    continue             # a/an 改不了就不要这个候选
+                edits += art
+            alts.append({'edits': edits, 'note': f'{m.group()} → {c}'})
+        if len(alts) < 3:
+            continue
+        out.append(_slot('lexical', '具体名词（听清句子中间说的是什么）', ev,
+                         alts, 0.88, (m.start(), m.end())))
+    return out
+
+
 def _time_slots(tr, jf, lang):
     """时间轴：日文里出现了该時間名詞，且替换值对应的日文词不在句中。
 
@@ -1697,7 +1937,11 @@ def _time_slots(tr, jf, lang):
         if re.search(r"\b(have|has|'ve)\s+\w+(ed|en|ne|me|ut)\b", tr, re.I):
             return []
         block_past = bool(re.search(r"\b(will|'ll|going to|shall)\b", tr, re.I))
-        block_future = False
+        # 已经是过去式的句子不能换成未来的时间词
+        ws = _en_words(tr)
+        block_future = any(
+            w.lower() in ('was', 'were', 'did', "didn't", "wasn't", "weren't", 'had')
+            or (en_base_of(w.lower()) or ('', ''))[1] == 'past' for w, _a, _b in ws)
     for jp_word in jf['times']:
         word = _JP_TIME[jp_word][idx]
         pattern = rf'\b{re.escape(word)}\b' if lang == 'en' else re.escape(word)
@@ -2038,8 +2282,16 @@ def _zh_slots(tr, jf):
     slots += _zh_role_slot(tr, jf)
     slots += _zh_comparative_slot(tr, jf)
     slots += _lex_table_slots(tr, jf, 'zh')
+    slots += _noun_slots(tr, jf, 'zh')
     return slots
 
+
+# 这些是形容词（或形容词性的量），只能用「不」否定，绝不能用「没」，
+# 「粗糙多了 → 粗糙没多」「钱多了 → 钱没多」都是病句
+_ZH_ADJ_LIKE = {'多', '少', '好', '坏', '壞', '大', '小', '高', '低', '快', '慢',
+                '难', '難', '易', '贵', '貴', '便宜', '粗糙', '忙', '累', '远',
+                '遠', '近', '早', '晚', '长', '長', '短', '胖', '瘦', '强', '強',
+                '弱', '热', '熱', '冷', '暖', '亮', '暗', '重', '轻', '輕'}
 
 _ZH_MODAL_BLOCK_NEXT = {
     '想': '像象念法起到不', '会': '儿兒议議話话面员員费費', '會': '兒議話面員費',
@@ -2079,7 +2331,11 @@ def _zh_find_verb_raw(tr):
         prev = tr[pos - 1]
         # 「的」后面的「要/会/能」基本都不是助动词，而是「比…的要难」这类强调或
         # 定语从句的一部分，插否定会造出「的不要难」这种病句
-        return prev not in '地得把被不没沒别別很太将將的' and prev not in _COMPOUND_HEAD
+        if prev in '地得把被不没沒别別很太将將的' or prev in _COMPOUND_HEAD:
+            return False
+        # 前面紧挨着另一个完整动词 → 这是 V+给／V+到／V+成 的后半截
+        # （「介紹給了」里的「給」），在这儿插入否定/时体会把动词劈开
+        return not any(tr.endswith(v2, pos) for v2 in _ZH_VERBS if len(v2) >= 2)
 
     # (a) 「V了」：了 前面紧挨着的动词
     for m in re.finditer(r'了', tr):
@@ -2138,12 +2394,19 @@ def _zh_polarity_slot(tr, jf):
     if re.search(r'[把被让讓使]', tr):
         # 把字句/被字句的否定要放到介词前面（"不把我叫起来"），规则引擎不冒这个险
         return []
+    if re.search(r'[一两兩][本份张張只隻条條头頭辆輛台杯瓶个個位名间間块塊件双雙把匹]', tr):
+        # 「喝了一杯咖啡」→「没喝一杯咖啡」不地道（该说「没喝咖啡」），不冒这个险
+        return []
     # (a) 译文是肯定的 → 造否定
     if not re.search(r'[不没沒未別别無无]', tr) and jf['neg_count'] == 0:
         got = _zh_find_verb(tr)
         if not got:
             return []
         s, e, v, kind = got
+        # 谓语前面挂着介词短语时，否定要放在介词前（「她没给我写信」），
+        # 插在动词前会变成「她给我没写信」这种病句 —— 规则引擎不猜介词边界
+        if re.search(r'[给給跟和對对向為为從从往朝替]', tr[1:s]):
+            return []
         ev = '日文句里没有任何否定形态素（ない／ぬ／ません），说的是肯定的事'
         # 句尾有语气/完成的「了」时，否定必须用「没」并把「了」一起去掉：
         # 「他来东京找工作了」→「他没来东京找工作」，而不是病句「他不来…了」。
@@ -2157,7 +2420,9 @@ def _zh_polarity_slot(tr, jf):
                                       (tail_le.start(), tail_le.start() + 1, '')],
                             'note': f'{tr[s:e]} → {new}（句尾「了」一并去掉）'}],
                           0.92, (s, tail_le.start() + 1))]
-        if kind in ('le', 'you'):
+        if v in _ZH_ADJ_LIKE and kind == 'le':
+            return []          # 「粗糙多了」是程度补语，「没多」「不多」都是病句
+        if kind in ('le', 'you') and v not in _ZH_ADJ_LIKE:
             new = mei + v
         else:
             new = '不' + v
@@ -2166,19 +2431,62 @@ def _zh_polarity_slot(tr, jf):
                       0.95, (s, e))]
     # (b) 译文是否定的 → 去掉否定
     if jf['neg_count'] >= 1 and len(re.findall(r'[不没沒]', tr)) == 1:
-        ev = '日文句尾谓语带否定形态素（ない／ません／ぬ），录音说的是「没有／不」'
-        m = re.search(r'(没有|沒有)([\u4e00-\u9fff]{1,3})', tr)
-        if m:
-            new = m.group(2) + '了'
+        return _zh_drop_negation(tr, trad)
+    return []
+
+
+# 这些词本身就要求句子是否定的，去掉否定就成了病句（「我从来去过美国」✗）
+_ZH_NEG_POLARITY_ITEM = re.compile(
+    r'从来|從來|从没|從沒|从未|從未|从不|從不|丝毫|絲毫|根本|压根|壓根|'
+    r'再也|一点也|一點也|一点都|一點都|什么也|什麼也|谁也|誰也|怎么也|怎麼也')
+
+
+def _zh_drop_negation(tr, trad):
+    """把「不V／没V／没有V」还原成肯定式。
+
+    这里绝不能用「否定词 + 后面 1~3 个字」这种瞎切的正则：
+    「我从来没去过美国」会被切成「没去过美」，改出「美了国」这种把词劈开的鬼话。
+    只认「否定词 + 词表里的动词（长的优先）」，认不出就整条放弃。
+    """
+    ev = '日文句尾谓语带否定形态素（ない／ません／ぬ），录音说的是「没有／不」'
+    if _ZH_NEG_POLARITY_ITEM.search(tr):
+        return []
+    m = re.search(r'(没有|沒有|不|没|沒)', tr)
+    if not m:
+        return []
+    neg, at = m.group(1), m.end()
+    if tr[m.start() - 1:m.start()] in ('要', '还', '還', '并', '並', '也', '都', '就'):
+        return []                      # 「不要/还不/也不」这类连用，拆开容易出事
+    for v in _ZH_VERBS:                # 已按长度降序，先试双字动词
+        if not tr.startswith(v, at):
+            continue
+        end = at + len(v)
+        nxt = tr[end:end + 1]
+        if nxt == '的':
+            return []                  # 定语从句里的否定，不碰
+        if neg in ('没有', '沒有') and v in ('有',):
+            break
+        # 「没V过」是经验体，去掉「没」就够了，不能再加「了」
+        add_le = neg in ('没', '沒', '没有', '沒有') and nxt not in ('过', '過', '了')
+        new = v + ('了' if add_le else '')
+        return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
+                      [{'edits': [(m.start(), end, new)],
+                        'note': f'{tr[m.start():end]} → {new}'}],
+                      0.95, (m.start(), end))]
+    # 「没有 + 名词」（我没有钱）：只删「没」，剩下「有钱」
+    if neg in ('没有', '沒有'):
+        return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
+                      [{'edits': [(m.start(), m.start() + len(neg), '有')],
+                        'note': f'{neg} → 有'}], 0.95,
+                      (m.start(), m.start() + len(neg)))]
+    # 「不 + 形容词/助动词」：直接删掉「不」
+    if neg == '不' and re.match(r'[\u4e00-\u9fff]', tr[at:at + 1] or ' '):
+        nxt2 = tr[at:at + 2]
+        if nxt2 and (nxt2 in _ZH_ADJ_LIKE or tr[at:at + 1] in _ZH_ADJ_LIKE
+                     or any(tr.startswith(x, at) for x in _ZH_MODAL_NEGATABLE)):
             return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
-                          [{'edits': [(m.start(), m.end(), new)],
-                            'note': f'{m.group()} → {new}'}], 0.95, (m.start(), m.end()))]
-        m = re.search(r'(不|没|沒)([\u4e00-\u9fff]{1,3})', tr)
-        if m:
-            new = m.group(2) + ('了' if m.group(1) in ('没', '沒') else '')
-            return [_slot('polarity', '肯否（句子到底有没有否定）', ev,
-                          [{'edits': [(m.start(), m.end(), new)],
-                            'note': f'{m.group()} → {new}'}], 0.95, (m.start(), m.end()))]
+                          [{'edits': [(m.start(), at, '')], 'note': '「不」被去掉'}],
+                          0.95, (m.start(), at))]
     return []
 
 
@@ -2198,12 +2506,16 @@ def _zh_tense_slot(tr, jf):
     hui = '會' if trad else '会'
     if not _zh_single_clause(tr) or _zh_imperative(tr):
         return []
+    if re.search(r'[把被让讓使]', tr):
+        return []          # 把字句的谓语是 V+给/V+成 这类复合结构，时体标记插不进去
+    if re.search(r'[给給跟和對对向為为從从往朝替]', tr[1:]):
+        return []          # 「她给我会写信」✗：时体标记也得放在介词前面
     if jf['tail_past'] and jf['past_count'] >= 1 and '了' in tr:
         if any(t in tr for t in _ZH_PAST_TIME):
             return []
         ev = '日文句尾带过去助動詞「た」（ました／だった），说的是已经发生的事'
         got = _zh_find_verb(tr)
-        if got and got[3] == 'le':
+        if got and got[3] == 'le' and got[2] not in _ZH_ADJ_LIKE:
             s, e, v, _ = got
             return [_slot('tense', '时制（已经发生 vs 还没发生）', ev,
                           [{'edits': [(s, e, hui + v)], 'note': f'{tr[s:e]} → {hui}{v}'}],
@@ -2310,6 +2622,7 @@ _AXIS_LABEL = {
     'polarity': '肯否', 'tense': '时制', 'role': '施受', 'direction': '起讫点',
     'comparative': '比较方向', 'conj': '分句逻辑', 'modal': '情态',
     'quant': '频度量化', 'place': '方位', 'number': '数量', 'time': '时间',
+    'lexical': '具体名词',
     'person': '人称',
 }
 
@@ -2353,11 +2666,58 @@ def _sane(option, answer, lang):
     return 0.55 <= ratio <= 1.8
 
 
-def build_contrast(jp_text, translation, rng=None, min_quality=0.0):
+# ================================================================
+# 八之一、难度：这道题逼你听日文的哪一段？
+# ================================================================
+# 日语是谓语后置的：人称代词在句首，否定/时制/情态在句尾，数量·方位·时间·
+# 格助词（谁对谁做）在句中。所以「人称 × 肯否」这种组合，只要听清开头一个词
+# 和结尾一个词就能选对，中间全漏掉也不影响 —— 这正是「听起来还是太简单」的
+# 根源。给每条轴标上它锚定的听辨区，优先挑逼人听句子中段的组合。
+_AXIS_ZONE = {
+    'polarity': 'tail', 'tense': 'tail', 'modal': 'tail',
+    'person': 'head',
+    'role': 'mid', 'number': 'mid', 'time': 'mid', 'place': 'mid',
+    'direction': 'mid', 'quant': 'mid', 'conj': 'mid', 'comparative': 'mid',
+    'lexical': 'mid',
+}
+
+
+def _slot_zone(slot, tr):
+    """这条轴要求听日文的哪一段：head（句首人称）/ mid（句中成分）/ tail（句尾谓语）。"""
+    if slot['axis'] != 'person':
+        return _AXIS_ZONE.get(slot['axis'], 'mid')
+    # 人称轴改的是句首主语还是句中的宾语/属格，难度差很远
+    return 'head' if slot['span'][0] <= max(2, len(tr) * 0.15) else 'mid'
+
+
+def _zone_score(zones):
+    sc = 2.0 if 'mid' in zones else 0.0
+    if len(zones) >= 2:
+        sc += 1.0
+    if len(zones) >= 3:
+        sc += 0.5
+    return sc
+
+
+def _difficulty_of(zones):
+    sc = _zone_score(zones)
+    return 'hard' if sc >= 3 else ('medium' if sc >= 2 else 'easy')
+
+
+_DIFF_RANK = {'easy': 0, 'medium': 1, 'hard': 2}
+
+
+def build_contrast(jp_text, translation, rng=None, min_quality=0.0,
+                   min_difficulty=None):
     """核心入口：把一条真实译文改写成「四选一」的最小对立选项组。
 
     返回 None 表示这句话凑不出合格的对立组（缺日文侧证据、结构认不出、
-    或者改写结果通不过形式质检）——调用方应当换一句，而不是降低门槛。
+    改写结果通不过形式质检，或者难度达不到 min_difficulty）——
+    调用方应当换一句，而不是降低门槛。
+
+    min_difficulty ∈ {'easy','medium','hard'}：'hard' 只要「必须听句子中段」
+    的题（数量/方位/施受/时间…），把「只听开头认人称 + 只听结尾认否定」那类
+    送分题挡在外面。
     """
     rng = rng or random
     jp_text = (jp_text or '').strip()
@@ -2381,7 +2741,9 @@ def build_contrast(jp_text, translation, rng=None, min_quality=0.0):
     slots.sort(key=lambda s: (-s['quality'], s['span'][0]))
     tidy = _tidy_en if lang == 'en' else _tidy_zh
 
-    # ---- 版式 1：2×2 矩阵（优先，两个轴都要听懂） ----
+    cands = []
+
+    # ---- 版式 1：2×2 矩阵（两个轴都要听懂） ----
     for a in range(len(slots)):
         for b in range(a + 1, len(slots)):
             sa, sb_ = slots[a], slots[b]
@@ -2389,6 +2751,10 @@ def build_contrast(jp_text, translation, rng=None, min_quality=0.0):
                 continue
             # 否定 × 频度会叠出「always doesn't / 从不…不…」这种绕口的双重否定
             if {sa['axis'], sb_['axis']} == {'polarity', 'quant'}:
+                continue
+            # 时制 × 时间叠起来会出现「I will get hit yesterday」这种自相矛盾的
+            # 第四项——不用听懂也能排除，等于白送分
+            if {sa['axis'], sb_['axis']} == {'tense', 'time'}:
                 continue
             alt_a, alt_b = sa['alts'][0], sb_['alts'][0]
             if not _edits_disjoint(alt_a['edits'], alt_b['edits']):
@@ -2403,40 +2769,40 @@ def build_contrast(jp_text, translation, rng=None, min_quality=0.0):
                 continue
             audit = [
                 {'option': tr, 'is_answer': True, 'changes': []},
-                {'option': o_a, 'is_answer': False,
-                 'changes': [_chg(sa, alt_a)]},
-                {'option': o_b, 'is_answer': False,
-                 'changes': [_chg(sb_, alt_b)]},
+                {'option': o_a, 'is_answer': False, 'changes': [_chg(sa, alt_a)]},
+                {'option': o_b, 'is_answer': False, 'changes': [_chg(sb_, alt_b)]},
                 {'option': o_ab, 'is_answer': False,
                  'changes': [_chg(sa, alt_a), _chg(sb_, alt_b)]},
             ]
-            order = list(range(4))
-            rng.shuffle(order)
-            return {
+            zones = {_slot_zone(sa, tr), _slot_zone(sb_, tr)}
+            cands.append({
                 'lang': lang, 'answer': tr, 'structure': 'matrix_2x2',
                 'axes': [sa['axis'], sb_['axis']],
                 'axis_labels': [sa['label'], sb_['label']],
-                'options': [opts[i] for i in order],
-                'audit': [audit[i] for i in order],
+                'options': opts, 'audit': audit,
                 'evidence': [sa['evidence'], sb_['evidence']],
-            }
+                'zones': sorted(zones), 'difficulty': _difficulty_of(zones),
+                '_score': _zone_score(zones),
+                '_q': sa['quality'] + sb_['quality'],
+            })
 
     # ---- 版式 1b：同一个谓语上的「肯否 × 时制」融合矩阵 ----
     # went / didn't go / will go / won't go —— 这是最常见也最难的一组对立，
     # 但两条轴改的是同一个动词，按区间判断必然重叠，通用路径拼不出来。
     fused = _fused_polarity_tense(tr, jf, lang, tidy)
     if fused:
-        order = list(range(4))
-        rng.shuffle(order)
-        fused['options'] = [fused['options'][i] for i in order]
-        fused['audit'] = [fused['audit'][i] for i in order]
-        return fused
+        zones = {'tail'}
+        fused.update(zones=sorted(zones), difficulty=_difficulty_of(zones),
+                     _score=_zone_score(zones), _q=1.7)
+        cands.append(fused)
 
     # ---- 版式 2：同一槽位四个互斥取值 ----
     for s in slots:
         if len(s['alts']) < 3:
             continue
-        opts, audit, used_groups = [tr], [{'option': tr, 'is_answer': True, 'changes': []}], set()
+        opts = [tr]
+        audit = [{'option': tr, 'is_answer': True, 'changes': []}]
+        used_groups = set()
         for alt in s['alts']:
             # 四个选项里出现两个近义值（although / even though）等于白送一次排除
             group = _synonym_group(alt['edits'][0][2])
@@ -2452,16 +2818,30 @@ def build_contrast(jp_text, translation, rng=None, min_quality=0.0):
                 break
         if len(opts) != 4:
             continue
-        order = list(range(4))
-        rng.shuffle(order)
-        return {
+        zones = {_slot_zone(s, tr)}
+        cands.append({
             'lang': lang, 'answer': tr, 'structure': 'four_way_slot',
             'axes': [s['axis']], 'axis_labels': [s['label']],
-            'options': [opts[i] for i in order],
-            'audit': [audit[i] for i in order],
-            'evidence': [s['evidence']],
-        }
-    return None
+            'options': opts, 'audit': audit, 'evidence': [s['evidence']],
+            'zones': sorted(zones), 'difficulty': _difficulty_of(zones),
+            '_score': _zone_score(zones), '_q': s['quality'],
+        })
+
+    if not cands:
+        return None
+    # 先按「逼你听多少」排，再按规则置信度排；同分随机，避免同一句每次都出同一题
+    rng.shuffle(cands)
+    cands.sort(key=lambda c: (-c['_score'], -c['_q']))
+    got = cands[0]
+    if min_difficulty and _DIFF_RANK[got['difficulty']] < _DIFF_RANK[min_difficulty]:
+        return None
+    got.pop('_score', None)
+    got.pop('_q', None)
+    order = list(range(4))
+    rng.shuffle(order)
+    got['options'] = [got['options'][i] for i in order]
+    got['audit'] = [got['audit'][i] for i in order]
+    return got
 
 
 _SYNONYM_GROUPS = [
