@@ -74,6 +74,11 @@ CHUNK_CASES = [
     # 课本 OCR 回归：「おわんももとへ」应为「おわんを口もとへ」。
     ('それで、おわんを口もとへ持ってきて、吸う習慣がついた。',
      ['それで', 'おわんを', '口もとへ', '持ってきて', '吸う習慣が', 'ついた']),
+    # 「という」是引用/命名接续，不得拆成「坂本と｜いう日本人…」。
+    ('先週、坂本という日本人留学生と知り合いました。',
+     ['先週', '坂本という日本人留学生と', '知り合いました']),
+    ('身を飾るという働きも、たいへん重要になっています。',
+     ['身を', '飾るという働きも', 'たいへん重要になっています']),
 ]
 for text, want in CHUNK_CASES:
     p = sb.parse_sentence(text)
@@ -159,6 +164,19 @@ check(not r['ok'] and ('分句' in r['feedback'] or '谓语' in r['feedback']),
       f'跨区移动应判错（{r["feedback"]}）')
 r = sb.check_arrangement(specB, ['t0', 't1', 't2', 't3'])
 check(r['ok'], '原序应判对')
+
+# 用户实测回归：读点也可只是状语后的停顿，不是硬分句边界。
+# 「このように、色は…」与「色はこのように…」均为正确语序。
+p_soft, spec_soft = _spec_of('このように、色は人々にいろいろな感じを与え、生活に役立っているのです。')
+soft_surfs = [c['surface'] for c in p_soft['chunks']]
+check(soft_surfs == ['このように', '色は', '人々に', 'いろいろな感じを', '与え', '生活に', '役立っているのです'],
+      f'读点回归句切块稳定：{soft_surfs}')
+r = sb.check_arrangement(spec_soft, ['t1', 't0', 't2', 't3', 't4', 't5', 't6'])
+check(r['ok'], f'「色はこのように…」是同分句内状语换序，应判对（{r["feedback"]}）')
+# 真正的谓语读点仍然是硬边界，「生活に」不得越过「与え、」。
+r = sb.check_arrangement(spec_soft, ['t0', 't1', 't2', 't3', 't5', 't4', 't6'])
+check(not r['ok'] and '分句' in r['feedback'],
+      f'谓语后的读点仍须阻止跨分句（{r["feedback"]}）')
 
 # 引用と句：两种语序均判对
 p3, specC = _spec_of('彼は来ないかもしれないと言っていた。')

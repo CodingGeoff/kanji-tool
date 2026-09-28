@@ -18,18 +18,25 @@ nav{display:flex;gap:4px;flex-wrap:wrap}
 nav button{border:none;background:none;padding:8px 14px;font-size:14px;cursor:pointer;border-radius:8px;color:var(--sub)}
 nav button.active{background:var(--accent);color:#fff}
 nav button .badge{background:var(--gold);color:#fff;border-radius:9px;padding:1px 7px;font-size:11px;margin-left:4px}
-main{max-width:980px;margin:0 auto;padding:22px 16px 80px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}
+main{max-width:980px;margin:0 auto;padding:22px 16px 80px;min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px;min-width:0;overflow-wrap:anywhere}
 .muted{color:var(--sub);font-size:13px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0}
+.row>*{min-width:0;max-width:100%}
+img,video,canvas,svg{max-width:100%;height:auto}
 button.btn{border:1px solid var(--line);background:#fff;padding:8px 16px;border-radius:9px;cursor:pointer;font-size:14px}
 button.btn:hover{border-color:var(--accent);color:var(--accent)}
 button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.btn.green{background:var(--accent2);border-color:var(--accent2);color:#fff}
 button.btn.warn{background:#c77f38;border-color:#c77f38;color:#fff}
 button.btn.danger{color:#b5495b}
-input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff}
+input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff;max-width:100%;min-width:0}
 textarea{width:100%;min-height:90px;resize:vertical}
+/* 所有配置弹窗共用可收缩网格：1fr 默认的 min-content 会被长 select
+   撑出手机视口，必须显式使用 minmax(0,1fr)。 */
+.cfg-grid{margin-top:12px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 12px;align-items:center;font-size:14px;min-width:0}
+.cfg-grid>*{min-width:0;max-width:100%}
+.cfg-grid>div,.cfg-grid>select{width:100%}
 ruby{ruby-position:over}
 rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
 /* 存疑读音：琥珀色注音 + 底部点线，低调但可辨识 */
@@ -83,7 +90,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .rag-pill.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .rag-group{border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px 14px;margin-top:12px}
 .rag-group h4{font-size:14px;margin-bottom:8px}
-.rag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.rag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:10px}
 .rag-card{border:1px solid var(--line);border-radius:14px;padding:12px;background:#fff}
 .rag-card .head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
 .rag-card .title{font-weight:700;overflow-wrap:anywhere}
@@ -180,7 +187,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .verwarn{margin-top:10px;padding:8px 12px;border-radius:9px;background:#fdf3e7;color:#c77f38;font-size:13px;line-height:1.5}
 
 /* ---------- v16 教育心理学深度模块 ---------- */
-.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px;margin-top:12px}
 .psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .psy-card h4{margin:0 0 8px 0;font-size:15px}
 .psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
@@ -689,7 +696,8 @@ async function showAbout(){
 
 /* ---------- v13 挖空练习独立界面 ---------- */
 .quiz-wrap{max-width:780px;margin:0 auto}
-.quiz-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.quiz-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.quiz-top>button:first-child{white-space:nowrap;flex:0 0 auto}
 .quiz-prog{font-size:15px;font-weight:700}
 .quiz-q{font-size:27px;line-height:2.6;margin:18px 0 6px;overflow-wrap:anywhere}
 .cloze-blank{display:inline-flex;align-items:center;justify-content:center;
@@ -756,9 +764,19 @@ async function showAbout(){
 .sb-mode.adv{background:#fdf0e8;color:#c26a2d}
 .sb-swapnote{font-size:12.5px;color:#a08c5a;background:#fdf6e8;border-radius:8px;
   padding:5px 10px;margin-top:8px;display:inline-block}
-@media(max-width:600px){.sb-tile{font-size:17.5px;padding:8px 11px}.sb-pairs{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){
+  .sb-tile{font-size:17.5px;padding:8px 11px;max-width:100%;overflow-wrap:anywhere;white-space:normal}
+  .sb-pairs{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .cfg-grid{grid-template-columns:minmax(0,1fr);gap:5px}
+  .cfg-grid>span.muted:not(:first-child){margin-top:8px}
+  .cfg-grid>select,.cfg-grid>input,.cfg-grid>div{width:100%!important;justify-self:stretch!important}
+  #bkModal{padding:10px!important}
+  #bkModal>.card{padding:15px 13px!important;width:100%!important;overflow-x:hidden}
+  .quiz-top>.sb-badges{flex-basis:100%}
+  .quiz-top>.sb-badges .tag,.quiz-top>.sb-badges .sb-mode{max-width:100%;overflow-wrap:anywhere}
+}
 /* ---------- v15 出题配置面板 ---------- */
-.qcfg-grid{display:grid;grid-template-columns:110px 1fr 52px;gap:8px 10px;align-items:center;margin-top:12px}
+.qcfg-grid{display:grid;grid-template-columns:110px minmax(0,1fr) 52px;gap:8px 10px;align-items:center;margin-top:12px}
 .qcfg-grid .lbl{font-size:14px;font-weight:600}
 .qcfg-slider{width:100%}
 .qcfg-pct{font-size:13px;color:var(--accent);font-weight:700;text-align:right}
@@ -773,7 +791,7 @@ async function showAbout(){
 .qcfg-prev .s{font-size:18px;line-height:1.9}
 
 /* ---------- v16 教育心理学深度模块 ---------- */
-.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px;margin-top:12px}
 .psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .psy-card h4{margin:0 0 8px 0;font-size:15px}
 .psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
@@ -2486,7 +2504,7 @@ async function bkCfgOpen(){
   const c=bkCfg||{};
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>⚙ 学习配置（每个环节都可自定义）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="cfg-grid">
       <span class="muted">例句来源</span><select id="cfgSrc">
         <option value="book" ${c.example_source==='book'?'selected':''}>仅本书句子</option>
         <option value="corpus" ${c.example_source==='corpus'?'selected':''}>仅全库语料</option>
@@ -2950,7 +2968,7 @@ async function sbCfgOpen(){
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🧩 组句练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
     <div class="muted" style="margin-top:6px;font-size:12.5px">「初级/高级模式」与「N 级难度」是<b>两条独立轴</b>：模式决定词块形态（是否带混淆干扰、是否语料换词），难度决定选句的语法级别，可自由组合。</div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="sbcOn" ${c.enabled!==false?'checked':''}><span>开启组句练习</span></label>
       <span class="muted">模式（题目形态）</span><select id="sbcMode">
         <option value="basic" ${c.mode!=='advanced'?'selected':''}>初级 —— 只给所需词块（默认语料换词变体）</option>
@@ -3161,7 +3179,7 @@ async function lsCfgOpen(){
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
     <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从四条长度、字面相近的真实语料原句中挑出录音句；绝不机械换词造句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
         ${LS_LV.map(l=>`<option value="${l}" ${c.level===l?'selected':''}>${l==='any'?'不限（随机）':l+' 级语法句'}</option>`).join('')}</select>

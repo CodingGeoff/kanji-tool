@@ -240,6 +240,13 @@ def _attach(cur, tok):
     if (p1 == '動詞' and tok['lemma'] == '為る' and last['p1'] == '名詞'
             and 'サ変' in last['p3']):
         return True
+    # 引用・命名的「という」是一个不可拆的接续。UniDic 将这里的「と」标作
+    # 格助詞；若按普通文节切分会产生「坂本と｜いう日本人…」甚至独立的
+    # 「いう」词块，既不自然，也会错误放行词块跨越连体依存关系。
+    if (p1 == '動詞' and tok['lemma'] == '言う'
+            and tok['s'] in ('いう', '言う') and tok['cf'].startswith('連体形')
+            and last['s'] == 'と' and last['p1'] == '助詞'):
+        return True
     # 非自立动词/形容词（ている/てしまう/ておく/てもいい/になる/にする/よくなる）
     if p1 in ('動詞', '形容詞') and tok['p2'] == '非自立可能':
         if last['p2'] == '接続助詞' and last['s'] in ('て', 'で'):
@@ -311,6 +318,12 @@ def _is_adverbial(c):
         return True
     if h['p1'] == '形容詞' and h['cf'].startswith('連用形') and len(toks) == 1:
         return True
+    # 形状词的副词形：静かに／このように。UniDic 将「に」分析成
+    # 断定助动词「だ」的連用形，整体仍是可在同一分句内移动的状语。
+    if (h['p1'] in ('形状詞', '連体詞') and len(toks) >= 2
+            and toks[-1]['p1'] == '助動詞'
+            and toks[-1]['cf'].startswith('連用形-ニ')):
+        return True
     return False
 
 
@@ -356,10 +369,18 @@ def _merge_chunks(chunks):
 
 
 def _zone_boundary_after(c):
-    """块后是否切区：读点 / 块尾接续助词（ば/て/ので/から/のに/たら…）"""
-    if c['comma_after']:
-        return True
+    """块后是否切区：谓语后的读点 / 块尾接续助词。
+
+    日语读点不等于分句边界。尤其「このように、」「先週、」「私は、」只是
+    主题/状语后的可选停顿，不能据此禁止它们在同一分句内换序；只有读点前已
+    出现用言，或以「で」等连用断定收尾时，才把它视为可靠的分句边界。
+    """
     last = _c_last(c)
+    if c['comma_after']:
+        has_predicate = any(t['p1'] in ('動詞', '形容詞') for t in c['toks'])
+        copular_link = (last['p1'] == '助動詞' and last['s'] in ('で', 'だっ'))
+        if has_predicate or copular_link:
+            return True
     if last['p2'] == '接続助詞':
         return True
     # ので/のに：準体助詞の + 助動詞だ(で/に)
