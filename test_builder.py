@@ -138,7 +138,8 @@ r = sb.check_arrangement(spec, ['t4', 't0', 't1', 't2', 't3'])
 check(not r['ok'] and '谓语' in r['feedback'], f'谓语错位应判错并提示（{r["feedback"]}）')
 # 缺块
 r = sb.check_arrangement(spec, ['t0', 't1', 't2', 't4'])
-check(not r['ok'] and '少用' in r['feedback'], '缺块应判错并指出缺了什么')
+check(not r['ok'] and '完整目标句' in r['feedback'] and '少用' in r['feedback'],
+      '即使所选片段自身语法正确，缺块仍应判错并明确要求复原完整句')
 # 重复块
 r = sb.check_arrangement(spec, ['t0', 't0', 't1', 't2', 't3', 't4'])
 check(not r['ok'], '重复用块应判错')

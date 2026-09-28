@@ -11,17 +11,16 @@
 语义理解的听力理解题（篇章、推论、话者意图）见 ai_item_writer.py ——
 那条路径显式经过 LLM 起草 + 人工复核，绝不假装规则引擎能替代理解。
 
-本模块提供两种可无限量、零人工介入自动生成的题型：
+本模块提供三种自动题型：
 
-  1. meaning       听后选义：播放一句语料/课本/歌词录音，从 4 个候选翻译里
-                   选出正确释义。要求该句在库中已有人工/AI译文（复用
-                   sentence_builder 的公平性铁律：没有译文就不能拿它当
-                   语义判分的题目）。干扰项来自其它句子的真实译文，
-                   不是编造出来的假译文。
-  2. discriminate  听音辨句：播放一句录音，从 4 个真实语料句中选出完全
-                   一致的一句。干扰项优先选择长度和字面相近的完整原句，绝不
-                   再把名词机械塞进另一句话（这种做法会生成「友達して」或
-                   「国民だ」等语法/语义垃圾）；不需要译文，适配歌词等语料。
+  1. meaning       听后选义：从 4 个同语言译文中选义。
+  2. discriminate  听音辨句：从 4 条真实完整语料中辨认原句。
+  3. cloze         双空最小对立：题面同时挖掉一个词汇/格成分和一个
+                   时态・极性成分，四个选项是二者的 2×2 组合。错误极性可让
+                   意义完全相反（如「ている」↔「ていない」），词汇项优先
+                   使用同助词+同谓语的语料实证搭配。候选整句全部重新经过
+                   语法门禁；这是规则引擎可安全实现的“细微差别”，不冒充
+                   Python 库能够自动理解任意句子的深层语义。
 
 难度轴（与组句练习保持同样的两条独立轴哲学）：
   - level：句子选材难度（复用 sentence_builder._sentence_level 的语法
@@ -58,7 +57,8 @@ DEFAULT_CFG = {
     'level': 'any',              # any | N5..N1 —— 句子选材难度
     'scope': 'corpus',           # corpus | book | mixed | lyric（与组句练习同义）
     'count': 6,
-    'types': {'meaning': 60, 'discriminate': 40},   # 题型占比（自动归一）
+    # 双空最小对立占最高比重，避免只听见一个简单词就能排除。
+    'types': {'meaning': 30, 'discriminate': 25, 'cloze': 45},
     'rate': 'normal',            # slow | slower | normal | fast —— 听力特有难度轴
                                   # （与 /api/tts 的 RATES 命名完全一致，前端直接透传）
     'max_plays': 3,              # 每题最多重播次数，0=不限
@@ -113,11 +113,12 @@ def _sanitize_cfg(cfg):
     except Exception:
         cfg['max_len'] = 60
     t = cfg.get('types') or {}
-    m = max(0, int(t.get('meaning', 60) or 0))
-    d = max(0, int(t.get('discriminate', 40) or 0))
-    if m + d == 0:
-        m, d = 60, 40
-    cfg['types'] = {'meaning': m, 'discriminate': d}
+    m = max(0, int(t.get('meaning', 30) or 0))
+    d = max(0, int(t.get('discriminate', 25) or 0))
+    c = max(0, int(t.get('cloze', 45) or 0))
+    if m + d + c == 0:
+        m, d, c = 30, 25, 45
+    cfg['types'] = {'meaning': m, 'discriminate': d, 'cloze': c}
     cfg['enabled'] = bool(cfg.get('enabled', True))
     return cfg
 
@@ -259,6 +260,119 @@ def _build_discriminate_q(row, sentence_pool):
             'distractor_source': 'attested_sentences'}
 
 
+# ================================================================
+# 题型 3：双空最小对立（词汇/格成分 × 时态/极性）
+# ================================================================
+# 只收录无需动词活用生成器也能安全替换的完整表面形；顺序最长优先。
+# 通用“反义词库”无法判断语境和搭配，因此只生成可复验的形态极性对立。
+_POLARITY_FORMS = (
+    ('ていませんでした', 'ていました'), ('ていました', 'ていませんでした'),
+    ('でいませんでした', 'でいました'), ('でいました', 'でいませんでした'),
+    ('ていません', 'ています'), ('ています', 'ていません'),
+    ('でいません', 'でいます'), ('でいます', 'でいません'),
+    ('ていなかった', 'ていた'), ('ていた', 'ていなかった'),
+    ('でいなかった', 'でいた'), ('でいた', 'でいなかった'),
+    ('ていない', 'ている'), ('ている', 'ていない'),
+    ('でいない', 'でいる'), ('でいる', 'でいない'),
+    ('ませんでした', 'ました'), ('ました', 'ませんでした'),
+    ('ません', 'ます'), ('ます', 'ません'),
+    ('ではありませんでした', 'でした'), ('でした', 'ではありませんでした'),
+    ('ではありません', 'です'), ('です', 'ではありません'),
+)
+
+
+def _replace_once_at(text, start, old, new):
+    return text[:start] + new + text[start + len(old):]
+
+
+def _polarity_variant(text):
+    """返回靠近句尾的时态/极性最小对立及字符位置；无把握则不出题。"""
+    cutoff = max(0, len(text) - 20)
+    for old, new in sorted(_POLARITY_FORMS, key=lambda pair: len(pair[0]), reverse=True):
+        pos = text.rfind(old)
+        if pos < cutoff:
+            continue
+        changed = _replace_once_at(text, pos, old, new)
+        if _sound_sentence(changed):
+            return {'text': changed, 'from': old, 'to': new, 'start': pos,
+                    # 表中每一对均保持时态而翻转肯定/否定；从否定变肯定也同样
+                    # 属于极性反转，不能只检查 new 是否含否定标记。
+                    'opposite': True}
+    return None
+
+
+def _lexical_variant(text, parsed):
+    """优先实证名词搭配；不足时退到格关系对立，完整句均重新质检。"""
+    got = sb._swap_variant(text, parsed)
+    if got:
+        changed, info = got
+        old = info['from'] + info['particle']
+        new = info['to'] + info['particle']
+        pos = text.find(old)
+        if pos >= 0 and _sound_sentence(changed):
+            return {'text': changed, 'from': old, 'to': new, 'start': pos,
+                    'kind': '语料实证词汇'}
+
+    for chunk in parsed.get('chunks') or []:
+        old = chunk['surface']
+        pos = text.find(old)
+        if pos < 0:
+            continue
+        for new in sb._particle_variants(chunk):
+            changed = _replace_once_at(text, pos, old, new)
+            if _sound_sentence(changed):
+                return {'text': changed, 'from': old, 'to': new, 'start': pos,
+                        'kind': '格关系辨析'}
+    return None
+
+
+def _build_cloze_q(row):
+    """同时考两个听辨点，四项形成 2×2 组合，不能靠听到一个词秒选。"""
+    text = (row.get('text') or '').strip()
+    if not _sound_sentence(text):
+        return None
+    parsed = sb.parse_sentence(text)
+    if not parsed:
+        return None
+    lex = _lexical_variant(text, parsed)
+    pol = _polarity_variant(text)
+    if not lex or not pol:
+        return None
+    if lex['start'] + len(lex['from']) > pol['start']:
+        return None
+
+    lex_only = lex['text']
+    pol_only = pol['text']
+    p2 = lex_only.rfind(pol['from'])
+    if p2 < 0:
+        return None
+    both = _replace_once_at(lex_only, p2, pol['from'], pol['to'])
+    candidates = [text, lex_only, pol_only, both]
+    if len(set(candidates)) != 4 or not all(_sound_sentence(s) for s in candidates):
+        return None
+
+    labels = [
+        f"{lex['from']}　／　{pol['from']}",
+        f"{lex['to']}　／　{pol['from']}",
+        f"{lex['from']}　／　{pol['to']}",
+        f"{lex['to']}　／　{pol['to']}",
+    ]
+    answer = labels[0]
+    random.shuffle(labels)
+    a, b = lex['start'], lex['start'] + len(lex['from'])
+    c, d = pol['start'], pol['start'] + len(pol['from'])
+    return {
+        'qtype': 'cloze', 'text': text, 'options': labels, 'answer': answer,
+        'sid': row.get('sid'), 'source': row.get('source'), 'origin': _origin(row),
+        'prompt_parts': [text[:a], text[b:c], text[d:]],
+        'blank_answers': [lex['from'], pol['from']],
+        'contrast': {'lexical_kind': lex['kind'], 'lexical_to': lex['to'],
+                     'form_to': pol['to'], 'opposite': pol['opposite']},
+        'candidate_sentences': candidates,
+        'distractor_source': 'minimal_pair_grammar_checked',
+    }
+
+
 def _origin(row):
     if row.get('source') == 'lyric':
         return f"🎵 《{row.get('song_title') or '歌词'}》"
@@ -290,47 +404,57 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     rows = [r for r in rows if cfg['min_len'] <= len((r.get('text') or '').strip()) <= cfg['max_len']]
 
     t = cfg['types']
-    ts = t['meaning'] + t['discriminate']
-    n_meaning = int(round(count * t['meaning'] / ts)) if ts else 0
-    n_disc = count - n_meaning
+    kinds = ('meaning', 'discriminate', 'cloze')
+    total_weight = sum(t[k] for k in kinds)
+    raw_targets = {k: count * t[k] / total_weight for k in kinds}
+    targets = {k: int(raw_targets[k]) for k in kinds}
+    for k in sorted(kinds, key=lambda x: raw_targets[x] - targets[x], reverse=True):
+        if sum(targets.values()) >= count:
+            break
+        targets[k] += 1
 
     translation_pool = [r.get('translation') for r in rows if (r.get('translation') or '').strip()]
-    # discriminate 的干扰项池保留完整语料行；不再拆词、换词或合成句子。
     sentence_pool = rows
+    builders = {
+        'meaning': lambda row: _build_meaning_q(row, translation_pool),
+        'discriminate': lambda row: _build_discriminate_q(row, sentence_pool),
+        'cloze': _build_cloze_q,
+    }
 
     questions, used = [], set()
+    made = {k: 0 for k in kinds}
     relax_note = False
     for relax in (False, True):
         want = None if relax else level
         for row in rows:
-            if len(questions) >= n_meaning + n_disc:
+            if len(questions) >= count:
                 break
             key = row.get('sid') or row.get('dedup') or row.get('text')
             if key in used:
                 continue
             text = (row.get('text') or '').strip()
-            if want and want != 'any':
-                lv, _ = sb._sentence_level(text)
-                if lv != want:
-                    continue
-            want_type = 'meaning' if len([q for q in questions if q['qtype'] == 'meaning']) < n_meaning else 'discriminate'
+            lv, _ = sb._sentence_level(text)
+            if want and want != 'any' and lv != want:
+                continue
+            # 优先补足目标占比；若该题无法构造，才尝试其它题型，保证宁可改变
+            # 占比也不要用低质量干扰项凑数。
+            order = sorted(kinds,
+                           key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
             got = None
-            if want_type == 'meaning':
-                got = _build_meaning_q(row, translation_pool)
-                if not got and len(questions) < n_meaning + n_disc:
-                    got = _build_discriminate_q(row, sentence_pool)
-            else:
-                got = _build_discriminate_q(row, sentence_pool)
-                if not got:
-                    got = _build_meaning_q(row, translation_pool)
+            for kind in order:
+                got = builders[kind](row)
+                if got:
+                    break
             if not got:
                 continue
+            got['level'] = lv
+            made[got['qtype']] += 1
             if relax and level != 'any':
                 got['level_relaxed'] = True
                 relax_note = True
             used.add(key)
             questions.append(got)
-        if len(questions) >= n_meaning + n_disc or level == 'any':
+        if len(questions) >= count or level == 'any':
             break
 
     random.shuffle(questions)

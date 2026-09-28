@@ -7,9 +7,10 @@
      干扰项均为真实译文、答案在选项中
   3. discriminate 题：4 个选项均为真实语料完整句、互不相同，
      答案与原句完全一致，绝不通过机械替换名词合成坏句
-  4. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
+  4. 双空最小对立：词汇/格成分与极性联合挖空、2×2 唯一答案、整句复验
+  5. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
      "仅课本" 不会泄漏语料库句子
-  5. 统计记录
+  6. 统计记录
 临时库隔离，不碰真实数据。"""
 import os
 import sys
@@ -52,7 +53,8 @@ random.seed(20260926)
 
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
-check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal', f'默认配置 {cfg}')
+check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
+      and cfg['types'].get('cloze') == 45, f'默认配置含高难度双空题：{cfg}')
 cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999, 'bogus_key': 'x'})
 check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20,
       f'保存并做边界修正（count 上限 20）：{cfg2}')
@@ -116,7 +118,36 @@ for q in disc_qs:
                           '彼に助けを求めても国民だ。'),
               f'不得生成「無駄だ」机械换词坏句：{opt}')
 
-print('== 4. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
+print('== 4. 双空最小对立：词汇/格成分 × 极性，四条完整句均质检 ==')
+cloze_row = {'sid': 900001, 'text': '彼女は毎日図書館で本を読んでいます。',
+             'translation': '她每天在图书馆看书。', 'source': 'unit_test'}
+q = ls._build_cloze_q(cloze_row)
+check(q is not None, '可生成双空最小对立题')
+if q:
+    check(q['qtype'] == 'cloze' and len(q['options']) == 4
+          and len(set(q['options'])) == 4 and q['answer'] in q['options'],
+          f'双空题 2×2 四项且答案唯一：{q}')
+    check(len(q.get('prompt_parts') or []) == 3 and len(q.get('blank_answers') or []) == 2,
+          '题面同时挖两个互不重叠的空')
+    check(q.get('distractor_source') == 'minimal_pair_grammar_checked'
+          and len(set(q.get('candidate_sentences') or [])) == 4,
+          '四个选项均对应唯一完整候选句')
+    for sent in q.get('candidate_sentences') or []:
+        check(ls._sound_sentence(sent), f'最小对立候选必须通过整句语法门禁：{sent}')
+    check(any(('ません' in s or 'ない' in s) for s in q['candidate_sentences']),
+          f'至少含一个否定极性、可产生相反意义：{q["candidate_sentences"]}')
+
+# 纯形态回归：肯定/否定与过去/非过去必须整段替换，不能留下半截活用。
+for original, expected in [
+    ('本を読んでいます。', '本を読んでいません。'),
+    ('本を読みました。', '本を読みませんでした。'),
+    ('学生です。', '学生ではありません。'),
+]:
+    pv = ls._polarity_variant(original)
+    check(pv and pv['text'] == expected,
+          f'极性最小对立 {original} → {expected}（实际 {pv}）')
+
+print('== 5. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
 bk = textbook.import_book({'title': '听力测试课本', 'author': '', 'level': '',
                            'lessons': [{'title': '第1課', 'sentences': [g[0] for g in GOOD_ZH]}]})
 book_sids = {r['sentence_id'] for r in db.get_conn().execute(
@@ -129,7 +160,7 @@ for q in d['questions']:
         check(q['sid'] in book_sids, f'"仅课本" 题目必须来自该课本：{q.get("sid")}')
 
 d0 = ls.make_quiz(count=5, scope='book', book_ids=[])
-print('== 5. 空书架诚实退化 + 关闭开关 ==')
+print('== 6. 空书架诚实退化 + 关闭开关 ==')
 with sqlite3.connect(api_db) as c0:
     c0.execute('DELETE FROM books')
     c0.execute('DELETE FROM book_lessons')
@@ -142,7 +173,7 @@ d = ls.make_quiz()
 check(d['ok'] is False and '关闭' in (d.get('reason') or ''), f'关闭开关生效：{d}')
 ls.save_listening_cfg({'enabled': True})
 
-print('== 6. 统计记录 ==')
+print('== 7. 统计记录 ==')
 r = ls.record_results([{'qtype': 'meaning', 'level': 'N4', 'ok': True},
                        {'qtype': 'discriminate', 'level': 'N4', 'ok': False}])
 check(r['ok'] and r['asked'] == 2 and r['correct'] == 1, f'计分 {r}')

@@ -572,7 +572,9 @@ def check_arrangement(spec, order_tile_ids):
         missing = [surfaces[i] for i in range(n) if i not in idx_order]
         if missing:
             return {'ok': False,
-                    'feedback': '少用了词块：' + '、'.join(missing[:3]), **base}
+                    'feedback': (f'需要复原完整目标句（共 {n} 个必要槽位）；'
+                                 '语法正确的半句也不能代替整句。少用了：' +
+                                 '、'.join(missing[:3])), **base}
         return {'ok': False, 'feedback': '词块重复或多余', **base}
     # 4) 白名单判卷（生成时已全排列语法质检）
     accepted = spec.get('accepted')

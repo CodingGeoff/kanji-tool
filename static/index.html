@@ -2828,15 +2828,16 @@ function sbRender(){
   }
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${q.swap?'把词块排成一个语法正确的句子':'把词块排成句子'}</b></div>
-    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:'<div class="muted" style="margin-top:6px">（此句暂无译文，按语法正确排列即可）</div>'}
+    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:`<div class="muted" style="margin-top:6px;line-height:1.7">（此句暂无译文：仍须填满全部 <b>${q.n_required}</b> 个句子槽位来复原完整目标句；只组成一个分句不算完成。${q.alt_group?'同一槽位出现多个候选时任选其一，不必把候选全部用上。':''}日语允许的完整句语序均认可。）</div>`}
     ${q.swap?`<div class="sb-swapnote">✨ 语料变体题：原句的「${esc(q.swap.from)}${esc(q.swap.particle)}」已按语料真实搭配换成「${esc(q.swap.to)}${esc(q.swap.particle)}」，语法结构不变</div>`:''}
     <div class="sb-area ans jp" id="sbAns"><span class="ph">点击下方词块，按顺序组成句子…</span></div>
     <div class="sb-area jp" id="sbBank">
       ${q.tiles.map((t,k)=>`<button class="sb-tile" id="sbT${k}" onclick="sbTileTap(${k})">${sbTileHTML(t)}</button>`).join('')}
     </div>
-    <div class="quiz-nav">
+    <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 / ${q.n_required} 个必要槽位</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -2858,6 +2859,11 @@ function sbSyncTiles(){
     if(b)b.style.visibility=sbQuiz.sel.includes(k)?'hidden':'visible';
   });
   const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
+  const need=$('#sbNeed');
+  if(need){
+    const real=sbQuiz.sel.filter(k=>(q.spec.tile_map||{})[q.tiles[k].id]>=0).length;
+    need.textContent=`已填 ${real} / ${q.n_required} 个必要槽位${sbQuiz.sel.length>real?`（另有 ${sbQuiz.sel.length-real} 个混淆块）`:''}`;
+  }
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
 async function sbCheck(){
@@ -3069,7 +3075,7 @@ async function lsOpen(){
   if(!d.ok||!d.questions||!d.questions.length){
     v.innerHTML=`<div class="card quiz-wrap">
       <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🎧 听力练习</b></div>
-      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：meaning 题型需要句子已有译文，discriminate 题型需要语料里有足够多同类名词可换——可在 🎧 听力配置里切换题源/放宽难度，或去语料库/AI翻译补充更多带译文的句子。'}</div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：听后选义需要译文，听音辨句需要足够多长度相近的真实句，双空最小对立需要句中同时存在可复验的词汇/格成分与极性形式。可切换题源或放宽难度。'}</div>
       <div class="quiz-nav"><button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button></div>
     </div>`;
     return;
@@ -3087,7 +3093,7 @@ function lsRender(){
   const v=$('#bkQuizView'),q=lsQuiz.qs[lsQuiz.i],n=lsQuiz.qs.length;
   lsQuiz.picked=null;lsQuiz.checked=false;_lsPlays=0;
   const sl=LS_SCOPE_LABEL[lsQuiz.scope]||'';
-  const qtypeLabel=q.qtype==='meaning'?'听后选义':'听音辨句';
+  const qtypeLabel={meaning:'听后选义',discriminate:'听音辨句',cloze:'双空最小对立'}[q.qtype]||q.qtype;
   const top=`<div class="quiz-top">
       <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
       <span class="quiz-prog">🎧 听力 ${lsQuiz.i+1} / ${n}</span>
@@ -3096,9 +3102,11 @@ function lsRender(){
       <span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
-  const hint=q.qtype==='meaning'?'听录音，选出正确的中文/英文释义':'听录音，选出与录音完全一致的那句话';
+  const hint={meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清词汇/格关系与句尾时态・极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
+  const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
+    ${clozePrompt}
     <div style="margin-top:12px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
       <div id="lsPlayBox" class="muted" style="margin-top:6px;font-size:12.5px">还没有播放过</div>
@@ -3138,11 +3146,11 @@ async function lsCheck(){
     else if(i===lsQuiz.picked)b.classList.add('ng');
   });
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
-  const swapNote=q.swapped?`<div class="muted" style="font-size:13px;margin-top:6px">🔁 干扰项把「${esc(q.swapped.from)}」换成了语料里真实出现过的「${esc(q.swapped.to.join('／'))}」——不是编造出来的假词</div>`:'';
+  const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
-    ${swapNote}
+    ${contrastNote}
     <div class="quiz-nav">
       <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid},this)">☆收藏</button>`:''}
@@ -3178,7 +3186,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从四条长度、字面相近的真实语料原句中挑出录音句；绝不机械换词造句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">新增「双空最小对立」：一句中同时挖掉词汇/格成分和句尾时态・极性，四项按 2×2 组合，必须听清两个位置；否定项可令句意完全相反。词汇优先来自同谓语的真实语料搭配，四条候选完整句全部通过语法门禁。Python 分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此系统采用可审计的保守变换，不伪造“智能理解”。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
@@ -3195,7 +3203,7 @@ async function lsCfgOpen(){
         <option value="normal" ${(!c.rate||c.rate==='normal')?'selected':''}>正常语速</option>
         <option value="fast" ${c.rate==='fast'?'selected':''}>较快（挑战）</option></select>
       <span class="muted">每组题数</span><input id="lscN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
-      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??60}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??40}" style="width:64px">%</div>
+      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??30}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??25}" style="width:64px">% ／ 双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??45}" style="width:64px">%</div>
       <span class="muted">每题最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
     </div>
     ${stHTML}
@@ -3204,7 +3212,7 @@ async function lsCfgOpen(){
 async function lsCfgSave(){
   const body={enabled:$('#lscOn').checked,level:$('#lscLevel').value,scope:$('#lscScope').value,
     rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
-    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0},
+    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0},
     max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};
   try{
     const r=await api('/api/listening/cfg',{method:'POST',body:JSON.stringify(body)});
