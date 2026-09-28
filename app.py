@@ -1928,8 +1928,24 @@ def api_discourse_quiz():
         return jsonify({'ok': False, 'reason': '未指定篇章'}), 400
     count = _num(d.get('count'), 10, 1, 40)
     diff = d.get('difficulty') if d.get('difficulty') in ('easy', 'medium', 'hard') else None
-    return jsonify(discourse.make_quiz(pid, count=count, types=d.get('types'),
-                                       difficulty=diff))
+    mode = d.get('mode') if d.get('mode') in ('choice', 'input', 'mixed') else 'mixed'
+    return jsonify(discourse.make_quiz(
+        pid, count=count, types=d.get('types'), difficulty=diff, mode=mode,
+        fresh_first=d.get('fresh_first', True) is not False,
+        secure=d.get('secure', True) is not False))
+
+
+@app.route('/api/discourse/grade', methods=['POST'])
+def api_discourse_grade():
+    """服务端判分：secure 模式下答案与解析都不下发到浏览器，判完才回传。"""
+    d = request.json or {}
+    r = discourse.grade(d.get('quiz_id'), d.get('qid'), d.get('response'))
+    return jsonify(r), (200 if r.get('ok') else 410)
+
+
+@app.route('/api/discourse/passages/<int:pid>/capacity')
+def api_discourse_capacity(pid):
+    return jsonify({'ok': True, 'capacity': discourse.capacity(pid)})
 
 
 @app.route('/api/discourse/answer', methods=['POST'])

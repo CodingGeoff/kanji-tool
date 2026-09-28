@@ -84,6 +84,16 @@ CREATE TABLE IF NOT EXISTS passage_results(
     peeked INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_presults ON passage_results(ts);
+CREATE TABLE IF NOT EXISTS passage_item_log(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    passage_id INTEGER NOT NULL,
+    stem TEXT NOT NULL,
+    qtype TEXT,
+    ts REAL,
+    ok INTEGER,
+    mode TEXT DEFAULT 'choice'
+);
+CREATE INDEX IF NOT EXISTS idx_pitem ON passage_item_log(passage_id, stem);
 '''
 
 
@@ -513,6 +523,11 @@ def conj_forms(lemma, ctype):
 def _mk(qtype, **kw):
     q = {'qtype': qtype}
     q.update(kw)
+    # stem＝这道题的「题干身份」：同一个挖空位置无论换多少套干扰项、
+    # 换选择还是填空，stem 都相同。曝光调度按 stem 记账，
+    # 这样「这篇文章还有多少题没做过」才是诚实的数字。
+    q.setdefault('stem', f"{qtype}:{q.get('sent_idx', 0)}:"
+                         f"{str(q.get('answer', ''))[:12]}")
     return q
 
 
@@ -644,10 +659,19 @@ def g_connective(P, rng):
                           '三个干扰项分别属于 ' +
                           '、'.join(CONJ[w] for w in picked) + ' 类，与正确类别语义不相邻（互斥表 CONJ_CONFLICT 已排除近义类）'],
                 explain=f'「{hit}」＝{CONJ_CLASS_DESC[cls]}。前句与后句构成{cls}关系。',
-                sent_idx=i)
+                sent_idx=i, pool_n=len(pool))
         if _valid(q):
             out.append(q)
     return out
+
+
+# 「そのうえ/そのため/そのほか…」是固定接续表达，不是照应；
+# 「多く/一部/ほとんど」是量化表达，填回去也不构成指代链。
+_FIXED_DEM = {'そのうえ', 'そのため', 'そのほか', 'そのころ', 'そのまま', 'そのあと',
+              'そのとき', 'その後', 'その間', 'その際', 'そのほう', 'この間',
+              'このため', 'このほか', 'このころ', 'このとき', 'このうち', 'その一方'}
+_ANA_STOP = {'多く', '一部', 'ほとんど', '全部', '半分', '結果', '通り', '以上',
+             '以下', '前後', '程度', '場合', '状態'}
 
 
 def g_anaphora(P, rng):
@@ -661,9 +685,13 @@ def g_anaphora(P, rng):
             if t['s'] not in ('その', 'この', 'こうした', 'そうした'):
                 continue
             nx = toks[j + 1]
-            if nx['p1'] != '名詞' or len(nx['s']) < 2:
+            if nx['p1'] != '名詞' or nx['p2'] != '普通名詞' or len(nx['s']) < 2:
+                continue
+            if nx['p3'] not in ('一般', 'サ変可能'):
                 continue
             noun = nx['s']
+            if noun in _ANA_STOP or (t['s'] + noun) in _FIXED_DEM:
+                continue
             before = ''.join(P.sents[:i])
             if noun not in before:
                 continue        # 必须是前文出现过的复现词（照应链）
@@ -685,10 +713,9 @@ def g_anaphora(P, rng):
                     evidence=[f'答案「{noun}」为原文用词，且在前文已出现（全篇共 {P.freq[noun]} 次），构成指示语照应链',
                               '三个干扰项在全篇仅出现 1 次、且不在本句中，不存在可被「' + t['s'] + '」回指的先行词'],
                     explain=f'「{t["s"]}＋名詞」必须回指前文已提到的事物，这里指的是前文的「{noun}」。',
-                    sent_idx=i)
+                    sent_idx=i, stem=f'anaphora:{i}:{j}', pool_n=len(cand))
             if _valid(q):
                 out.append(q)
-            break
     return out
 
 
@@ -741,10 +768,9 @@ def g_particle(P, rng):
                     evidence=[f'答案「{noun}{ans}」为原文原样，语料库中另有 {base} 句实证',
                               '三个干扰项与「' + noun + '」在整个语料库中共现次数为 0（零实证门禁）'],
                     explain=f'「{noun}{ans}」是本文实际使用、且语料库反复出现的搭配。',
-                    sent_idx=i)
+                    sent_idx=i, stem=f'particle:{i}:{j}', pool_n=len(distr))
             if _valid(q):
                 out.append(q)
-            break
     return out
 
 
@@ -1109,51 +1135,39 @@ def g_truth(P, rng):
 
 
 def g_fact(P, rng):
-    """数值检索：挖掉句中的数量表达，干扰项为文中出现的其它数值。"""
+    """数值检索：挖掉句中的「数值＋量词」，干扰项为文中出现的其它数量表达。
+    用正则在**原句字符串**上定位（而不是按形态素拼接），
+    否则 69.9％ 会被切成「69」「.」「9」，挖出「9％」这种根本不存在的答案。"""
+    items = []      # (句号, start, end, 原样, 数值部分, 单位)
+    for i, s in enumerate(P.sents):
+        for m in _NUM_UNIT_RE.finditer(s):
+            items.append((i, m.start(), m.end(), m.group(0), m.group(1), m.group(2)))
+    if len(items) < 2:
+        return []
     out = []
-    nums = []
-    for i, toks in enumerate(P.toks):
-        for j, t in enumerate(toks):
-            if t['p2'] != '数詞':
-                continue
-            nxt = toks[j + 1] if j + 1 < len(toks) else None
-            suf = ''
-            if nxt and (nxt['p3'] in ('助数詞可能', '助数詞') or
-                        (nxt['p1'] == '接尾辞' and nxt['p2'] == '名詞的')):
-                suf = nxt['s']
-            if not suf:
-                continue          # 光秃秃的数字不出题：没有量词就无法构成同类干扰项
-            nums.append((i, j, t['s'] + suf, t['s'], suf))
-    if len(nums) < 2:
-        return out
-    for (i, j, full, num, suf) in nums:
-        same = [f2 for (_, _, f2, n2, s2) in nums if s2 == suf and n2 != num]
-        other = [f2 for (_, _, f2, n2, s2) in nums if s2 != suf and f2 != full]
-        # 还不够 3 个就用「本文出现过的别的数字 + 本量词」现造，
-        # 这类组合在本文中一次也没出现过，同样可逐字排除
-        built = [n2 + suf for (_, _, _, n2, _) in nums
-                 if n2 != num and (n2 + suf) not in P.joined()]
-        alts = [a for a in dict.fromkeys(same + other + built) if a != full]
-        attested = set(same + other)
+    for (i, a, b, full, num, unit) in items:
+        same = [x[3] for x in items if x[5] == unit and x[3] != full]
+        other = [x[3] for x in items if x[5] != unit and x[3] != full]
+        built = [x[4] + unit for x in items
+                 if x[4] != num and (x[4] + unit) not in P.joined()]
+        alts = [x for x in dict.fromkeys(same + other + built) if x != full]
         if len(alts) < 3:
             continue
-        toks = P.toks[i]
-        k = j + (2 if suf else 1)
-        head = ''.join(x['s'] for x in toks[:j])
-        tail = ''.join(x['s'] for x in toks[k:])
+        attested = set(same + other)
+        src = P.sents[i]
         q = _mk('fact',
                 title='数值检索',
                 prompt='本文によると、空欄に入る数量表現はどれか',
-                context=head + '＿＿' + tail,
+                context=src[:a] + '＿＿' + src[b:],
                 options=alts[:3] + [full], answer=full,
                 objectivity='verbatim',
                 evidence=[f'答案「{full}」是本文第 {i+1} 句原文原样',
                           '干扰项构成：' + '、'.join(
-                              f'{a}（{"文中他处出现" if a in attested else "本文从未出现的数量组合"}）'
-                              for a in alts[:3]),
+                              f'{x}（{"文中他处出现" if x in attested else "本文从未出现的数量组合"}）'
+                              for x in alts[:3]),
                           '任一干扰项都可以回原句逐字核对排除，判定不依赖理解'],
                 explain='回到原句逐字核对即可，训练的是定位与看清量词。',
-                sent_idx=i)
+                sent_idx=i, stem=f'fact:{i}:{a}', pool_n=len(alts))
         if _valid(q):
             out.append(q)
     return out
@@ -1236,7 +1250,7 @@ def g_absent(P, rng):
     out = []
     rng.shuffle(inside)
     rng.shuffle(outside)
-    for k in range(min(3, len(outside))):
+    for k in range(min(8, len(outside), len(inside) // 3)):
         ins = inside[k * 3:k * 3 + 3]
         if len(ins) < 3:
             break
@@ -1253,7 +1267,7 @@ def g_absent(P, rng):
                           + '、'.join(f'{w}×{P.freq[w]}' for w in ins) + '）',
                           f'答案「{outside[k]}」在本文全文中字符串检索为 0 次，取自语料库其它句子'],
                 explain='纯扫读题：能否在限定时间里确认一个词「不在」文中。',
-                sent_idx=0)
+                sent_idx=0, stem=f'absent:{outside[k]}', pool_n=len(inside))
         if _valid(q):
             out.append(q)
     return out
@@ -1261,18 +1275,33 @@ def g_absent(P, rng):
 
 def g_headword(P, rng):
     """复现词链：全篇高频实词被全部挖空，考「这篇文章到底在反复说什么」。"""
-    top = [w for w, n in P.freq.most_common(6) if n >= 3 and len(w) >= 2]
-    if not top:
-        return []
-    key = top[0]
-    hits = [i for i, s in enumerate(P.sents) if key in s][:3]
+    top = [w for w, n in P.freq.most_common(8) if n >= 3 and len(w) >= 2]
+    out = []
+    for key in top[:4]:
+        q = _headword_item(P, rng, key)
+        if q:
+            out.append(q)
+    return out
+
+
+def _blank_token(P, i, key):
+    """只把「独立成词」的那个 key 挖掉；若 key 只是更长词的一部分，返回 None。"""
+    toks = P.toks[i]
+    if not any(t['s'] == key for t in toks):
+        return None
+    return ''.join('＿＿' if t['s'] == key else t['s'] for t in toks)
+
+
+def _headword_item(P, rng, key):
+    hits = [i for i, s in enumerate(P.sents)
+            if key in s and _blank_token(P, i, key)][:3]
     if len(hits) < 2:
-        return []
+        return None
     cand = [w for w, n in P.freq.items() if n == 1 and len(w) >= 2 and w != key]
     rng.shuffle(cand)
     if len(cand) < 3:
-        return []
-    ctx = '\n'.join(P.sents[i].replace(key, '＿＿') for i in hits)
+        return None
+    ctx = '\n'.join(_blank_token(P, i, key) for i in hits)
     q = _mk('headword',
             title='复现词链',
             prompt='下の複数の文に共通して入る語を選べ',
@@ -1282,8 +1311,8 @@ def g_headword(P, rng):
             evidence=[f'答案「{key}」是原文用词，全篇出现 {P.freq[key]} 次，是贯穿全篇的复现主词',
                       f'三个干扰项全篇各只出现 1 次，不可能同时填入这 {len(hits)} 个位置'],
             explain='能同时填进多处空的只有全篇的复现主词——这正是把握文章话题的抓手。',
-            sent_idx=hits[0])
-    return [q] if _valid(q) else []
+            sent_idx=hits[0], stem=f'headword:{key}', pool_n=len(cand))
+    return q if _valid(q) else None
 
 
 # ================================================================
@@ -1379,10 +1408,9 @@ def g_transitivity(P, rng):
                         f'文体轴：全篇为{"敬体（です・ます）" if style == "polite" else "简体（だ・である）"}，须保持统一',
                         '答案＝原文原样；四个选项是 自他 × 文体 的 2×2，两轴各自 2:2 平分'],
                     explain=f'「{"〜が" if kind == "自" else "〜を"}」搭配{kind}動詞。答案「{ans}」是原文形式。',
-                    sent_idx=i)
+                    sent_idx=i, stem=f'transitivity:{i}:{vi}')
             if _valid(q):
                 out.append(q)
-            break
     return out
 
 
@@ -1415,11 +1443,15 @@ def g_compound_particle(P, rng):
     干扰项必须①属于语义不冲突的类别 ②与前接名词在语料库中零共现。"""
     out = []
     keys = sorted(COMPOUND_P, key=len, reverse=True)
+    hits = []
     for i, s in enumerate(P.sents):
-        hit = next((k for k in keys if k in s), None)
-        if not hit:
-            continue
-        pos = s.index(hit)
+        for k in keys:
+            for m in re.finditer(re.escape(k), s):
+                if not any(h[0] == i and h[1] <= m.start() < h[1] + len(h[2])
+                           for h in hits):
+                    hits.append((i, m.start(), k))
+    for i, pos, hit in sorted(hits):
+        s = P.sents[i]
         if pos < 2:
             continue
         toks = tag(s[:pos])
@@ -1453,7 +1485,7 @@ def g_compound_particle(P, rng):
                           f'三个干扰项与前接名词「{noun}」在语料库中共现次数均为 0，'
                           '且在本文其它位置也没出现'],
                 explain=f'「{noun}{hit}」＝{cls}。机能表现选错会直接改变句子的逻辑关系。',
-                sent_idx=i)
+                sent_idx=i, stem=f'cp:{i}:{pos}', pool_n=len(distr))
         if _valid(q):
             out.append(q)
     return out
@@ -1718,7 +1750,7 @@ TYPE_LABEL = {
     'absent': '扫读辨词', 'headword': '复现词链',
     'transitivity': '自他动词×文体', 'compound_particle': '复合助词',
     'compare': '数值比较', 'pairing': '数值项目对应',
-    'chronology': '时间先后', 'heading': '小标题匹配',
+    'chronology': '时间先后', 'heading': '小标题匹配', 'multi': '多空还原',
 }
 
 # 难度：easy＝局部一眼可定位；medium＝需要跨句；hard＝需要跨段整合或语法辨析
@@ -1729,6 +1761,7 @@ DIFFICULTY = {
     'chronology': 'medium', 'heading': 'medium',
     'polite_tense': 'hard', 'insert': 'hard', 'order': 'hard',
     'transitivity': 'hard', 'compound_particle': 'hard', 'compare': 'hard',
+    'multi': 'hard',
 }
 
 # 是否「开卷题」：扫读/检索类题目本来就该对着原文做（练的是定位速度），
@@ -1738,6 +1771,121 @@ TEXT_POLICY = {
     'chronology': 'open', 'heading': 'open', 'headword': 'open',
 }
 
+
+# ================================================================
+# 7c. 多空题（组合式加难：同一句里同时挖 2 个位置）
+# ================================================================
+_MULTI_SRC = ('particle', 'compound_particle', 'connective', 'transitivity',
+              'polite_tense', 'anaphora')
+
+
+def make_multi(P, rng, pools, limit=40):
+    """把同一句里的两个独立空组合成一道多空题。
+    客观性完全继承自两个子题（各自的答案都是原文原样、各自的门禁都通过），
+    判分规则：两个空都填对才算对 —— 不存在新的主观判断。
+    组合数是 C(n,2)，这是题量从「线性」变「二次方」的关键。"""
+    by_sent = defaultdict(list)
+    for t in _MULTI_SRC:
+        for q in pools.get(t, []):
+            by_sent[q.get('sent_idx', -1)].append(q)
+    out = []
+    for si, qs in by_sent.items():
+        if len(qs) < 2:
+            continue
+        cand = []
+        for a in range(len(qs)):
+            for b in range(a + 1, len(qs)):
+                q1, q2 = qs[a], qs[b]
+                if q1['answer'] == q2['answer']:
+                    continue
+                cand.append((q1, q2))
+        rng.shuffle(cand)
+        for q1, q2 in cand[:3]:
+            ctx = _merge_context(P, si, q1, q2)
+            if not ctx:
+                continue
+            q = _mk('multi',
+                    title='多空还原',
+                    prompt='①②の空欄に入る組み合わせとして正しいものを選べ',
+                    context=ctx,
+                    options=[], answer='',
+                    objectivity=('verbatim' if q1['objectivity'] == q2['objectivity'] == 'verbatim'
+                                 else 'rule'),
+                    evidence=['① ' + q1['evidence'][0], '② ' + q2['evidence'][0],
+                              '两个空各自的门禁与单空题完全相同；本题判分＝两空都对才算对，'
+                              '没有引入任何新的判断标准'],
+                    explain=f'①＝{q1["answer"]}（{q1.get("title", "")}）；'
+                            f'②＝{q2["answer"]}（{q2.get("title", "")}）。',
+                    sent_idx=si,
+                    stem=f'multi:{q1.get("stem")}+{q2.get("stem")}')
+            # 选项＝两个空的答案/干扰项的 2×2 组合
+            d1 = [o for o in q1['options'] if o != q1['answer']]
+            d2 = [o for o in q2['options'] if o != q2['answer']]
+            if not d1 or not d2:
+                continue
+            rng.shuffle(d1)
+            rng.shuffle(d2)
+            combos = [(q1['answer'], q2['answer']), (d1[0], q2['answer']),
+                      (q1['answer'], d2[0]), (d1[0], d2[0])]
+            q['options'] = [f'① {a} ／ ② {b}' for a, b in combos]
+            q['answer'] = q['options'][0]
+            q['sub_answers'] = [q1['answer'], q2['answer']]
+            q['difficulty'] = 'hard'
+            if _valid(q):
+                out.append(q)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _merge_context(P, si, q1, q2):
+    """把两道单空题的挖空合并到同一句上；位置算不准就放弃（不硬凑）。"""
+    src = P.sents[si] if 0 <= si < len(P.sents) else ''
+    if not src:
+        return None
+    a1, a2 = q1['answer'], q2['answer']
+    p1, p2 = src.find(a1), src.find(a2)
+    if p1 < 0 or p2 < 0 or abs(p1 - p2) < max(len(a1), len(a2)):
+        return None
+    (pa, wa), (pb, wb) = sorted([(p1, a1), (p2, a2)])
+    mark_a = '（①）' if (pa, wa) == (p1, a1) else '（②）'
+    mark_b = '（②）' if mark_a == '（①）' else '（①）'
+    return src[:pa] + mark_a + src[pa + len(wa):pb] + mark_b + src[pb + len(wb):]
+
+
+# ================================================================
+# 7d. 填空（自由输入）模式：同一个空的「困难版」
+# ================================================================
+# 只有答案短、且客观性为 verbatim（答案＝原文原样）的题才允许改成填空，
+# 判分是字符串精确比对（做一次全角/半角、空白、引号的归一化），
+# 不做任何"意思差不多就算对"的模糊判断。
+_INPUT_OK_TYPES = ('particle', 'connective', 'compound_particle', 'anaphora',
+                   'headword', 'fact', 'transitivity', 'polite_tense')
+
+
+def normalize_answer(t):
+    t = str(t or '').strip()
+    t = t.translate(str.maketrans('０１２３４５６７８９％．　', '0123456789%. '))
+    t = re.sub(r'[\s「」『』（）()]', '', t)
+    return t
+
+
+def can_input(q):
+    return (q['qtype'] in _INPUT_OK_TYPES
+            and q['objectivity'] in ('verbatim', 'rule')
+            and 1 <= len(q['answer']) <= 10
+            and '＿' not in q['answer'])
+
+
+def to_input(q):
+    """把一道选择题转成填空题（同一个 stem 的困难版）。"""
+    q = dict(q)
+    q['answer_format'] = 'input'
+    q['difficulty'] = 'hard'
+    q['hint'] = f'{len(q["answer"])} 文字'
+    q['options'] = []
+    q['stem'] = q.get('stem', '') + '#input'
+    return q
 
 # ================================================================
 # 8. 组卷
@@ -1760,13 +1908,31 @@ def _gen_all(P, rng, want=None):
 def _decorate(q, pid, n):
     q['qid'] = f'{pid}-{n}'
     q['type_label'] = TYPE_LABEL.get(q['qtype'], q['qtype'])
-    q['difficulty'] = DIFFICULTY.get(q['qtype'], 'medium')
+    # 填空形态（to_input）已经把难度提到 hard，这里不覆盖
+    q['difficulty'] = q.get('difficulty') or DIFFICULTY.get(q['qtype'], 'medium')
     q['text_policy'] = TEXT_POLICY.get(q['qtype'], 'closed')
     return q
 
 
-def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None, P=None):
-    """出一套题。difficulty: None/'easy'/'medium'/'hard'/'mixed'（默认混合并向难侧倾斜）。"""
+def seen_stems(passage_id, days=None):
+    """这篇文章里「已经做过」的 stem → 最近一次做的时间。"""
+    init()
+    try:
+        with db.get_conn() as c:
+            rs = c.execute('SELECT stem, MAX(ts) t, COUNT(*) n FROM passage_item_log'
+                           ' WHERE passage_id=? GROUP BY stem', (passage_id,)).fetchall()
+        return {r['stem']: (r['t'], r['n']) for r in rs}
+    except Exception:
+        return {}
+
+
+def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
+              P=None, mode='mixed', fresh_first=True, secure=False):
+    """出一套题。
+    mode      : 'choice'（全选择）/ 'input'（能填空的都填空）/ 'mixed'（默认：约 1/3 填空）
+    fresh_first: 优先出这篇文章里你还没做过的题（做过的按最久未做排序）
+    secure    : True 时返回的题目**不含答案/解析**，判分走 grade()（防止在页面源码里偷看）
+    """
     P = P or load(passage_id)
     if not P:
         return {'ok': False, 'reason': '篇章不存在'}
@@ -1776,11 +1942,22 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None, P=No
         return {'ok': False, 'reason': '词法分析器不可用（fugashi/unidic 未安装），无法出题'}
     rng = random.Random(seed if seed is not None else time.time())
     pools = _gen_all(P, rng, types)
+    multi = make_multi(P, rng, pools)
+    if multi and (not types or 'multi' in types):
+        pools['multi'] = multi
     if difficulty in ('easy', 'medium', 'hard'):
-        pools = {t: v for t, v in pools.items()
-                 if DIFFICULTY.get(t, 'medium') == difficulty}
+        pools = {t: [q for q in v] for t, v in pools.items()
+                 if DIFFICULTY.get(t, 'medium') == difficulty or t == 'multi'}
+        if difficulty != 'hard':
+            pools.pop('multi', None)
+
+    seen = seen_stems(passage_id) if fresh_first else {}
+    for t in pools:
+        pools[t].sort(key=lambda q: (seen.get(base_stem(q.get('stem', '')), (0, 0))[1],
+                                     seen.get(base_stem(q.get('stem', '')), (0, 0))[0]))
+        pools[t] = pools[t][::-1]          # pop() 从尾部取 → 先取没做过的
+
     picked = []
-    # 轮转抽取，保证题型多样；难题优先（hard → medium → easy）
     order = sorted(pools, key=lambda t: ({'hard': 0, 'medium': 1, 'easy': 2}[
         DIFFICULTY.get(t, 'medium')], t))
     while len(picked) < count and pools:
@@ -1795,15 +1972,131 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None, P=No
                 break
         if not progressed:
             break
+
+    # 选择 / 填空 分配
+    n_input = 0
+    for k, q in enumerate(picked):
+        q['answer_format'] = 'choice'
+        if mode == 'input' and can_input(q):
+            picked[k] = to_input(q)
+            n_input += 1
+        elif mode == 'mixed' and can_input(q) and rng.random() < 0.35:
+            picked[k] = to_input(q)
+            n_input += 1
+
     rng.shuffle(picked)
     for n, q in enumerate(picked):
         _decorate(q, passage_id, n)
-        _finish(q, rng)
-    return {'ok': True, 'passage_id': passage_id, 'title': P.title,
-            'n_sent': len(P.sents), 'questions': picked,
+        if q.get('answer_format') != 'input':
+            _finish(q, rng)
+        else:
+            q['answer_index'] = -1
+
+    quiz_id = f'{passage_id}-{int(time.time()*1000)}-{rng.randrange(1 << 20)}'
+    out_qs = [_strip_answers(q) for q in picked] if secure else picked
+    if secure:
+        _QUIZ_CACHE[quiz_id] = {'ts': time.time(), 'pid': passage_id,
+                                'qs': {q['qid']: q for q in picked}}
+        if len(_QUIZ_CACHE) > 60:
+            for k2 in sorted(_QUIZ_CACHE, key=lambda x: _QUIZ_CACHE[x]['ts'])[:20]:
+                _QUIZ_CACHE.pop(k2, None)
+    fresh = sum(1 for q in picked if base_stem(q.get('stem')) not in seen)
+    return {'ok': True, 'quiz_id': quiz_id, 'passage_id': passage_id, 'title': P.title,
+            'n_sent': len(P.sents), 'questions': out_qs,
             'available': {t: len(v) for t, v in pools.items()},
             'coverage': sorted({q['qtype'] for q in picked}),
+            'n_input': n_input, 'n_fresh': fresh, 'secure': bool(secure),
             'difficulty_mix': dict(Counter(q['difficulty'] for q in picked))}
+
+
+_QUIZ_CACHE = {}
+
+
+def _strip_answers(q):
+    """secure 模式下发给前端的题面：不含答案、不含证据、不含解析。"""
+    drop = ('answer', 'answer_index', 'evidence', 'explain', 'sub_answers', 'stem')
+    return {k: v for k, v in q.items() if k not in drop}
+
+
+def grade(quiz_id, qid, response):
+    """服务端判分。返回 {ok, answer, evidence, explain}。
+    选择题传选项文本或下标；填空题传输入的字符串。"""
+    box = _QUIZ_CACHE.get(quiz_id)
+    if not box or qid not in box['qs']:
+        return {'ok': False, 'error': 'quiz_expired',
+                'message': '这套题的服务端记录已过期（重开一套即可）'}
+    q = box['qs'][qid]
+    if q.get('answer_format') == 'input':
+        ok = normalize_answer(response) == normalize_answer(q['answer'])
+    else:
+        if isinstance(response, int) or (isinstance(response, str) and response.isdigit()):
+            idx = int(response)
+            ok = 0 <= idx < len(q['options']) and q['options'][idx] == q['answer']
+        else:
+            ok = str(response).strip() == q['answer']
+    log_item(box['pid'], q, ok)
+    return {'ok': True, 'correct': bool(ok), 'answer': q['answer'],
+            'evidence': q['evidence'], 'explain': q.get('explain', ''),
+            'objectivity': q['objectivity']}
+
+
+def base_stem(stem):
+    """填空形态的 stem 带 '#input' 后缀，曝光要记在同一个题干上。"""
+    return str(stem or '').split('#')[0]
+
+
+def log_item(passage_id, q, ok, mode=None):
+    """按 stem 记录曝光：用于「还有多少题没做过」与优先出新题。"""
+    init()
+    try:
+        with db.get_conn() as c:
+            c.execute('INSERT INTO passage_item_log(passage_id,stem,qtype,ts,ok,mode)'
+                      ' VALUES(?,?,?,?,?,?)',
+                      (passage_id, base_stem(q.get('stem', '')), q.get('qtype', ''), time.time(),
+                       1 if ok else 0, mode or q.get('answer_format', 'choice')))
+    except Exception:
+        pass
+
+
+def capacity(passage_id, P=None):
+    """诚实统计这篇文章的「题量天花板」：
+      stems        —— 独立题干数（挖空位置数）
+      deliveries   —— 计入「选择/填空」两种形态后的可交付题数
+      variants     —— 再计入干扰项可替换组合后的不同题面数（下界估计）
+      done / fresh —— 已做过 / 还没做过的题干数
+    """
+    P = P or load(passage_id)
+    if not P:
+        return {}
+    rng = random.Random(3)
+    pools = _gen_all(P, rng)
+    pools['multi'] = make_multi(P, rng, pools)
+    stems, deliveries, variants = 0, 0, 0
+    per_type = {}
+    for t, qs in pools.items():
+        stems += len(qs)
+        d = sum(2 if can_input(q) else 1 for q in qs)
+        deliveries += d
+        v = 0
+        for q in qs:
+            k = max(1, len(q['options']) - 1)
+            n_pool = int(q.get('pool_n') or k)      # 只有明确知道候选池大小时才算组合
+            v += max(1, _choose(max(n_pool, k), k))
+        variants += v
+        per_type[t] = {'stems': len(qs), 'deliveries': d}
+    seen = {base_stem(k) for k in seen_stems(passage_id)}
+    all_stems = {base_stem(q.get('stem')) for qs in pools.values() for q in qs}
+    return {'stems': stems, 'deliveries': deliveries, 'variants': variants,
+            'per_type': per_type,
+            'done': len(all_stems & seen), 'fresh': len(all_stems - seen)}
+
+
+def _choose(n, k):
+    from math import comb
+    try:
+        return comb(n, k)
+    except Exception:
+        return 1
 
 
 def preview_types(passage_id, P=None):

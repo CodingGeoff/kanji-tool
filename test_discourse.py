@@ -87,8 +87,8 @@ def main():
 
     print('\n[2] 出题 + 出厂门禁')
     pid2 = D.import_passage('読書離れ', TEXT2)['id']
-    quiz = D.make_quiz(pid, count=20, seed=11)
-    quiz2 = D.make_quiz(pid2, count=20, seed=12)
+    quiz = D.make_quiz(pid, count=20, seed=11, mode='choice')
+    quiz2 = D.make_quiz(pid2, count=20, seed=12, mode='choice')
     check(quiz['ok'] and quiz['questions'], '第一篇一道题都出不了')
     check(quiz2['ok'] and quiz2['questions'], '第二篇一道题都出不了')
     allq = quiz['questions'] + quiz2['questions']
@@ -111,6 +111,12 @@ def main():
         full = P.joined()
         for q in qq['questions']:
             t = q['qtype']
+            if t == 'multi':
+                a, b = q['sub_answers']
+                r1 = q['context'].replace('（①）', a, 1).replace('（②）', b, 1)
+                r2 = q['context'].replace('（①）', b, 1).replace('（②）', a, 1)
+                check(P.sents[q['sent_idx']] in (r1, r2), '[multi] 填回去得不到原句')
+                continue
             if t == 'absent':
                 check(q['answer'] not in full, f'[absent] 答案「{q["answer"]}」其实在原文里（冤案！）')
                 for o in q['options']:
@@ -211,6 +217,8 @@ if os.path.isdir(_sdir):
 
 
 def objectivity_audit(P, q, label=''):
+    if q.get('answer_format') == 'input':
+        return
     """对任意一道题做客观性复核（测试自己再验一遍，不信任生成器）。"""
     t, full = q['qtype'], P.joined()
     tag = f'[{label}/{t}]'
@@ -221,6 +229,20 @@ def objectivity_audit(P, q, label=''):
     check(q['objectivity'] in ('verbatim', 'contradiction', 'rule'), f'{tag} 客观性标签非法')
     check(q['difficulty'] in ('easy', 'medium', 'hard'), f'{tag} 难度标签非法')
     check(q['text_policy'] in ('open', 'closed'), f'{tag} 开卷/闭卷标签非法')
+    if t == 'multi':
+        a, b = q['sub_answers']
+        src = P.sents[q['sent_idx']]
+        r1 = q['context'].replace('（①）', a, 1).replace('（②）', b, 1)
+        r2 = q['context'].replace('（①）', b, 1).replace('（②）', a, 1)
+        check(src in (r1, r2), f'{tag} 多空题填回去得不到原句')
+        return
+    if t == 'multi':
+        a, b = q['sub_answers']
+        src = P.sents[q['sent_idx']]
+        r1 = q['context'].replace('（①）', a, 1).replace('（②）', b, 1)
+        r2 = q['context'].replace('（①）', b, 1).replace('（②）', a, 1)
+        check(src in (r1, r2), f'{tag} 多空题填回去得不到原句')
+        return
     if t == 'absent':
         check(q['answer'] not in full, f'{tag} 答案其实在原文里（冤案）')
         for o in q['options']:
@@ -419,10 +441,10 @@ def main2():
 
     print('\n[12] 难度与开卷/闭卷分层')
     pid = D.import_passage('', SAMPLES.get('nhk_yoheki', TEXT))['id']
-    hard = D.make_quiz(pid, count=10, difficulty='hard', seed=3)
+    hard = D.make_quiz(pid, count=10, difficulty='hard', seed=3, mode='choice')
     check(all(q['difficulty'] == 'hard' for q in hard['questions']),
           '难度筛选失效')
-    mix = D.make_quiz(pid, count=16, seed=4)
+    mix = D.make_quiz(pid, count=16, seed=4, mode='choice')
     check(len(set(q['qtype'] for q in mix['questions'])) >= 6,
           f'一套 16 题的题型多样性不足：{mix["coverage"]}')
     check(any(q['text_policy'] == 'closed' for q in mix['questions']) and
@@ -469,17 +491,114 @@ def main2():
             pass
     check(ok_any, '并入的篇章句子没有一句能被组句引擎解析')
 
+    return 0
+
+
+# ================================================================
+# 追加 2：题量天花板 / 填空模式 / 服务端判分 / 曝光调度 / 多空题
+# ================================================================
+def main3():
+    print('\n[16] 题量天花板（stems / deliveries / variants）')
+    caps = {}
+    for name, txt in SAMPLES.items():
+        pid = D.import_passage('cap-' + name, txt)['id']
+        c = D.capacity(pid)
+        caps[name] = (pid, c)
+        check(c['stems'] >= 30, f'{name} 题干数过少：{c["stems"]}')
+        check(c['deliveries'] > c['stems'], f'{name} 填空形态没有增加可交付题数')
+        check(c['variants'] >= c['stems'], f'{name} 题面变体估计异常')
+        check(c['fresh'] + c['done'] >= c['stems'] - 2, f'{name} 新旧题统计对不上')
+        print(f'  {name}: 题干 {c["stems"]} / 可交付 {c["deliveries"]} / '
+              f'题面变体 {c["variants"]:,} / 未做过 {c["fresh"]}')
+
+    print('\n[17] 多空题：继承两个子题的门禁，且两空位置正确')
+    pid, _ = caps.get('nhk_yoheki', list(caps.values())[0])
+    P = D.load(pid)
+    rng = __import__('random').Random(7)
+    pools = D._gen_all(P, rng)
+    multi = D.make_multi(P, rng, pools)
+    check(len(multi) >= 3, f'多空题太少：{len(multi)}')
+    for q in multi:
+        D._decorate(q, pid, 0)
+        D._finish(q, rng)
+        check('（①）' in q['context'] and '（②）' in q['context'], '多空题缺少空位标记')
+        a, b = q['sub_answers']
+        restored = q['context'].replace('（①）', a, 1).replace('（②）', b, 1)
+        if restored != P.sents[q['sent_idx']]:
+            restored = q['context'].replace('（①）', b, 1).replace('（②）', a, 1)
+        check(restored == P.sents[q['sent_idx']],
+              f'多空题按答案填回去得不到原句：{restored[:40]}')
+        check(len(q['options']) == 4 and q['answer'] in q['options'], '多空题选项异常')
+        check(q['difficulty'] == 'hard', '多空题应为 hard')
+    print(f'  {len(multi)} 道多空题：填回原句逐字复原通过')
+
+    print('\n[18] 填空模式：不给选项 + 服务端判分 + 归一化')
+    quiz = D.make_quiz(pid, count=20, seed=13, mode='input', secure=True)
+    ins = [q for q in quiz['questions'] if q.get('answer_format') == 'input']
+    check(len(ins) >= 3, f'填空题太少：{len(ins)}')
+    for q in quiz['questions']:
+        for k in ('answer', 'evidence', 'explain', 'answer_index', 'stem'):
+            check(k not in q, f'secure 模式下题面仍带 {k}（等于把答案送到浏览器里）')
+        check(q.get('answer_format') != 'input' or not q.get('options'),
+              '填空题不应带选项')
+    # 正确答案必须判对，错答案必须判错，全角/空格归一化必须生效
+    for q in ins[:5]:
+        real = D._QUIZ_CACHE[quiz['quiz_id']]['qs'][q['qid']]['answer']
+        r1 = D.grade(quiz['quiz_id'], q['qid'], real)
+        r2 = D.grade(quiz['quiz_id'], q['qid'], real + 'ぜんぜん')
+        r3 = D.grade(quiz['quiz_id'], q['qid'], ' ' + real + ' ')
+        check(r1['correct'], f'[input] 原文答案被判错：{real}')
+        check(not r2['correct'], f'[input] 明显错答被判对：{real}')
+        check(r3['correct'], f'[input] 前后空格没有归一化：{real}')
+        check(r1['evidence'] and r1['answer'] == real, '[input] 判分结果缺少答案/依据')
+    check(D.grade('bogus-quiz', 'x-0', 'a')['ok'] is False, '过期 quiz 应当报错而不是崩')
+    print(f'  {len(ins)} 道填空题：答案不下发、判分正确、归一化生效')
+
+    print('\n[19] 曝光调度：优先出没做过的题，做过的换干扰项重出')
+    pid2 = D.import_passage('sched', SAMPLES.get('nhk_weather', TEXT))['id']
+    c0 = D.capacity(pid2)
+    q1 = D.make_quiz(pid2, count=8, seed=1, mode='choice')
+    for q in q1['questions']:
+        D.log_item(pid2, q, True)
+    c1 = D.capacity(pid2)
+    check(c1['done'] >= 6, f'曝光没有被记录：done={c1["done"]}')
+    check(c1['fresh'] == c0['fresh'] - c1['done'], '新旧题账目对不上')
+    q2 = D.make_quiz(pid2, count=8, seed=2, mode='choice')
+    old = {q['stem'] for q in q1['questions']}
+    new = {q['stem'] for q in q2['questions']}
+    check(len(new - old) >= 5, f'第二套题没有优先给新题：重复 {len(new & old)} 题')
+    # 同一题干重出时，干扰项集合应当不同（选项不是固定的四个）
+    same = [(a, b) for a in q1['questions'] for b in q2['questions']
+            if a['stem'] == b['stem'] and a['answer_format'] == b['answer_format'] == 'choice']
+    if same:
+        diff = sum(1 for a, b in same if set(a['options']) != set(b['options']))
+        print(f'  重复出现的 {len(same)} 道题中，{diff} 道换了干扰项组合')
+    print(f'  未做过 {c0["fresh"]} → 做过 8 题后剩 {c1["fresh"]}')
+
+    print('\n[20] 同一题干的不同题面：随机种子换一套干扰项')
+    P2 = D.load(pid2)
+    seen_sets = {}
+    for sd in range(12):
+        rng2 = __import__('random').Random(sd)
+        for q in D.GENERATORS['particle'](P2, rng2):
+            seen_sets.setdefault(q['stem'], set()).add(tuple(sorted(q['options'])))
+    multi_variant = [k for k, v in seen_sets.items() if len(v) > 1]
+    check(bool(multi_variant),
+          '同一个挖空位置在不同种子下始终给出同一套干扰项（题面无法刷新）')
+    print(f'  {len(multi_variant)}/{len(seen_sets)} 个格助词题干在 12 个随机种子下产生了多套干扰项')
+
     print('\n' + '=' * 56)
     if FAILS:
         print(f'FAILED: {len(FAILS)} 项')
         for f in FAILS[:40]:
             print(' -', f)
         return 1
-    print('ALL PASSED（含真实新闻文章全量复核）')
+    print('ALL PASSED（题量/填空/判分/调度 全部通过）')
     return 0
 
 
 if __name__ == '__main__':
     rc = main()
     rc2 = main2()
-    sys.exit(rc or rc2)
+    rc3 = main3()
+    sys.exit(rc or rc2 or rc3)

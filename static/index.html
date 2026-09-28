@@ -1039,11 +1039,21 @@ async function dcLoad(){
         <button class="btn" onclick="dcStart(${p.id},20)">20题</button>
         <button class="btn" onclick="dcStart(${p.id},12,'hard')">只练难题</button>
         <button class="btn" onclick="dcStart(${p.id},10,null,true)">精读模式（对照原文·不计分）</button>
-        <button class="btn" onclick="dcInfo(${p.id})">可出题型 / 原文</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,false,'input')">填空模式（最难·不给选项）</button>
+        <button class="btn" onclick="dcInfo(${p.id})">题量 / 题型 / 原文</button>
         <button class="btn danger" onclick="dcDel(${p.id})">删除</button>
       </div>
+      <div class="muted" id="dcCap${p.id}" style="font-size:12.5px;margin-top:4px"></div>
       <div id="dcInfo${p.id}"></div>
     </div>`).join('') : '<div class="muted" style="padding:14px">还没有篇章。把一整篇日语文章粘进上面的框里即可。</div>';
+  for(const p of ps){
+    api('/api/discourse/passages/'+p.id+'/capacity').then(c=>{
+      const el=$('#dcCap'+p.id); if(!el||!c.ok)return; const x=c.capacity;
+      el.innerHTML=`题干 <b>${x.stems}</b> 个 · 选择/填空两种形态共 <b>${x.deliveries}</b> 道 · `+
+        `换干扰项后不同题面 <b>${x.variants>=10000?(x.variants/10000).toFixed(1)+'万':x.variants}</b> 种 · `+
+        `<b style="color:${x.fresh?'var(--accent2)':'var(--sub)'}">还没做过 ${x.fresh}</b> / 已做过 ${x.done}`;
+    }).catch(()=>{});
+  }
   try{ const st=await api('/api/discourse/stats?days=14');
     const s2=st.stats||{}; $('#dcStatLine').textContent = s2.total? `近14天：${s2.ok}/${s2.total} 正确（${s2.rate}%）`:'';
   }catch(e){}
@@ -1111,14 +1121,16 @@ async function dcInfo(id){
       <div class="jp" style="margin-top:6px;line-height:2;font-size:15px">${(d.passage.sentences||[]).map(x=>esc(x.text)).join('')}</div>
     </details></div>`;
 }
-async function dcStart(id,count,difficulty,study){
-  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify({passage_id:id,count,difficulty:difficulty||undefined})});
+async function dcStart(id,count,difficulty,study,mode){
+  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify(
+    {passage_id:id,count,difficulty:difficulty||undefined,mode:mode||'mixed',secure:true})});
   if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
   let full='';
   try{ const p=await api('/api/discourse/passages/'+id);
        full=(p.passage.sentences||[]).map(x=>x.kind==='heading'?('\n【'+x.text+'】\n'):x.text).join(''); }catch(e){}
-  dcQuiz={pid:id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
-          study:!!study,full,peeked:false,mix:d.difficulty_mix||{}};
+  dcQuiz={pid:id,quizId:d.quiz_id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
+          study:!!study,full,peeked:false,mix:d.difficulty_mix||{},nFresh:d.n_fresh,nInput:d.n_input};
+  if(d.n_fresh<d.questions.length)toast(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的；做过的题会换一套干扰项重新出`);
   $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
   dcRender();
 }
@@ -1158,10 +1170,16 @@ function dcRender(keepPick){
     <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap">${esc(q.context)}</div>
     ${dcTextPanel(q)}
     <div class="sb-area" id="dcOpts" style="margin-top:14px">
-      ${q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+      ${q.answer_format==='input'
+        ? `<div class="row" style="gap:8px;align-items:center">
+             <input id="dcInput" style="flex:1;min-width:180px;font-size:18px;padding:8px 10px" placeholder="直接输入原文里的那个词/助词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
+           </div>
+           <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案与解析都在服务器上，判完才回传</div>`
+        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
     </div>
-    <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${dcQuiz.picked==null?'disabled':''}>检查</button></div>
+    <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${(q.answer_format==='input'||dcQuiz.picked!=null)?'':'disabled'}>检查</button></div>
     <div id="dcExp"></div></div>`;
+  if(q.answer_format==='input'){const el=$('#dcInput');if(el)el.focus();}
 }
 function dcPick(k){
   if(dcQuiz.checked)return;
@@ -1169,25 +1187,41 @@ function dcPick(k){
   document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>b.classList.toggle('sel',i===k));
   $('#dcCheckBtn').disabled=false;
 }
-function dcCheck(){
-  if(dcQuiz.checked||dcQuiz.picked==null)return;
-  const q=dcQuiz.qs[dcQuiz.i], ok=q.options[dcQuiz.picked]===q.answer;
-  const peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
+async function dcCheck(){
+  if(dcQuiz.checked)return;
+  const q=dcQuiz.qs[dcQuiz.i];
+  let resp;
+  if(q.answer_format==='input'){
+    resp=($('#dcInput')||{}).value||'';
+    if(!resp.trim()){toast('先写点什么');return;}
+  }else{
+    if(dcQuiz.picked==null)return;
+    resp=String(dcQuiz.picked);
+  }
+  let r;
+  try{ r=await api('/api/discourse/grade',{method:'POST',body:JSON.stringify({quiz_id:dcQuiz.quizId,qid:q.qid,response:resp})}); }
+  catch(e){ toast('判分失败'); return; }
+  if(!r.ok){ toast(r.message||'这套题已过期，请重新开始'); return; }
+  const ok=!!r.correct, peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
   dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
   dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
-  document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
-    b.classList.remove('sel');
-    if(q.options[i]===q.answer)b.classList.add('ok');
-    else if(i===dcQuiz.picked)b.classList.add('ng');
-  });
+  if(q.answer_format==='input'){
+    const el=$('#dcInput'); if(el){el.disabled=true;el.style.borderColor=ok?'var(--accent2)':'var(--accent)';}
+  }else{
+    document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
+      b.classList.remove('sel');
+      if(q.options[i]===r.answer)b.classList.add('ok');
+      else if(i===dcQuiz.picked)b.classList.add('ng');
+    });
+  }
   $('#dcExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b>
       ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（参考原文作答，不计入闭卷成绩）</span>':''}</div>
-    <div style="margin-top:8px;font-size:15px">正解：<b>${esc(q.answer)}</b></div>
-    <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(q.explain||'')}</div>
+    <div style="margin-top:8px;font-size:15px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
+    <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(r.explain||'')}</div>
     <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
-      <b>判定依据（${DC_OBJ[q.objectivity]||q.objectivity}）</b>
-      <ul style="margin:4px 0 0 18px">${(q.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
+      <b>判定依据（${DC_OBJ[r.objectivity]||r.objectivity}）</b>
+      <ul style="margin:4px 0 0 18px">${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
     ${!dcQuiz.study&&q.text_policy!=='open'?`<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">📄 回看原文（已作答，随便看）</summary>
       <div class="jp" style="white-space:pre-wrap;line-height:2;font-size:15px;margin-top:6px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(dcQuiz.full)}</div></details>`:''}
     <div class="quiz-nav"><button class="btn primary" onclick="dcNext()">${dcQuiz.i+1>=dcQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button></div>
