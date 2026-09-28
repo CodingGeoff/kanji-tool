@@ -126,7 +126,7 @@ def _sanitize_cfg(cfg):
         cfg['mode'] = 'basic'
     if cfg.get('level') not in (['any'] + LEVELS):
         cfg['level'] = 'any'
-    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
+    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric', 'passage'):
         cfg['scope'] = 'corpus'
     if cfg.get('translation_mode') not in ('with', 'without', 'mixed'):
         cfg['translation_mode'] = 'mixed'
@@ -1130,6 +1130,15 @@ def _fetch_pool(scope, ids, need):
         rows += textbook.fetch_book_sentence_rows(ids, need)
     if scope == 'lyric':
         rows += _lyric_pool(need)
+    if scope == 'passage':
+        try:
+            with db.get_conn() as c:
+                rows += [dict(r) for r in c.execute(
+                    "SELECT id sid, text text, translation translation, source source "
+                    "FROM sentences WHERE source='passage' ORDER BY RANDOM() LIMIT ?",
+                    (need,)).fetchall()]
+        except Exception:
+            pass
     if scope == 'corpus' or scope == 'mixed':
         try:
             with db.get_conn() as c:
@@ -1329,7 +1338,7 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
                 'count': 0, 'questions': []}
     mode = mode if mode in ('basic', 'advanced') else cfg['mode']
     level = level if level in (['any'] + LEVELS) else cfg['level']
-    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else cfg['scope']
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric', 'passage') else cfg['scope']
     try:
         count = max(1, min(int(count), 20)) if count else cfg['count']
     except Exception:

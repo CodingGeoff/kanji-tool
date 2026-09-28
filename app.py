@@ -1867,6 +1867,20 @@ def api_discourse_list():
     return jsonify({'ok': True, 'passages': discourse.list_passages()})
 
 
+@app.route('/api/discourse/preview', methods=['POST'])
+def api_discourse_preview():
+    """不落库的预览：解析结构 + 质量体检 + 可出题型 + 样题。"""
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 20:
+        return jsonify({'ok': False, 'error': '正文太短'}), 400
+    try:
+        return jsonify(discourse.preview(text, title=d.get('title') or '',
+                                         sample=_num(d.get('sample'), 3, 0, 8)))
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'解析失败：{e}'}), 400
+
+
 @app.route('/api/discourse/passages', methods=['POST'])
 def api_discourse_add():
     d = request.json or {}
@@ -1877,12 +1891,19 @@ def api_discourse_add():
         r = discourse.import_passage(d.get('title') or '', text,
                                      source=d.get('source') or '',
                                      level=d.get('level') or '',
-                                     note=d.get('note') or '')
+                                     note=d.get('note') or '',
+                                     to_corpus=bool(d.get('to_corpus')))
     except ValueError as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
     r['preview'] = discourse.preview_types(r['id'])
     r['ok'] = True
     return jsonify(r)
+
+
+@app.route('/api/discourse/passages/<int:pid>/to-corpus', methods=['POST'])
+def api_discourse_to_corpus(pid):
+    n = discourse.add_to_corpus(pid)
+    return jsonify({'ok': True, 'added': n})
 
 
 @app.route('/api/discourse/passages/<int:pid>')
@@ -1906,7 +1927,9 @@ def api_discourse_quiz():
     if not pid:
         return jsonify({'ok': False, 'reason': '未指定篇章'}), 400
     count = _num(d.get('count'), 10, 1, 40)
-    return jsonify(discourse.make_quiz(pid, count=count, types=d.get('types')))
+    diff = d.get('difficulty') if d.get('difficulty') in ('easy', 'medium', 'hard') else None
+    return jsonify(discourse.make_quiz(pid, count=count, types=d.get('types'),
+                                       difficulty=diff))
 
 
 @app.route('/api/discourse/answer', methods=['POST'])

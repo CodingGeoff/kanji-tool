@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS passage_sents(
     passage_id INTEGER NOT NULL,
     para_idx INTEGER DEFAULT 0,
     idx INTEGER DEFAULT 0,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    kind TEXT DEFAULT 'body'
 );
 CREATE INDEX IF NOT EXISTS idx_psents ON passage_sents(passage_id, idx);
 CREATE TABLE IF NOT EXISTS passage_results(
@@ -79,7 +80,8 @@ CREATE TABLE IF NOT EXISTS passage_results(
     ts REAL,
     passage_id INTEGER,
     qtype TEXT,
-    ok INTEGER
+    ok INTEGER,
+    peeked INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_presults ON passage_results(ts);
 '''
@@ -88,36 +90,95 @@ CREATE INDEX IF NOT EXISTS idx_presults ON passage_results(ts);
 def init():
     with db.get_conn() as c:
         c.executescript(DDL)
+        # 老库补列（幂等）
+        for ddl in ("ALTER TABLE passage_sents ADD COLUMN kind TEXT DEFAULT 'body'",
+                    'ALTER TABLE passage_results ADD COLUMN peeked INTEGER DEFAULT 0',
+                    'ALTER TABLE passages ADD COLUMN corpus_sids TEXT'):
+            try:
+                c.execute(ddl)
+            except Exception:
+                pass
 
 
 _SENT_END_RE = re.compile(r'(?<=[。！？!?])')
 _MIN_SENT = 6
 
+# 网页复制常见的样板行（分享按钮、栏目标签、时间戳、广告位）——一律剔除，
+# 它们既不是文章内容，混进语料还会污染「本文に出てこない語」这类题。
+_BOILER_RE = re.compile(
+    r'^\s*(シェアする|共有する|この記事をシェア|関連ニュース|関連記事|もっと見る|'
+    r'あわせて読みたい|スポンサーリンク|広告|PR|Twitter|Facebook|LINE|はてな|'
+    r'メールで送る|印刷する|コメント|目次|トップページ|NHKニュース|'
+    r'ページの先頭へ戻る|前の記事|次の記事)\s*$')
+# 纯时间戳行 / 行尾时间戳
+_TS_RE = re.compile(r'^\s*\d{4}年\s*\d{1,2}月\s*\d{1,2}日\s*(\d{1,2}[:：]\d{2})?\s*$')
+_TS_TAIL_RE = re.compile(r'\s*\d{4}年\s*\d{1,2}月\s*\d{1,2}日\s+\d{1,2}[:：]\d{2}\s*$')
+_BULLET_RE = re.compile(r'^\s*[▽▼◆◇■□●○・*\-‐–—　]+\s*')
+_SENT_FINAL = '。！？!?…'
+
 
 def normalize(text):
     t = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
     t = t.replace('\u3000', ' ').replace('\ufeff', '')
+    t = re.sub(r'[ \t]+\n', '\n', t)
     return t
 
 
+def _clean_lines(text):
+    """逐行清洗：剔除样板行/时间戳，剥掉行首项目符号，
+    把被硬换行拆开的长句接回去。返回 [(line, is_blank)]。"""
+    out = []
+    for raw in normalize(text).split('\n'):
+        ln = raw.strip()
+        if not ln:
+            out.append('')
+            continue
+        if _BOILER_RE.match(ln) or _TS_RE.match(ln):
+            continue
+        ln = _TS_TAIL_RE.sub('', ln).strip()      # 标题行尾巴上粘着的发布时间
+        ln = _BULLET_RE.sub('', ln).strip()
+        if not ln:
+            continue
+        # 上一行没写完（不以句末标点结尾且足够长）→ 这一行是它的续行
+        if out and out[-1] and out[-1][-1] not in _SENT_FINAL and len(out[-1]) >= 25:
+            out[-1] = out[-1] + ln
+        else:
+            out.append(ln)
+    return out
+
+
+def _is_heading(line):
+    """小标题/栏目标签：没有句末标点、不太长、不以助词结尾的独立行。"""
+    if not line or line[-1] in _SENT_FINAL:
+        return False
+    if len(line) > 44:
+        return False
+    return True
+
+
 def split_paragraphs(text):
-    """空行分段；没有空行时每个非空行视为一段。"""
-    t = normalize(text)
-    if re.search(r'\n\s*\n', t):
-        raw = re.split(r'\n\s*\n+', t)
-    else:
-        raw = t.split('\n')
-    return [re.sub(r'\s*\n\s*', '', p).strip() for p in raw if p.strip()]
+    """空行分段；返回 [[line, ...], ...]（保留行结构，标题行不与正文合并）。"""
+    paras, cur = [], []
+    for ln in _clean_lines(text):
+        if not ln:
+            if cur:
+                paras.append(cur)
+                cur = []
+            continue
+        cur.append(ln)
+    if cur:
+        paras.append(cur)
+    return paras
 
 
 def split_sentences(para):
-    """段内切句：按句末标点切，保留标点；引号内的句点不切。"""
+    """段内切句：按句末标点切，保留标点；引号/括号内的句点不切。"""
     s, out, depth, buf = str(para or ''), [], 0, ''
     for ch in s:
         buf += ch
-        if ch in '「『（(':
+        if ch in '「『（(“':
             depth += 1
-        elif ch in '」』）)':
+        elif ch in '」』）)”':
             depth = max(0, depth - 1)
         elif ch in '。！？!?' and depth == 0:
             out.append(buf.strip())
@@ -127,34 +188,140 @@ def split_sentences(para):
     return [x for x in out if len(x) >= 2]
 
 
-def import_passage(title, text, source='', level='', note=''):
-    """录入一篇文章。返回 {'id','n_para','n_sent','n_char'}。"""
+def parse_text(text):
+    """把任意粘贴文本解析成 [(para_idx, kind, sentence)]。
+    kind：'heading'（小标题/栏目行，不参与大部分出题）或 'body'。
+    对「一整篇报道」「几段话」「一段话」「一行字」都必须给出合理结果。"""
+    rows, pi = [], 0
+    for para in split_paragraphs(text):
+        got = False
+        for line in para:
+            if _is_heading(line):
+                rows.append((pi, 'heading', line))
+                got = True
+                continue
+            for sent in split_sentences(line):
+                rows.append((pi, 'body', sent))
+                got = True
+        if got:
+            pi += 1
+    return rows
+
+
+# ================================================================
+# 0.5 输入质量体检（语法 / 词汇 / 可用性）
+# ================================================================
+def quality_report(text_or_rows):
+    """对录入文本做一次体检，在**录入前**就把问题摆出来：
+      - 语法门禁未通过的句子（复用 grammar.check_sentence_grammar）
+      - 疑似未切干净的超长句、疑似乱码/非日语行
+      - 可用于出题的有效句数
+    这是提示不是拦截：新闻体里大量「〜とみられる」「〜ということです」
+    本来就会让保守的语法门禁报警，所以只报告、不阻止录入。"""
+    rows = text_or_rows if isinstance(text_or_rows, list) else parse_text(text_or_rows)
+    body = [(i, t) for i, (_, k, t) in enumerate(rows) if k == 'body']
+    issues = []
+    try:
+        import grammar
+        checker = grammar.check_sentence_grammar
+    except Exception:
+        checker = None
+    for i, t in body:
+        tags = []
+        if len(t) > 160:
+            tags.append('超长句（可能没切干净，或原文本身是长句）')
+        if not re.search(r'[ぁ-んァ-ヶ一-龥]', t):
+            tags.append('不含日语文字（可能是残留的界面文字）')
+        if t.count('「') != t.count('」'):
+            tags.append('引号不配对（可能复制时截断）')
+        if checker:
+            try:
+                r = checker(t)
+                if not r.get('ok', True):
+                    msgs = [m for m in (r.get('issues') or r.get('errors') or [])
+                            if not any(k in str(m) for k in
+                                       ('随机', '拼接', 'ランダム'))]
+                    # 「随机假名拼接」类判据是为了拦截生成式垃圾文本，
+                    # 对「〜ということです」「〜とみられる」这种新闻体固定说法
+                    # 会大量误报，这里不往用户面前报。
+                    if msgs:
+                        tags.append('语法门禁提示：' + '；'.join(str(m) for m in msgs[:2]))
+            except Exception:
+                pass
+        if tags:
+            issues.append({'idx': i, 'text': t[:60], 'tags': tags})
+    return {'n_sent': len(body),
+            'n_heading': sum(1 for _, k, _ in rows if k == 'heading'),
+            'n_issue': len(issues), 'issues': issues[:20]}
+
+
+# ================================================================
+# 0.6 录入
+# ================================================================
+def import_passage(title, text, source='', level='', note='', to_corpus=False):
+    """录入一篇文章。to_corpus=True 时同时并入语料库，
+    这样组句/听力/挖空/RAG 立刻就能用上这篇文章的句子。"""
     init()
     text = normalize(text).strip()
     if not text:
         raise ValueError('正文为空')
-    paras = split_paragraphs(text)
-    title = (str(title or '').strip() or (paras[0][:24] if paras else '未命名篇章'))
-    rows, si = [], 0
-    for pi, p in enumerate(paras):
-        for s in split_sentences(p):
-            rows.append((pi, si, s))
-            si += 1
-    if not rows:
-        raise ValueError('切不出任何句子')
+    rows = parse_text(text)
+    body = [r for r in rows if r[1] == 'body']
+    if not body:
+        raise ValueError('切不出任何句子（可能整篇都是标题行或界面文字）')
+    if not title:
+        head = next((t for _, k, t in rows if k == 'heading'), '')
+        title = (head or body[0][2])[:40]
+    n_para = len({r[0] for r in rows})
     now = time.time()
     with db.get_conn() as c:
         cur = c.execute(
             'INSERT INTO passages(title,source,level,note,text,n_para,n_sent,n_char,created_at,updated_at)'
             ' VALUES(?,?,?,?,?,?,?,?,?,?)',
-            (title, source, level, note, text, len(paras), len(rows), len(text), now, now))
+            (title, source, level, note, text, n_para, len(body), len(text), now, now))
         pid = cur.lastrowid
-        c.executemany('INSERT INTO passage_sents(passage_id,para_idx,idx,text) VALUES(?,?,?,?)',
-                      [(pid, a, b, t) for a, b, t in rows])
+        c.executemany(
+            'INSERT INTO passage_sents(passage_id,para_idx,idx,text,kind) VALUES(?,?,?,?,?)',
+            [(pid, pa, i, t, k) for i, (pa, k, t) in enumerate(rows)])
+    added = add_to_corpus(pid) if to_corpus else 0
     db.log('passage_import', json.dumps(
-        {'id': pid, 'title': title, 'sents': len(rows)}, ensure_ascii=False))
-    return {'id': pid, 'title': title, 'n_para': len(paras),
-            'n_sent': len(rows), 'n_char': len(text)}
+        {'id': pid, 'title': title, 'sents': len(body), 'to_corpus': added},
+        ensure_ascii=False))
+    return {'id': pid, 'title': title, 'n_para': n_para, 'n_sent': len(body),
+            'n_heading': len(rows) - len(body), 'n_char': len(text),
+            'corpus_added': added}
+
+
+def add_to_corpus(pid):
+    """把篇章正文句并入 sentences 表（source='passage'），
+    组句 / 听力 / 挖空 / 语料检索会自动把它们纳入题源。重复句自动跳过。"""
+    p = get_passage(pid)
+    if not p:
+        return 0
+    try:
+        import corpus
+        import furigana
+    except Exception:
+        return 0
+    n = 0
+    for s in p['sentences']:
+        if s.get('kind') != 'body':
+            continue
+        t = s['text'].strip()
+        if len(t) < 6 or len(t) > 160:
+            continue
+        try:
+            t2, _ = corpus.repair_inline_furigana(t)
+            t2, orig = corpus.modernize_old_kana(t2)
+            toks = furigana.annotate(t2)
+            kw = furigana.extract_kanji_words(toks)
+            sid = db.add_sentence(t2, None, 'passage', None, toks, kw,
+                                  orig_text=orig if orig else None)
+            if sid:
+                n += 1
+        except Exception:
+            continue
+    return n
 
 
 def list_passages():
@@ -171,8 +338,8 @@ def get_passage(pid):
         r = c.execute('SELECT * FROM passages WHERE id=?', (pid,)).fetchone()
         if not r:
             return None
-        ss = c.execute('SELECT para_idx,idx,text FROM passage_sents WHERE passage_id=?'
-                       ' ORDER BY idx', (pid,)).fetchall()
+        ss = c.execute('SELECT para_idx,idx,text,kind FROM passage_sents'
+                       ' WHERE passage_id=? ORDER BY idx', (pid,)).fetchall()
     d = dict(r)
     d['sentences'] = [dict(x) for x in ss]
     return d
@@ -381,12 +548,21 @@ def _finish(q, rng):
 # 6. Passage 封装
 # ================================================================
 class Passage:
-    def __init__(self, row):
-        self.id = row.get('id')
-        self.title = row.get('title', '')
-        self.text = row.get('text', '')
-        self.sents = [s['text'] for s in row.get('sentences', [])]
-        self.para_of = [s['para_idx'] for s in row.get('sentences', [])]
+    """出题用的篇章视图。self.sents 只含正文句；小标题单独放在 self.headings。"""
+
+    def __init__(self, title='', rows=None, pid=None):
+        # rows: [(para_idx, kind, text)]
+        rows = rows or []
+        self.id = pid
+        self.title = title
+        self.sents, self.para_of, self.headings = [], [], []
+        for pa, kind, t in rows:
+            if kind == 'heading':
+                self.headings.append({'para': pa, 'text': t})
+            else:
+                self.sents.append(t)
+                self.para_of.append(pa)
+        self.text = '\n'.join(t for _, _, t in rows)
         self.toks = [tag(s) for s in self.sents]
         self.cwords = [content_words(t) for t in self.toks]
         self.freq = Counter(w for ws in self.cwords for w in ws)
@@ -397,13 +573,32 @@ class Passage:
             d[p].append(i)
         return [d[k] for k in sorted(d)]
 
+    def units(self):
+        """出题用的「块序列」：段内句子≥3 时以句为单位，
+        否则把连续的单句段落串起来（新闻体常见一段一句）。"""
+        ps = self.paras()
+        big = [g for g in ps if len(g) >= 3]
+        if big:
+            return big
+        flat = [i for g in ps for i in g]
+        return [flat[a:a + 5] for a in range(0, len(flat), 5) if len(flat[a:a + 5]) >= 3]
+
     def joined(self):
         return ''.join(self.sents)
 
 
+def build(title, text):
+    """不落库，直接从文本构造 Passage（预览用）。"""
+    return Passage(title=title, rows=parse_text(text))
+
+
 def load(pid):
     row = get_passage(pid)
-    return Passage(row) if row else None
+    if not row:
+        return None
+    rows = [(s['para_idx'], s.get('kind') or 'body', s['text'])
+            for s in row['sentences']]
+    return Passage(title=row.get('title', ''), rows=rows, pid=pid)
 
 
 # ================================================================
@@ -528,8 +723,15 @@ def g_particle(P, rng):
             rng.shuffle(distr)
             if len(distr) < 3:
                 continue
-            head = ''.join(x['s'] for x in toks[:j])
-            tail = ''.join(x['s'] for x in toks[j + 1:])
+            pre = ''.join(x['s'] for x in toks[:j])
+            src = P.sents[i]
+            pos = src.find(pre + ans) if pre else -1
+            if pos < 0:
+                head = pre
+                tail = ''.join(x['s'] for x in toks[j + 1:])
+            else:
+                head = src[:pos + len(pre)]
+                tail = src[pos + len(pre) + len(ans):]
             q = _mk('particle',
                     title='格助词还原',
                     prompt='空欄に入る助詞を選べ',
@@ -598,7 +800,10 @@ def g_polite_tense(P, rng):
         want = f['mashita'] if adv_past else f['masu']
         if tail != want:
             continue        # 自校验：活用器还原不出原文 → 放弃，绝不猜
-        head = ''.join(x['s'] for x in toks[:vi])
+        core = s.rstrip('。！？!?')
+        if not core.endswith(tail):
+            continue
+        head = core[:len(core) - len(tail)]      # 用原句切片，保留原文的空格与标点
         opts = [f['masu'], f['mashita'], f['dict'], f['ta']]
         if len(set(opts)) != 4:
             continue
@@ -647,8 +852,7 @@ def _starts_with_cue(s):
 def g_insert(P, rng):
     """句子还原插入：被抽走的句子必须带「向前指」的线索，且线索只在唯一位置成立。"""
     out = []
-    paras = P.paras()
-    for idxs in paras:
+    for idxs in P.units():
         if len(idxs) < 4:
             continue
         for pos, i in enumerate(idxs):
@@ -741,7 +945,7 @@ def g_order(P, rng):
     """语序重排：只有当「原顺序是唯一满足全部规则的排列」时才出题（暴力验证）。"""
     from itertools import permutations
     out = []
-    for idxs in P.paras():
+    for idxs in P.units():
         for a in range(0, len(idxs) - 2):
             grp = idxs[a:a + 3]
             if len(grp) < 3:
@@ -1082,6 +1286,411 @@ def g_headword(P, rng):
     return [q] if _valid(q) else []
 
 
+# ================================================================
+# 7b. 进阶题型（面向新闻体 / 说明文 / 长篇）
+# ================================================================
+# 自他动词对（左＝自动词，右＝他动词）
+JITA_PAIRS = [
+    ('崩れる', '崩す'), ('増える', '増やす'), ('集まる', '集める'), ('変わる', '変える'),
+    ('進む', '進める'), ('始まる', '始める'), ('終わる', '終える'), ('上がる', '上げる'),
+    ('下がる', '下げる'), ('続く', '続ける'), ('決まる', '決める'), ('出る', '出す'),
+    ('入る', '入れる'), ('開く', '開ける'), ('閉まる', '閉める'), ('落ちる', '落とす'),
+    ('残る', '残す'), ('止まる', '止める'), ('動く', '動かす'), ('育つ', '育てる'),
+    ('広がる', '広げる'), ('深まる', '深める'), ('高まる', '高める'), ('強まる', '強める'),
+    ('弱まる', '弱める'), ('伝わる', '伝える'), ('直る', '直す'), ('流れる', '流す'),
+    ('壊れる', '壊す'), ('割れる', '割る'), ('届く', '届ける'), ('見つかる', '見つける'),
+    ('消える', '消す'), ('生まれる', '生む'), ('立つ', '立てる'), ('回る', '回す'),
+]
+_JITA = {}
+for _a, _b in JITA_PAIRS:
+    _JITA[_a] = ('自', _b)
+    _JITA[_b] = ('他', _a)
+
+
+def _clause_particles(toks, vi):
+    """取谓语 vi 之前、到上一个句读/接续助词为止的格助词集合。"""
+    ps, k = [], vi - 1
+    while k >= 0:
+        t = toks[k]
+        if t['p1'] == '補助記号' or (t['p2'] == '接続助詞'):
+            break
+        if t['p1'] == '助詞' and t['p2'] in ('格助詞', '係助詞'):
+            ps.append(t['s'])
+        k -= 1
+    return ps
+
+
+def g_transitivity(P, rng):
+    """自他动词 × 文体 的 2×2。
+    自他轴证据：小句里只有が/は标记的主体、没有を宾语 → 必须用自动词（反之亦然）；
+    文体轴证据：全篇文体一致（与 polite_tense 同一条规则）。"""
+    style = _style_of(P)
+    if style is None:
+        return []
+    out = []
+    for i, toks in enumerate(P.toks):
+        for vi, t in enumerate(toks):
+            if t['p1'] != '動詞' or t['lemma'] not in _JITA:
+                continue
+            kind, mate = _JITA[t['lemma']]
+            ps = _clause_particles(toks, vi)
+            if not ps:
+                continue
+            has_wo, has_ga = 'を' in ps, ('が' in ps or 'は' in ps)
+            if kind == '自' and (has_wo or not has_ga):
+                continue
+            if kind == '他' and not has_wo:
+                continue
+            f_ans = conj_forms(t['lemma'], t['ct'])
+            f_mate = conj_forms(mate, _mate_ctype(mate))
+            if not f_ans or not f_mate:
+                continue
+            tail = ''.join(x['s'] for x in toks[vi:]).rstrip('。！？!?')
+            past = tail in (f_ans['mashita'], f_ans['ta'])
+            if tail == (f_ans['mashita'] if past else f_ans['masu']):
+                polite = True
+            elif tail == (f_ans['ta'] if past else f_ans['dict']):
+                polite = False
+            else:
+                continue                      # 活用自校验没通过 → 不出题
+            if (polite and style != 'polite') or (not polite and style != 'plain'):
+                continue
+            key = ('mashita' if past else 'masu', 'ta' if past else 'dict')
+            opts = [f_ans[key[0]], f_ans[key[1]], f_mate[key[0]], f_mate[key[1]]]
+            if len(set(opts)) != 4:
+                continue
+            ans = f_ans[key[0]] if polite else f_ans[key[1]]
+            core = P.sents[i].rstrip('。！？!?')
+            if not core.endswith(tail):
+                continue
+            head = core[:len(core) - len(tail)]
+            q = _mk('transitivity',
+                    title='自他动词×文体',
+                    prompt='空欄に入る形を選べ（自動詞か他動詞か、文体も合わせること）',
+                    context=head + '＿＿。',
+                    options=opts, answer=ans,
+                    objectivity='rule',
+                    evidence=[
+                        f'自他轴：本小句的格成分是 {"、".join(dict.fromkeys(ps))}，'
+                        + (f'只有が/は标记的主体、没有を宾语 → 只能用自动词「{t["lemma"]}」'
+                           if kind == '自' else
+                           f'存在を宾语 → 只能用他动词「{t["lemma"]}」'),
+                        f'自他对：{t["lemma"]}（{kind}動詞） ↔ {mate}（{"他" if kind == "自" else "自"}動詞）',
+                        f'文体轴：全篇为{"敬体（です・ます）" if style == "polite" else "简体（だ・である）"}，须保持统一',
+                        '答案＝原文原样；四个选项是 自他 × 文体 的 2×2，两轴各自 2:2 平分'],
+                    explain=f'「{"〜が" if kind == "自" else "〜を"}」搭配{kind}動詞。答案「{ans}」是原文形式。',
+                    sent_idx=i)
+            if _valid(q):
+                out.append(q)
+            break
+    return out
+
+
+def _mate_ctype(lemma):
+    """自他对里另一个词的活用型（用表层结尾推断，只用于生成四个选项）。"""
+    if lemma.endswith('する'):
+        return 'サ行変格'
+    if lemma in ('来る',):
+        return 'カ行変格'
+    if len(lemma) >= 2 and lemma.endswith('る') and lemma[-2] in 'えけせてねへめれげぜでべぺいきしちにひみりぎじびぴ':
+        return '下一段-ラ行'
+    return '五段-ラ行' if lemma.endswith('る') else '五段-' + 'カ行'
+
+
+# ---- 複合助詞（機能表現） ----
+COMPOUND_P = {
+    'について': '主题', 'に関して': '主题', 'をめぐって': '争点',
+    'に対して': '对象·对比', 'にとって': '立场',
+    'によって': '手段·原因', 'に基づいて': '根据', 'をもとに': '依据',
+    'を通じて': '媒介', 'に伴って': '随伴', 'に応じて': '对应',
+    'とともに': '共同', 'に向けて': '方向·目标', 'にかけて': '时间跨度',
+    'に比べて': '比较', 'に加えて': '追加', 'を除いて': '排除',
+}
+CP_CONFLICT = [{'主题', '争点'}, {'手段·原因', '根据'}, {'根据', '依据'},
+               {'对象·对比', '立场'}, {'随伴', '共同'}, {'依据', '媒介'}]
+
+
+def g_compound_particle(P, rng):
+    """复合助词（机能表现）还原：N2/N1 的核心考点。
+    干扰项必须①属于语义不冲突的类别 ②与前接名词在语料库中零共现。"""
+    out = []
+    keys = sorted(COMPOUND_P, key=len, reverse=True)
+    for i, s in enumerate(P.sents):
+        hit = next((k for k in keys if k in s), None)
+        if not hit:
+            continue
+        pos = s.index(hit)
+        if pos < 2:
+            continue
+        toks = tag(s[:pos])
+        if not toks or toks[-1]['p1'] != '名詞' or len(toks[-1]['s']) < 2:
+            continue
+        noun = toks[-1]['s']
+        base = corpus_count(noun + hit)
+        cls = COMPOUND_P[hit]
+        distr = []
+        for w, c2 in COMPOUND_P.items():
+            if w == hit or c2 == cls:
+                continue
+            if any(c2 in g and cls in g for g in CP_CONFLICT):
+                continue
+            if w in P.joined() or corpus_count(noun + w) != 0:
+                continue
+            distr.append(w)
+        rng.shuffle(distr)
+        if len(distr) < 3:
+            continue
+        q = _mk('compound_particle',
+                title='复合助词还原',
+                prompt='空欄に入る表現を選べ（機能表現）',
+                context=s[:pos] + '＿＿' + s[pos + len(hit):],
+                options=distr[:3] + [hit], answer=hit,
+                objectivity='verbatim',
+                evidence=[f'答案「{hit}」（{cls}）是原文原样'
+                          + (f'，语料库中「{noun}{hit}」另有 {base} 句实证' if base > 0 else ''),
+                          '三个干扰项分属 ' + '、'.join(COMPOUND_P[w] for w in distr[:3])
+                          + ' 类，与正确类别语义不相邻',
+                          f'三个干扰项与前接名词「{noun}」在语料库中共现次数均为 0，'
+                          '且在本文其它位置也没出现'],
+                explain=f'「{noun}{hit}」＝{cls}。机能表现选错会直接改变句子的逻辑关系。',
+                sent_idx=i)
+        if _valid(q):
+            out.append(q)
+    return out
+
+
+# ---- 数值 ----
+_KANSUJI = {'〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9}
+
+
+def parse_number(s):
+    """把「69.9」「2300」「三千」「7」等解析成数值；解析不了返回 None。"""
+    s = s.strip().translate(str.maketrans('０１２３４５６７８９．', '0123456789.'))
+    if re.fullmatch(r'\d+(\.\d+)?', s):
+        return float(s)
+    if not s or any(ch not in '〇零一二三四五六七八九十百千万億' for ch in s):
+        return None
+    total, section, num = 0, 0, 0
+    for ch in s:
+        if ch in _KANSUJI:
+            num = _KANSUJI[ch]
+        elif ch in '十百千':
+            unit = {'十': 10, '百': 100, '千': 1000}[ch]
+            section += (num or 1) * unit
+            num = 0
+        elif ch in '万億':
+            unit = {'万': 10 ** 4, '億': 10 ** 8}[ch]
+            total += (section + num) * unit
+            section = num = 0
+    return float(total + section + num)
+
+
+_NUM_UNIT_RE = re.compile(
+    r'([0-9０-９]+(?:[.．][0-9０-９]+)?|[〇零一二三四五六七八九十百千万億]+)'
+    r'(％|%|パーセント|割|ミリ|メートル|キロ|人|件|か所|箇所|年|月|日|時間|分|'
+    r'万円|億円|円|台|棟|校|市|自治体|度)')
+
+
+def _num_units(P):
+    """全篇的 (句号, 数值, 单位, 原样字串)。"""
+    out = []
+    for i, s in enumerate(P.sents):
+        for m in _NUM_UNIT_RE.finditer(s):
+            v = parse_number(m.group(1))
+            if v is not None:
+                out.append((i, v, m.group(2), m.group(0)))
+    return out
+
+
+_COMPARE_UNITS = {'％', '割', 'ミリ', 'メートル', 'キロ', '人', '件', 'か所', '箇所',
+                  '万円', '億円', '円', '台', '棟', '校', '度', '自治体', '市'}
+
+
+def g_compare(P, rng):
+    """数值比较：同一单位下谁最大/最小/第二大。答案由算术唯一确定。"""
+    items = _num_units(P)
+    by = defaultdict(list)
+    for i, v, u, raw in items:
+        u2 = {'%': '％', 'パーセント': '％'}.get(u, u)
+        if u2 not in _COMPARE_UNITS:
+            continue           # 年月日属于时间轴，交给 chronology，不做「数值大小」
+        if all(abs(v - x[0]) > 1e-9 for x in by[u2]):
+            by[u2].append((v, raw, i))
+    out = []
+    for u, arr in by.items():
+        if len(arr) < 4:
+            continue
+        arr.sort(key=lambda x: -x[0])
+        for mode, idx, word in (('max', 0, '最も大きい'), ('min', -1, '最も小さい'),
+                                ('2nd', 1, '2番目に大きい')):
+            ans = arr[idx][1]
+            opts = [x[1] for x in arr[:4]]
+            if ans not in opts:
+                opts = opts[:3] + [ans]
+            opts = list(dict.fromkeys(opts))
+            if len(opts) < 4 or ans not in opts:
+                continue
+            q = _mk('compare',
+                    title='数值比较',
+                    prompt=f'本文に出てくる「{u}」の数値のうち、{word}ものはどれか',
+                    context='（本文全体を参照）',
+                    options=opts[:4], answer=ans,
+                    objectivity='rule',
+                    evidence=['四个选项都是本文原样出现的数值',
+                              '排序：' + ' > '.join(f'{x[1]}' for x in arr[:4]),
+                              f'规则：数值大小由算术比较唯一确定（{word}＝{ans}）'],
+                    explain='扫读全篇把同一单位的数值都找出来再比较——长文报道最常考的信息整合。',
+                    sent_idx=arr[idx][2])
+            if _valid(q):
+                out.append(q)
+    return out
+
+
+_LABEL_PCT_RE = re.compile(
+    r'「([^」]{3,40})」と(?:答え|回答し)た[^。「」]{0,14}?'
+    r'([0-9０-９]+(?:[.．][0-9０-９]+)?(?:％|%|パーセント))')
+
+
+def g_pairing(P, rng):
+    """项目↔数值对应：调查报道里的表格式信息，必须精确定位到行。"""
+    pairs = []
+    for i, s in enumerate(P.sents):
+        for m in _LABEL_PCT_RE.finditer(s):
+            pairs.append((i, m.group(1), m.group(2)))
+    labels = list(dict.fromkeys(x[1] for x in pairs))
+    if len(pairs) < 3 or len(labels) < 4:
+        return []
+    out = []
+    for i, lab, pct in pairs:
+        # 同一句里往往列了好几个「項目＋％」，同句的其它项目不能当干扰项：
+        # 它们与该数值「同句共现」，考生无法排除 → 会变成冤案
+        same_sent = {l2 for (i2, l2, p2) in pairs if i2 == i}
+        dup_pct = {l2 for (i2, l2, p2) in pairs if p2 == pct}
+        others = [x for x in labels
+                  if x != lab and x not in same_sent and x not in dup_pct
+                  and not any(x in s2 and pct in s2 for s2 in P.sents)]
+        rng.shuffle(others)
+        if len(others) < 3:
+            continue
+        q = _mk('pairing',
+                title='数值项目对应',
+                prompt=f'本文で「{pct}」と回答された項目はどれか',
+                context='（本文全体を参照。調査結果の数値と項目を突き合わせること）',
+                options=others[:3] + [lab], answer=lab,
+                objectivity='verbatim',
+                evidence=[f'本文原文：「{lab}」と答えたのは{pct}（第 {i+1} 句，逐字可核对）',
+                          '三个干扰项都是本文其它项目的原文表述，各自对应的是别的数值'],
+                explain='调查类报道的数字与项目必须一一对应，看错行就全错。',
+                sent_idx=i)
+        if _valid(q):
+            out.append(q)
+    return out
+
+
+_DATE_RE = re.compile(r'(\d{4})年(?:\s*(\d{1,2})月)?(?:\s*(\d{1,2})日)?|'
+                      r'(?:今月|先月|来月)?\s*(\d{1,2})月(\d{1,2})日|今月(\d{1,2})日')
+
+
+def _dates(P):
+    out = []
+    for i, s in enumerate(P.sents):
+        for m in _DATE_RE.finditer(s):
+            g = m.groups()
+            if g[0]:
+                key = (int(g[0]), int(g[1] or 1), int(g[2] or 1))
+            elif g[3]:
+                key = (9999, int(g[3]), int(g[4]))
+            elif g[5]:
+                key = (9999, 99, int(g[5]))
+            else:
+                continue
+            out.append((i, key, m.group(0)))
+    return out
+
+
+def g_chronology(P, rng):
+    """时间先后：由显式日期做算术比较，问哪件事最早/最晚发生。"""
+    ds = _dates(P)
+    uniq, seen = [], set()
+    for i, key, raw in ds:
+        if i in seen or key[0] == 9999 and key[1] == 99:
+            continue
+        seen.add(i)
+        uniq.append((i, key, raw))
+    same_scale = [x for x in uniq if x[1][0] != 9999]
+    if len(same_scale) < 4:
+        return []
+    same_scale.sort(key=lambda x: x[1])
+    out = []
+    for mode, idx, word in (('first', 0, '最も古い'), ('last', -1, '最も新しい')):
+        ans = same_scale[idx][2]
+        opts = list(dict.fromkeys([x[2] for x in same_scale[:4]] + [ans]))
+        if len(opts) < 4:
+            continue
+        ev = [f'{x[2]}（第 {x[0]+1} 句）' for x in same_scale[:5]]
+        q = _mk('chronology',
+                title='时间先后',
+                prompt=f'本文に出てくる年月のうち、{word}ものはどれか',
+                context='（本文全体を参照）',
+                options=opts[:4], answer=ans,
+                objectivity='rule',
+                evidence=['四个选项都是本文原样出现的日期',
+                          '本文日期一览：' + '、'.join(ev),
+                          f'规则：日期先后由数值比较唯一确定（{word}＝{ans}）'],
+                explain='长篇报道常把不同年份的事件穿插叙述，理清时间线是读懂因果的前提。',
+                sent_idx=same_scale[idx][0])
+        if _valid(q):
+            out.append(q)
+    return out
+
+
+def g_heading(P, rng):
+    """小标题匹配：只有当小标题含有「只属于该段落块」的实词时才出题。"""
+    if len(P.headings) < 3:
+        return []
+    blocks = defaultdict(list)
+    for i, pa in enumerate(P.para_of):
+        blocks[pa].append(i)
+    heads = []
+    for h in P.headings:
+        hw = [w for w in content_words(tag(h['text'])) if len(w) >= 2]
+        # 该小标题管辖的块＝它自己所在段及其后、直到下一个小标题之前的段
+        nxt = min([x['para'] for x in P.headings if x['para'] > h['para']] or [10 ** 6])
+        own = [i for i, pa in enumerate(P.para_of) if h['para'] <= pa < nxt]
+        if len(h['text']) < 6:
+            continue                     # 「アメリカ」这类栏目标签不是小标题
+        if own and hw:
+            heads.append({'text': h['text'], 'own': own, 'words': hw})
+    if len(heads) < 3:
+        return []
+    out = []
+    for k, h in enumerate(heads):
+        others = [x for x in heads if x is not h]
+        own_txt = ''.join(P.sents[i] for i in h['own'])
+        key = next((w for w in h['words']
+                    if w in own_txt and
+                    all(w not in ''.join(P.sents[i] for i in o['own']) for o in others)), None)
+        if not key or not h['own']:
+            continue
+        rng.shuffle(others)
+        q = _mk('heading',
+                title='小标题匹配',
+                prompt='次の段落に付く小見出しとして正しいものを選べ',
+                context=P.sents[h['own'][0]][:120],
+                options=[o['text'] for o in others[:3]] + [h['text']],
+                answer=h['text'],
+                objectivity='verbatim',
+                evidence=[f'该段落与答案小标题共有关键词「{key}」，'
+                          '而该关键词在其它小标题所管辖的段落里一次也不出现（唯一性已逐一验证）',
+                          '答案＝原文中该段落实际使用的小标题'],
+                explain='小标题是作者给出的段落主旨——用它训练"一眼抓住这段在说什么"。',
+                sent_idx=h['own'][0])
+        if _valid(q):
+            out.append(q)
+    return out
+
+
 GENERATORS = {
     'connective': g_connective,
     'anaphora': g_anaphora,
@@ -1094,6 +1703,12 @@ GENERATORS = {
     'quote': g_quote,
     'absent': g_absent,
     'headword': g_headword,
+    'transitivity': g_transitivity,
+    'compound_particle': g_compound_particle,
+    'compare': g_compare,
+    'pairing': g_pairing,
+    'chronology': g_chronology,
+    'heading': g_heading,
 }
 
 TYPE_LABEL = {
@@ -1101,22 +1716,37 @@ TYPE_LABEL = {
     'polite_tense': '文体×时制', 'insert': '句子插入', 'order': '语序重排',
     'truth': '内容一致', 'fact': '数值检索', 'quote': '引语话者',
     'absent': '扫读辨词', 'headword': '复现词链',
+    'transitivity': '自他动词×文体', 'compound_particle': '复合助词',
+    'compare': '数值比较', 'pairing': '数值项目对应',
+    'chronology': '时间先后', 'heading': '小标题匹配',
+}
+
+# 难度：easy＝局部一眼可定位；medium＝需要跨句；hard＝需要跨段整合或语法辨析
+DIFFICULTY = {
+    'absent': 'easy', 'fact': 'easy', 'headword': 'easy',
+    'connective': 'medium', 'anaphora': 'medium', 'particle': 'medium',
+    'quote': 'medium', 'truth': 'medium', 'pairing': 'medium',
+    'chronology': 'medium', 'heading': 'medium',
+    'polite_tense': 'hard', 'insert': 'hard', 'order': 'hard',
+    'transitivity': 'hard', 'compound_particle': 'hard', 'compare': 'hard',
+}
+
+# 是否「开卷题」：扫读/检索类题目本来就该对着原文做（练的是定位速度），
+# 闭卷题才是真正要考的记忆与推理，看原文会破坏效度 —— 见 README 反作弊设计。
+TEXT_POLICY = {
+    'absent': 'open', 'fact': 'open', 'compare': 'open', 'pairing': 'open',
+    'chronology': 'open', 'heading': 'open', 'headword': 'open',
 }
 
 
 # ================================================================
 # 8. 组卷
 # ================================================================
-def make_quiz(passage_id, count=10, types=None, seed=None):
-    P = load(passage_id)
-    if not P:
-        return {'ok': False, 'reason': '篇章不存在'}
-    if not P.toks or not any(P.toks):
-        return {'ok': False, 'reason': '词法分析器不可用（fugashi/unidic 未安装），无法出题'}
-    rng = random.Random(seed if seed is not None else time.time())
-    want = [t for t in (types or list(GENERATORS)) if t in GENERATORS]
+def _gen_all(P, rng, want=None):
     pools = {}
-    for t in want:
+    for t in (want or list(GENERATORS)):
+        if t not in GENERATORS:
+            continue
         try:
             qs = [q for q in GENERATORS[t](P, rng) if _valid(q)]
         except Exception:
@@ -1124,12 +1754,39 @@ def make_quiz(passage_id, count=10, types=None, seed=None):
         rng.shuffle(qs)
         if qs:
             pools[t] = qs
-    picked, i = [], 0
+    return pools
+
+
+def _decorate(q, pid, n):
+    q['qid'] = f'{pid}-{n}'
+    q['type_label'] = TYPE_LABEL.get(q['qtype'], q['qtype'])
+    q['difficulty'] = DIFFICULTY.get(q['qtype'], 'medium')
+    q['text_policy'] = TEXT_POLICY.get(q['qtype'], 'closed')
+    return q
+
+
+def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None, P=None):
+    """出一套题。difficulty: None/'easy'/'medium'/'hard'/'mixed'（默认混合并向难侧倾斜）。"""
+    P = P or load(passage_id)
+    if not P:
+        return {'ok': False, 'reason': '篇章不存在'}
+    if not P.sents:
+        return {'ok': False, 'reason': '这篇文章切不出正文句子'}
+    if not any(P.toks):
+        return {'ok': False, 'reason': '词法分析器不可用（fugashi/unidic 未安装），无法出题'}
+    rng = random.Random(seed if seed is not None else time.time())
+    pools = _gen_all(P, rng, types)
+    if difficulty in ('easy', 'medium', 'hard'):
+        pools = {t: v for t, v in pools.items()
+                 if DIFFICULTY.get(t, 'medium') == difficulty}
+    picked = []
+    # 轮转抽取，保证题型多样；难题优先（hard → medium → easy）
+    order = sorted(pools, key=lambda t: ({'hard': 0, 'medium': 1, 'easy': 2}[
+        DIFFICULTY.get(t, 'medium')], t))
     while len(picked) < count and pools:
-        keys = sorted(pools)
         progressed = False
-        for t in keys:
-            if not pools[t]:
+        for t in order:
+            if not pools.get(t):
                 pools.pop(t, None)
                 continue
             picked.append(pools[t].pop())
@@ -1140,18 +1797,18 @@ def make_quiz(passage_id, count=10, types=None, seed=None):
             break
     rng.shuffle(picked)
     for n, q in enumerate(picked):
-        q['qid'] = f'{passage_id}-{n}'
+        _decorate(q, passage_id, n)
         _finish(q, rng)
-        q['type_label'] = TYPE_LABEL.get(q['qtype'], q['qtype'])
     return {'ok': True, 'passage_id': passage_id, 'title': P.title,
             'n_sent': len(P.sents), 'questions': picked,
             'available': {t: len(v) for t, v in pools.items()},
-            'coverage': sorted({q['qtype'] for q in picked})}
+            'coverage': sorted({q['qtype'] for q in picked}),
+            'difficulty_mix': dict(Counter(q['difficulty'] for q in picked))}
 
 
-def preview_types(passage_id):
-    """这篇文章每种题型各能出多少道（录入后立刻反馈可练强度）。"""
-    P = load(passage_id)
+def preview_types(passage_id, P=None):
+    """这篇文章每种题型各能出多少道。"""
+    P = P or load(passage_id)
     if not P:
         return {}
     rng = random.Random(7)
@@ -1164,30 +1821,81 @@ def preview_types(passage_id):
     return out
 
 
+def preview(text, title='', sample=3):
+    """**不落库**：粘贴文本 → 解析结构 + 质量体检 + 可出题型统计 + 样题。
+    让你先看清楚"系统把这篇文章读成了什么样"再决定要不要录入。"""
+    rows = parse_text(text)
+    P = Passage(title=title or next((t for _, k, t in rows if k == 'heading'), '')
+                or (rows[0][2] if rows else ''), rows=rows)
+    counts = preview_types(None, P=P)
+    rng = random.Random(11)
+    pools = _gen_all(P, rng)
+    samples = []
+    for t in sorted(pools, key=lambda x: ({'hard': 0, 'medium': 1, 'easy': 2}[
+            DIFFICULTY.get(x, 'medium')], x)):
+        q = _decorate(dict(pools[t][0]), 0, len(samples))
+        _finish(q, rng)
+        samples.append(q)
+        if len(samples) >= sample:
+            break
+    return {
+        'ok': True,
+        'title': P.title,
+        'n_para': len({r[0] for r in rows}),
+        'n_sent': len(P.sents),
+        'n_heading': len(P.headings),
+        'n_char': len(text or ''),
+        'headings': [h['text'] for h in P.headings],
+        'paragraphs': [[t for pa, k, t in rows if pa == g and k == 'body']
+                       for g in sorted({r[0] for r in rows})],
+        'dropped_lines': _dropped_lines(text),
+        'quality': quality_report(rows),
+        'counts': counts,
+        'total_questions': sum(counts.values()),
+        'samples': samples,
+    }
+
+
+def _dropped_lines(text):
+    """被当作样板/时间戳丢掉的行，在预览里如实列出，避免"我的正文哪去了"。"""
+    out = []
+    for raw in normalize(text or '').split('\n'):
+        ln = raw.strip()
+        if ln and (_BOILER_RE.match(ln) or _TS_RE.match(ln)):
+            out.append(ln)
+    return out[:20]
+
+
 def record_results(passage_id, results):
     init()
-    rows = [(time.time(), passage_id, r.get('qtype', ''), 1 if r.get('ok') else 0)
+    rows = [(time.time(), passage_id, r.get('qtype', ''),
+             1 if r.get('ok') else 0, 1 if r.get('peeked') else 0)
             for r in (results or [])]
     if not rows:
         return {'ok': True, 'saved': 0}
     with db.get_conn() as c:
-        c.executemany('INSERT INTO passage_results(ts,passage_id,qtype,ok) VALUES(?,?,?,?)', rows)
+        c.executemany('INSERT INTO passage_results(ts,passage_id,qtype,ok,peeked)'
+                      ' VALUES(?,?,?,?,?)', rows)
+    clean = [r for r in rows if not r[4]]
     db.log('passage_quiz', json.dumps(
-        {'passage_id': passage_id, 'n': len(rows),
-         'ok': sum(r[3] for r in rows)}, ensure_ascii=False))
-    return {'ok': True, 'saved': len(rows)}
+        {'passage_id': passage_id, 'n': len(rows), 'ok': sum(r[3] for r in rows),
+         'peeked': sum(r[4] for r in rows)}, ensure_ascii=False))
+    return {'ok': True, 'saved': len(rows), 'closed_book': len(clean)}
 
 
 def stats(days=14):
     init()
     since = time.time() - days * 86400
     with db.get_conn() as c:
-        rs = c.execute('SELECT qtype, COUNT(*) n, SUM(ok) ok FROM passage_results'
-                       ' WHERE ts>=? GROUP BY qtype', (since,)).fetchall()
-    by = {r['qtype']: {'n': r['n'], 'ok': r['ok'] or 0,
+        rs = c.execute('SELECT qtype, COUNT(*) n, SUM(ok) ok, SUM(peeked) pk'
+                       ' FROM passage_results WHERE ts>=? GROUP BY qtype',
+                       (since,)).fetchall()
+    by = {r['qtype']: {'n': r['n'], 'ok': r['ok'] or 0, 'peeked': r['pk'] or 0,
+                       'label': TYPE_LABEL.get(r['qtype'], r['qtype']),
                        'rate': round(100 * (r['ok'] or 0) / r['n']) if r['n'] else 0}
           for r in rs}
     tot = sum(v['n'] for v in by.values())
     ok = sum(v['ok'] for v in by.values())
-    return {'days': days, 'total': tot, 'ok': ok,
+    pk = sum(v['peeked'] for v in by.values())
+    return {'days': days, 'total': tot, 'ok': ok, 'peeked': pk,
             'rate': round(100 * ok / tot) if tot else 0, 'by_type': by}

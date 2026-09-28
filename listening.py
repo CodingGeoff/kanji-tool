@@ -70,7 +70,7 @@ LEVELS = sb.LEVELS
 DEFAULT_CFG = {
     'enabled': True,
     'level': 'any',              # any | N5..N1 —— 句子选材难度
-    'scope': 'corpus',           # corpus | book | mixed | lyric（与组句练习同义）
+    'scope': 'corpus',           # corpus | book | mixed | lyric | passage（与组句练习同义）
     'count': 6,
     # 译文最小对立占最高比重：四个选项共享全部实词，只有语法关系不同，
     # 「只听见一个词就能排除三项」的应试策略在这种题面前完全失效。
@@ -127,7 +127,7 @@ def _sanitize_cfg(cfg):
         cfg = {}
     if cfg.get('level') not in (['any'] + LEVELS):
         cfg['level'] = 'any'
-    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
+    if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric', 'passage'):
         cfg['scope'] = 'corpus'
     if cfg.get('rate') not in _RATES:
         cfg['rate'] = 'normal'
@@ -177,6 +177,16 @@ def _fetch_pool(scope, ids, need):
     # 就会把全库语料悄悄混进来，用户以为在练课本，实际在听 Tatoeba。
     # 取空时老老实实返回空列表，由 make_quiz 统一退化并写明 scope_note，
     # 让界面照实说「课本没有可用句子，已退回全库」。
+    if scope == 'passage':
+        # 「篇章精读」里录入并已并入语料库的文章句子（source='passage'）
+        try:
+            with db.get_conn() as c:
+                rows += [dict(r) for r in c.execute(
+                    "SELECT id sid, text text, translation translation, source source "
+                    "FROM sentences WHERE source='passage' ORDER BY RANDOM() LIMIT ?",
+                    (need,)).fetchall()]
+        except Exception:
+            pass
     if scope in ('corpus', 'mixed'):
         try:
             with db.get_conn() as c:
@@ -823,7 +833,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     if not cfg.get('enabled', True):
         return {'ok': False, 'reason': '听力练习已在配置中关闭', 'count': 0, 'questions': []}
     level = level if level in (['any'] + LEVELS) else cfg['level']
-    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else cfg['scope']
+    scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric', 'passage') else cfg['scope']
     count = _to_int(count, cfg['count'], min_val=1, max_val=20)
 
     resolved = textbook.resolve_book_scope(scope, book_ids)
@@ -840,6 +850,8 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             scope_note = 'no_book_sentences_fallback_corpus'
         elif scope == 'lyric':
             scope_note = 'no_songs_fallback_corpus'
+        elif scope == 'passage':
+            scope_note = 'no_passage_sentences_fallback_corpus'
         else:
             scope_note = 'empty_pool_fallback_corpus'
         scope = 'corpus'

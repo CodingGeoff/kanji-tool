@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -195,15 +196,290 @@ def main():
     check(D.delete_passage(junk), '删除失败')
     check(D.get_passage(junk) is None, '删除后仍能查到')
 
+    return 0
+
+
+# ================================================================
+# 追加：真实新闻文章 / 任意形状输入 / 进阶题型 / 反作弊统计
+# ================================================================
+SAMPLES = {}
+_sdir = os.path.join(HERE, 'samples')
+if os.path.isdir(_sdir):
+    for fn in sorted(os.listdir(_sdir)):
+        if fn.endswith('.txt'):
+            SAMPLES[fn[:-4]] = open(os.path.join(_sdir, fn), encoding='utf-8').read()
+
+
+def objectivity_audit(P, q, label=''):
+    """对任意一道题做客观性复核（测试自己再验一遍，不信任生成器）。"""
+    t, full = q['qtype'], P.joined()
+    tag = f'[{label}/{t}]'
+    check(len(q['options']) == len(set(q['options'])), f'{tag} 选项重复')
+    check(q['answer'] in q['options'], f'{tag} 答案不在选项中')
+    check(q['options'][q['answer_index']] == q['answer'], f'{tag} answer_index 错位')
+    check(bool(q['evidence']), f'{tag} 无判定依据')
+    check(q['objectivity'] in ('verbatim', 'contradiction', 'rule'), f'{tag} 客观性标签非法')
+    check(q['difficulty'] in ('easy', 'medium', 'hard'), f'{tag} 难度标签非法')
+    check(q['text_policy'] in ('open', 'closed'), f'{tag} 开卷/闭卷标签非法')
+    if t == 'absent':
+        check(q['answer'] not in full, f'{tag} 答案其实在原文里（冤案）')
+        for o in q['options']:
+            if o != q['answer']:
+                check(o in full, f'{tag} 干扰项「{o}」不在原文里（冤案）')
+    elif t in ('connective', 'anaphora', 'particle', 'fact', 'headword',
+               'truth', 'compound_particle', 'pairing', 'compare',
+               'chronology', 'heading'):
+        check(q['answer'] in full or q['answer'] in P.text,
+              f'{tag} 答案「{q["answer"]}」在原文中找不到原样字串')
+    if t == 'connective':
+        cls = D.CONJ[q['answer']]
+        for o in q['options']:
+            if o != q['answer']:
+                check(o in D.CONJ, f'{tag} 干扰项不在接续词表：{o}')
+                check(not D._conj_conflict(D.CONJ[o], cls), f'{tag} 干扰项语义相邻：{o}')
+                check(o not in full, f'{tag} 干扰项在原文别处出现：{o}')
+    if t == 'compound_particle':
+        cls = D.COMPOUND_P[q['answer']]
+        for o in q['options']:
+            if o != q['answer']:
+                check(o in D.COMPOUND_P, f'{tag} 干扰项不在机能表现表：{o}')
+                check(D.COMPOUND_P[o] != cls, f'{tag} 干扰项与答案同类：{o}')
+                check(o not in full, f'{tag} 干扰项在原文别处出现：{o}')
+    if t == 'particle':
+        head = q['context'].split('（＿）')[0]
+        tk = D.tag(head)
+        noun = tk[-1]['s'] if tk else ''
+        for o in q['options']:
+            if o == q['answer']:
+                check(D.corpus_count(noun + o) >= 1, f'{tag} 正解搭配无语料实证')
+            else:
+                check(D.corpus_count(noun + o) == 0, f'{tag} 干扰项「{noun}{o}」有语料实证（冤案）')
+    if t == 'compare':
+        vals = [D.parse_number(re.sub(r'[^0-9０-９.．〇零一二三四五六七八九十百千万億]', '', o))
+                for o in q['options']]
+        check(all(v is not None for v in vals), f'{tag} 选项里有解析不出的数值')
+        if all(v is not None for v in vals):
+            ai = q['options'].index(q['answer'])
+            if '最も大きい' in q['prompt']:
+                check(vals[ai] == max(vals), f'{tag} 答案不是最大值（算术复核失败）')
+            elif '最も小さい' in q['prompt']:
+                check(vals[ai] == min(vals), f'{tag} 答案不是最小值（算术复核失败）')
+            else:
+                check(vals[ai] == sorted(vals, reverse=True)[1],
+                      f'{tag} 答案不是第二大（算术复核失败）')
+    if t == 'pairing':
+        pct = q['prompt'].split('「')[1].split('」')[0]
+        hit = [s2 for s2 in P.sents if q['answer'] in s2 and pct in s2]
+        check(bool(hit), f'{tag} 项目与数值不在同一句中（配对无据）')
+        for o in q['options']:
+            if o != q['answer']:
+                check(not any(o in s2 and pct in s2 for s2 in P.sents),
+                      f'{tag} 干扰项「{o}」也与该数值同句（冤案）')
+    if t == 'transitivity':
+        blanked = q['context'].replace('＿＿。', '')
+        check(any(s2.startswith(blanked) and q['answer'] in s2 for s2 in P.sents),
+              f'{tag} 答案不是原文该句的实际形式（活用自校验失效）')
+    if t == 'heading':
+        check(q['answer'] in [h['text'] for h in P.headings], f'{tag} 答案不是本文小标题')
+    if t == 'polite_tense':
+        blanked = q['context'].replace('＿＿。', '')
+        check(any(s2.startswith(blanked) and q['answer'] in s2 for s2 in P.sents),
+              f'{tag} 答案不是原文该句的实际形式')
+    if t == 'quote':
+        check(q['answer'] in q['context'], f'{tag} 说话人不在该句中')
+        for o in q['options']:
+            if o != q['answer']:
+                check(o not in q['context'], f'{tag} 干扰项也在本句中：{o}')
+    if t == 'truth':
+        check(q['answer'] in P.sents, f'{tag} 正确项不是原文句子')
+        for o in q['options']:
+            if o != q['answer']:
+                check(o not in full, f'{tag} 错误项竟在原文中')
+    if t == 'insert':
+        sent = q['prompt'].split('「', 1)[1].rsplit('」', 1)[0]
+        body = [x for x in q['context'].split('\n') if not x.startswith('（')]
+        slot = int(q['answer'].strip('（）'))
+        joined = ''.join(body[:slot - 1] + [sent] + body[slot - 1:])
+        check(joined in full, f'{tag} 按答案插回去得不到原文顺序')
+    if t == 'order':
+        lab = {}
+        for line in q['context'].split('\n'):
+            lab[line[0]] = line[3:]
+        check(''.join(lab[ch] for ch in q['answer']) in full,
+              f'{tag} 按答案顺序拼接不等于原文')
+
+
+def main2():
+    import re as _re
+    globals()['re'] = _re
+
+    print('\n[8] 真实新闻文章：清洗 / 结构识别 / 预览不落库')
+    n_before = len(D.list_passages())
+    for name, txt in SAMPLES.items():
+        pv = D.preview(txt)
+        check(pv['ok'], f'{name} 预览失败')
+        check(pv['n_sent'] >= 5, f'{name} 切出的正文句太少：{pv["n_sent"]}')
+        check(pv['title'] and '\n' not in pv['title'], f'{name} 标题识别异常')
+        check('シェアする' not in ''.join(sum(pv['paragraphs'], [])),
+              f'{name} 界面样板行「シェアする」混进了正文')
+        check(not any(_re.fullmatch(r'\d{4}年\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}', x)
+                      for x in sum(pv['paragraphs'], [])),
+              f'{name} 时间戳混进了正文')
+        for st in sum(pv['paragraphs'], []):
+            check(st[-1] in '。！？!?…', f'{name} 有没切干净的句子：{st[:30]}')
+        check(pv['total_questions'] >= 10,
+              f'{name} 可出题数太少：{pv["total_questions"]}')
+        print(f'  {name}: {pv["n_para"]}段/{pv["n_sent"]}句/小标题{pv["n_heading"]} '
+              f'→ 可出题 {pv["total_questions"]}，剔除样板行 {len(pv["dropped_lines"])} 行')
+    check(len(D.list_passages()) == n_before, '预览不应落库（列表数量被改变了）')
+
+    print('\n[9] 真实新闻文章：全部题目逐题客观性复核')
+    total = 0
+    cover = set()
+    for name, txt in SAMPLES.items():
+        pid = D.import_passage('', txt, source='NHK')['id']
+        P = D.load(pid)
+        rng = __import__('random').Random(5)
+        pools = D._gen_all(P, rng)
+        for t, qs in pools.items():
+            for k, q in enumerate(qs):
+                D._decorate(q, pid, k)
+                D._finish(q, rng)
+                objectivity_audit(P, q, name)
+                total += 1
+            cover.add(t)
+    print(f'  共复核 {total} 道题，覆盖题型 {len(cover)} 种：{sorted(cover)}')
+    check(total >= 80, f'真实文章的题量太少：{total}')
+    check(len(cover) >= 12, f'真实文章的题型覆盖太少：{len(cover)}')
+
+    print('\n[10] 任意形状输入的稳健性（不崩、不出坏题）')
+    shapes = {
+        '只有一行标题': '米前国務副長官“中国は日米の結束弱めるねらい”',
+        '只有一句话': '秋雨前線の影響で、関東甲信では大気の状態が非常に不安定になっています。',
+        '一段话（无空行）': ('秋雨前線の影響で、関東甲信では大気の状態が非常に不安定になっています。'
+                     'しかし、あすの朝には落ち着く見込みです。気象庁は土砂災害に注意するよう'
+                     '呼びかけています。伊豆諸島では1時間に47ミリの激しい雨が降りました。'),
+        '硬换行的长句': ('台風25号に伴う大雨で東京 目黒区の住宅街では、高さ2メートルから\n'
+                   '3メートルほどの住宅の擁壁が崩れました。\n現地を調査した専門家は状態の確認を'
+                   '呼びかけています。'),
+        '全是界面文字': 'シェアする\n2026年9月28日 17:43\n関連ニュース\nもっと見る',
+        '中日混排': '这是中文说明。\n日本語の文章です。とても短いです。\nend of text.',
+        '空白与符号': '   \n\n・・・\n▽\n\n   ',
+    }
+    for name, txt in shapes.items():
+        try:
+            pv = D.preview(txt)
+        except Exception as e:
+            check(False, f'[{name}] 预览抛异常：{e}')
+            continue
+        check(pv['ok'], f'[{name}] 预览未返回 ok')
+        P = D.build('', txt)
+        rng = __import__('random').Random(1)
+        try:
+            pools = D._gen_all(P, rng)
+        except Exception as e:
+            check(False, f'[{name}] 出题抛异常：{e}')
+            continue
+        nq = sum(len(v) for v in pools.values())
+        for t, qs in pools.items():
+            for k, q in enumerate(qs):
+                D._decorate(q, 0, k)
+                D._finish(q, rng)
+                objectivity_audit(P, q, name)
+        print(f'  {name}: {pv["n_sent"]} 句 → {nq} 道题（全部通过客观性复核）')
+    # 全是界面文字时应当明确拒绝录入，而不是造出一篇空篇章
+    try:
+        D.import_passage('', shapes['全是界面文字'])
+        check(False, '全是界面文字时应当拒绝录入')
+    except ValueError:
+        check(True, '')
+
+    print('\n[11] 截断模糊测试（长文章的任意片段都不能崩）')
+    base = SAMPLES.get('nhk_yoheki', TEXT)
+    rnd = __import__('random').Random(20260928)
+    bad = 0
+    for _ in range(40):
+        a = rnd.randrange(0, max(1, len(base) - 100))
+        b = min(len(base), a + rnd.randrange(80, 2000))
+        frag = base[a:b]
+        try:
+            P = D.build('', frag)
+            rng = __import__('random').Random(2)
+            pools = D._gen_all(P, rng)
+            for t, qs in pools.items():
+                for k, q in enumerate(qs):
+                    D._decorate(q, 0, k)
+                    D._finish(q, rng)
+                    if not D._valid(q):
+                        bad += 1
+        except Exception as e:
+            check(False, f'片段 [{a}:{b}] 抛异常：{type(e).__name__} {e}')
+    check(bad == 0, f'模糊测试产出 {bad} 道未通过门禁的题')
+    print('  40 个随机片段：无异常、无坏题')
+
+    print('\n[12] 难度与开卷/闭卷分层')
+    pid = D.import_passage('', SAMPLES.get('nhk_yoheki', TEXT))['id']
+    hard = D.make_quiz(pid, count=10, difficulty='hard', seed=3)
+    check(all(q['difficulty'] == 'hard' for q in hard['questions']),
+          '难度筛选失效')
+    mix = D.make_quiz(pid, count=16, seed=4)
+    check(len(set(q['qtype'] for q in mix['questions'])) >= 6,
+          f'一套 16 题的题型多样性不足：{mix["coverage"]}')
+    check(any(q['text_policy'] == 'closed' for q in mix['questions']) and
+          any(q['text_policy'] == 'open' for q in mix['questions']),
+          '开卷/闭卷题没有同时出现')
+
+    print('\n[13] 反作弊统计：参考原文的题单独记账')
+    D.record_results(pid, [{'qtype': 'connective', 'ok': True, 'peeked': False},
+                           {'qtype': 'connective', 'ok': True, 'peeked': True},
+                           {'qtype': 'compare', 'ok': False, 'peeked': False}])
+    st = D.stats(14)
+    check(st['peeked'] == 1, f'偷看计数不对：{st}')
+    check(st['by_type']['connective']['peeked'] == 1, '分题型偷看计数不对')
+
+    print('\n[14] 并入语料库（组句 / 听力 / 挖空 共用题源）')
+    before = 0
+    with db.get_conn() as c:
+        before = c.execute("SELECT COUNT(*) n FROM sentences WHERE source='passage'").fetchone()['n']
+    n = D.add_to_corpus(pid)
+    with db.get_conn() as c:
+        after = c.execute("SELECT COUNT(*) n FROM sentences WHERE source='passage'").fetchone()['n']
+        row = c.execute("SELECT text, tokens FROM sentences WHERE source='passage' LIMIT 1").fetchone()
+    check(n > 0 and after > before, f'并入语料库失败：{n}')
+    check(row and row['tokens'] and '[' in row['tokens'], '并入的句子没有注音 tokens')
+    # 二次并入不应重复插入
+    n2 = D.add_to_corpus(pid)
+    with db.get_conn() as c:
+        after2 = c.execute("SELECT COUNT(*) n FROM sentences WHERE source='passage'").fetchone()['n']
+    check(after2 == after, f'重复并入产生了重复句：{after}→{after2}')
+    print(f'  并入 {n} 句（去重后二次并入 {n2} 句，总数不变）')
+
+    print('\n[15] 组句 / 听力 能用上篇章句子')
+    import sentence_builder as SB
+    ok_any = False
+    with db.get_conn() as c:
+        rows = c.execute("SELECT text FROM sentences WHERE source='passage' LIMIT 12").fetchall()
+    for r in rows:
+        try:
+            parsed = SB.parse_sentence(r['text'])
+            if parsed and len(parsed['chunks']) >= 3:
+                ok_any = True
+                break
+        except Exception:
+            pass
+    check(ok_any, '并入的篇章句子没有一句能被组句引擎解析')
+
     print('\n' + '=' * 56)
     if FAILS:
         print(f'FAILED: {len(FAILS)} 项')
-        for f in FAILS:
+        for f in FAILS[:40]:
             print(' -', f)
         return 1
-    print('ALL PASSED')
+    print('ALL PASSED（含真实新闻文章全量复核）')
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    rc = main()
+    rc2 = main2()
+    sys.exit(rc or rc2)

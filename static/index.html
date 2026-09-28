@@ -633,10 +633,14 @@ body.ktv-song.showhdr header{display:flex;position:static}
       </div>
       <textarea id="dcText" rows="10" style="width:100%;margin-top:8px;font-size:15px;line-height:1.9"
         placeholder="ここに日本語の文章をまるごと貼り付けてください。段落は空行で区切ります。"></textarea>
-      <div class="row" style="margin-top:8px;gap:8px">
-        <button class="btn primary" onclick="dcImport()">录入并分析可出题型</button>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" onclick="dcPreview()">① 先预览（不入库）</button>
+        <button class="btn" id="dcConfirmBtn" onclick="dcImport()" disabled>② 确认录入</button>
+        <label class="advtog" title="勾选后这篇文章的句子会并入语料库，组句 / 听力 / 挖空 / 语料检索立刻就能练到它">
+          <input type="checkbox" id="dcToCorpus" checked><span>同时并入语料库（组句·听力·挖空共用）</span></label>
         <span class="muted" id="dcImportHint" style="font-size:12.5px"></span>
       </div>
+      <div id="dcPreviewBox"></div>
     </div>
     <div class="card" style="margin-top:14px">
       <div class="row" style="justify-content:space-between"><b>我的篇章</b>
@@ -1031,8 +1035,10 @@ async function dcLoad(){
         <span class="muted" style="font-size:12.5px">${p.n_para}段 · ${p.n_sent}句 · ${p.n_char}字${p.source?' · '+esc(p.source):''}</span>
       </div>
       <div class="row" style="margin-top:6px;gap:6px">
-        <button class="btn primary" onclick="dcStart(${p.id},10)">开始练习（10题）</button>
+        <button class="btn primary" onclick="dcStart(${p.id},10)">测验模式（10题·闭卷）</button>
         <button class="btn" onclick="dcStart(${p.id},20)">20题</button>
+        <button class="btn" onclick="dcStart(${p.id},12,'hard')">只练难题</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,true)">精读模式（对照原文·不计分）</button>
         <button class="btn" onclick="dcInfo(${p.id})">可出题型 / 原文</button>
         <button class="btn danger" onclick="dcDel(${p.id})">删除</button>
       </div>
@@ -1042,15 +1048,53 @@ async function dcLoad(){
     const s2=st.stats||{}; $('#dcStatLine').textContent = s2.total? `近14天：${s2.ok}/${s2.total} 正确（${s2.rate}%）`:'';
   }catch(e){}
 }
+let dcPv=null;
+async function dcPreview(){
+  const text=$('#dcText').value.trim();
+  if(text.length<20){toast('正文太短');return;}
+  $('#dcImportHint').textContent='解析中…';
+  let d; try{ d=await api('/api/discourse/preview',{method:'POST',body:JSON.stringify({title:$('#dcTitle').value,text,sample:3})}); }
+  catch(e){ $('#dcImportHint').textContent=''; toast('解析失败'); return; }
+  if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'解析失败'); return; }
+  dcPv=d; $('#dcImportHint').textContent=''; $('#dcConfirmBtn').disabled=false;
+  const cnt=Object.entries(d.counts).filter(([k,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const q=d.quality||{};
+  $('#dcPreviewBox').innerHTML=`<div style="margin-top:12px;border-top:1px dashed var(--line);padding-top:12px">
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <span class="tag">标题：${esc(d.title||'（无）')}</span>
+      <span class="tag">${d.n_para} 段 / ${d.n_sent} 句 / ${d.n_char} 字</span>
+      <span class="tag">小标题 ${d.n_heading}</span>
+      <span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">可出题 ${d.total_questions} 道</span>
+    </div>
+    ${d.dropped_lines&&d.dropped_lines.length?`<div class="muted" style="margin-top:8px;font-size:12.5px">已自动剔除的界面行：${d.dropped_lines.map(x=>`<code>${esc(x)}</code>`).join('、')}</div>`:''}
+    <div class="muted" style="margin-top:8px;font-size:12.5px">
+      ${q.n_issue?`⚠️ 体检提示 ${q.n_issue} 条（只是提示，不影响录入）：<ul style="margin:4px 0 0 18px">${(q.issues||[]).slice(0,5).map(i=>`<li>第${i.idx+1}句「${esc(i.text)}…」：${esc(i.tags.join('；'))}</li>`).join('')}</ul>`
+        :'✅ 体检通过：没有发现切句异常、乱码或语法可疑的句子'}
+    </div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${cnt.map(([k,v])=>`<span class="tag">${DC_TYPE[k]||k} ${v}</span>`).join('')||'<span class="muted">这篇文本线索太少，出不了题</span>'}
+    </div>
+    ${(d.samples||[]).length?`<details style="margin-top:10px" open><summary class="muted" style="cursor:pointer">样题预览（${d.samples.length} 道，按难度优先）</summary>
+      ${d.samples.map(x=>`<div class="sent-item" style="margin-top:6px">
+        <div class="row" style="gap:6px"><span class="tag">${esc(x.type_label)}</span><span class="tag">${x.difficulty}</span><span class="tag">${x.text_policy==='open'?'开卷·扫读':'闭卷'}</span></div>
+        <div style="margin-top:6px;font-size:14.5px"><b>${esc(x.prompt).replace(/\n/g,'<br>')}</b></div>
+        <div class="jp" style="white-space:pre-wrap;margin-top:4px">${esc(x.context)}</div>
+        <div class="muted" style="margin-top:4px;font-size:13px">选项：${x.options.map(o=>esc(o)).join(' / ')} → 正解：<b>${esc(x.answer)}</b></div>
+        <div class="muted" style="margin-top:2px;font-size:12px">依据：${esc((x.evidence||[])[0]||'')}</div>
+      </div>`).join('')}</details>`:''}
+    <div class="muted" style="margin-top:10px;font-size:12.5px">确认无误后点「② 确认录入」。</div>
+  </div>`;
+}
 async function dcImport(){
   const text=$('#dcText').value.trim();
   if(text.length<60){toast('正文太短，篇章题需要上下文（至少 60 字）');return;}
-  $('#dcImportHint').textContent='分析中…';
+  $('#dcImportHint').textContent='录入中…';
   const d=await api('/api/discourse/passages',{method:'POST',body:JSON.stringify(
-    {title:$('#dcTitle').value,source:$('#dcSource').value,text})});
+    {title:$('#dcTitle').value,source:$('#dcSource').value,text,to_corpus:$('#dcToCorpus').checked})});
   if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'录入失败'); return; }
-  $('#dcImportHint').textContent=`已录入：${d.n_para}段 / ${d.n_sent}句 / 可出题 ${Object.values(d.preview).reduce((a,b)=>a+b,0)} 道`;
+  $('#dcImportHint').textContent=`已录入：${d.n_para}段 / ${d.n_sent}句 / 可出题 ${Object.values(d.preview).reduce((a,b)=>a+b,0)} 道${d.corpus_added?` / 并入语料库 ${d.corpus_added} 句`:''}`;
   $('#dcText').value='';$('#dcTitle').value='';$('#dcSource').value='';
+  $('#dcPreviewBox').innerHTML='';$('#dcConfirmBtn').disabled=true;dcPv=null;
   dcLoad();
 }
 async function dcDel(id){ if(!confirm('删除这篇文章？'))return; await api('/api/discourse/passages/'+id,{method:'DELETE'}); dcLoad(); }
@@ -1067,31 +1111,56 @@ async function dcInfo(id){
       <div class="jp" style="margin-top:6px;line-height:2;font-size:15px">${(d.passage.sentences||[]).map(x=>esc(x.text)).join('')}</div>
     </details></div>`;
 }
-async function dcStart(id,count){
-  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify({passage_id:id,count})});
+async function dcStart(id,count,difficulty,study){
+  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify({passage_id:id,count,difficulty:difficulty||undefined})});
   if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
-  dcQuiz={pid:id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false};
+  let full='';
+  try{ const p=await api('/api/discourse/passages/'+id);
+       full=(p.passage.sentences||[]).map(x=>x.kind==='heading'?('\n【'+x.text+'】\n'):x.text).join(''); }catch(e){}
+  dcQuiz={pid:id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
+          study:!!study,full,peeked:false,mix:d.difficulty_mix||{}};
   $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
   dcRender();
 }
 function dcQuit(){ dcQuiz=null; dcLoad(); }
-function dcRender(){
+function dcTextPanel(q){
+  const open=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked;
+  if(!open){
+    return `<div class="muted" style="margin-top:10px;font-size:12.5px">
+      🔒 闭卷题：先凭记忆和上下文作答。
+      <button class="btn" style="padding:3px 10px;font-size:12.5px" onclick="dcPeek()">我要看原文（本题改记为「参考原文」，不计入闭卷成绩）</button></div>`;
+  }
+  const why=dcQuiz.study?'精读模式：对照原文学习，本轮不计分'
+    :(q.text_policy==='open'?'开卷题：本题考的就是在原文里定位信息的速度，看原文是正常做法'
+      :'你已查看原文，本题记为「参考原文」，不计入闭卷成绩');
+  return `<details style="margin-top:10px" ${q.text_policy==='open'||dcQuiz.study?'open':''}>
+    <summary class="muted" style="cursor:pointer;font-size:12.5px">📄 原文（${esc(why)}）</summary>
+    <div class="jp" style="white-space:pre-wrap;line-height:2;font-size:15px;margin-top:6px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(dcQuiz.full)}</div>
+  </details>`;
+}
+function dcPeek(){ dcQuiz.peeked=true; dcRender(true); }
+function dcRender(keepPick){
   const v=$('#dcQuizView'),q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
-  dcQuiz.picked=null;dcQuiz.checked=false;
+  if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
+  const DIFF={easy:'易',medium:'中',hard:'难'};
   v.innerHTML=`<div class="card quiz-wrap">
     <div class="quiz-top">
       <button class="btn" onclick="dcQuit()">‹ 退出</button>
       <span class="quiz-prog">📖 ${esc(dcQuiz.title)} ${dcQuiz.i+1} / ${n}</span>
-      <span class="sb-badges"><span class="tag">${esc(q.type_label||q.qtype)}</span></span>
+      <span class="sb-badges"><span class="tag">${esc(q.type_label||q.qtype)}</span>
+        <span class="tag">难度 ${DIFF[q.difficulty]||q.difficulty}</span>
+        <span class="tag">${q.text_policy==='open'?'开卷·扫读':'闭卷'}</span>
+        ${dcQuiz.study?'<span class="tag">精读模式·不计分</span>':''}</span>
       <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${dcQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
     <div style="margin-top:14px;font-size:16px"><b>${esc(q.prompt).replace(/\n/g,'<br>')}</b></div>
     <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap">${esc(q.context)}</div>
+    ${dcTextPanel(q)}
     <div class="sb-area" id="dcOpts" style="margin-top:14px">
-      ${q.options.map((o,k)=>`<button class="sb-tile" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+      ${q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
     </div>
-    <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" disabled>检查</button></div>
+    <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${dcQuiz.picked==null?'disabled':''}>检查</button></div>
     <div id="dcExp"></div></div>`;
 }
 function dcPick(k){
@@ -1103,20 +1172,24 @@ function dcPick(k){
 function dcCheck(){
   if(dcQuiz.checked||dcQuiz.picked==null)return;
   const q=dcQuiz.qs[dcQuiz.i], ok=q.options[dcQuiz.picked]===q.answer;
-  dcQuiz.checked=true; if(ok)dcQuiz.ok++;
-  dcQuiz.ans.push({qtype:q.qtype,ok});
+  const peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
+  dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
+  dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
   document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
     b.classList.remove('sel');
     if(q.options[i]===q.answer)b.classList.add('ok');
     else if(i===dcQuiz.picked)b.classList.add('ng');
   });
   $('#dcExp').innerHTML=`<div class="quiz-exp">
-    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b></div>
+    <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b>
+      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（参考原文作答，不计入闭卷成绩）</span>':''}</div>
     <div style="margin-top:8px;font-size:15px">正解：<b>${esc(q.answer)}</b></div>
     <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(q.explain||'')}</div>
     <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
       <b>判定依据（${DC_OBJ[q.objectivity]||q.objectivity}）</b>
       <ul style="margin:4px 0 0 18px">${(q.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
+    ${!dcQuiz.study&&q.text_policy!=='open'?`<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">📄 回看原文（已作答，随便看）</summary>
+      <div class="jp" style="white-space:pre-wrap;line-height:2;font-size:15px;margin-top:6px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(dcQuiz.full)}</div></details>`:''}
     <div class="quiz-nav"><button class="btn primary" onclick="dcNext()">${dcQuiz.i+1>=dcQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button></div>
   </div>`;
 }
@@ -1126,11 +1199,14 @@ function dcNext(){
 }
 async function dcFinish(){
   try{ await api('/api/discourse/answer',{method:'POST',body:JSON.stringify({passage_id:dcQuiz.pid,results:dcQuiz.ans})}); }catch(e){}
-  const n=dcQuiz.qs.length,pct=Math.round(100*dcQuiz.ok/n);
+  const n=dcQuiz.qs.length;
+  const closed=dcQuiz.ans.filter(a=>!a.peeked), cn=closed.length;
+  const pct=cn?Math.round(100*dcQuiz.ok/cn):0;
   const by={};dcQuiz.ans.forEach(a=>{by[a.qtype]=by[a.qtype]||[0,0];by[a.qtype][1]++;if(a.ok)by[a.qtype][0]++;});
   $('#dcQuizView').innerHTML=`<div class="card quiz-wrap">
     <div class="quiz-top"><button class="btn" onclick="dcQuit()">‹ 返回篇章列表</button><b>📖 篇章精读完成</b></div>
-    <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${dcQuiz.ok}</b> / ${n}（${pct}%）</div>
+    <div style="margin-top:14px;font-size:24px;text-align:center">闭卷得分 <b style="color:var(--accent2);font-size:34px">${dcQuiz.ok}</b> / ${cn}${cn?`（${pct}%）`:''}
+      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题参考了原文（开卷/精读），单独统计不计入闭卷分`:''}</div></div>
     <div class="row" style="justify-content:center;gap:6px;margin-top:10px;flex-wrap:wrap">
       ${Object.keys(by).map(t=>`<span class="tag">${DC_TYPE[t]||t} ${by[t][0]}/${by[t][1]}</span>`).join('')}</div>
     <div class="quiz-nav" style="justify-content:center">
@@ -3000,7 +3076,7 @@ async function sbOpen(opts){
           pairSel:null,pairErr:0,pairDone:0};
   sbRender();
 }
-const SB_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
+const SB_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词',passage:'📰 我的篇章'};
 function sbModeBadge(){
   const m=sbQuiz.mode;
   const sl=SB_SCOPE_LABEL[sbQuiz.scope]||'';
@@ -3036,7 +3112,7 @@ function sbRender(){
   }
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${q.swap?'把词块排成一个语法正确的句子':'把词块排成句子'}</b></div>
-    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:`<div class="muted" style="margin-top:6px;line-height:1.7">（此句暂无译文：仍须填满全部 <b>${q.n_required}</b> 个句子槽位来复原完整目标句；只组成一个分句不算完成。${q.alt_group?'同一槽位出现多个候选时任选其一，不必把候选全部用上。':''}日语允许的完整句语序均认可。）</div>`}
+    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:''}
     ${q.swap?`<div class="sb-swapnote">✨ 语料变体题：原句的「${esc(q.swap.from)}${esc(q.swap.particle)}」已按语料真实搭配换成「${esc(q.swap.to)}${esc(q.swap.particle)}」，语法结构不变</div>`:''}
     <div class="sb-area ans jp" id="sbAns"><span class="ph">点击下方词块，按顺序组成句子…</span></div>
     <div class="sb-area jp" id="sbBank">
@@ -3045,7 +3121,7 @@ function sbRender(){
     <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
-      <span class="muted" id="sbNeed" style="font-size:12.5px">${q.translation?'已填 0 块':`已填 0 块（需要 ${q.n_required} 个必要槽位）`}</span>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 块</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -3066,14 +3142,16 @@ function sbSyncTiles(){
     const b=document.getElementById('sbT'+k);
     if(b)b.style.visibility=sbQuiz.sel.includes(k)?'hidden':'visible';
   });
-  const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
-  const need=$('#sbNeed');
-  if(need){
-    // 只报「放了几块」：原先按 tile_map 只数真槽位，等于每点一块就告诉你它是不是
-    // 混淆块，一路试过去就能反推出正确块集合。有译文时连必要块数也不必再报。
-    const n=sbQuiz.sel.length;
-    need.textContent=q.translation?`已填 ${n} 块`:`已填 ${n} 块（需要 ${q.n_required} 个必要槽位）`;
+  // 槽位不够就不让提交：与其提交后再用文字提示「只组成一个分句不算完成」，
+  // 不如直接把「检查」按钮锁住——不泄露任何关于哪些块是干扰块的信息。
+  const need_n=q.n_required||1;
+  const btn=$('#sbCheckBtn');
+  if(btn){
+    btn.disabled=sbQuiz.sel.length<need_n;
+    btn.title=btn.disabled?'还没有复原出完整的句子':'';
   }
+  const need=$('#sbNeed');
+  if(need)need.textContent=`已填 ${sbQuiz.sel.length} 块`;
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
 async function sbCheck(){
@@ -3197,7 +3275,8 @@ async function sbCfgOpen(){
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
-        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option>
+        <option value="passage" ${c.scope==='passage'?'selected':''}>📰 我的篇章（精读里录入的文章）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">「仅课本/课本＋语料」：在某本书详情页内打开练习只用这本书；在书架页且没有勾选课本时，自动使用书架里<b>全部启用中的课本</b>（不会悄悄换成语料库）；一本课本都没有时才会诚实退回全库语料。练习界面右上角的题源标签会标出实际用了什么。</div></div>
       <span class="muted">译文条件（组句）</span><select id="sbcTrMode">
         <option value="with" ${c.translation_mode==='with'?'selected':''}>必须有译文（可安全使用语义混淆）</option>
@@ -3248,7 +3327,7 @@ async function sbCfgSave(){
 /* ---------- v21 听力练习（听后选义 / 听音辨句：先听录音再作答） ---------- */
 let lsQuiz=null, lsCfgCache=null, _lsAudio=null, _lsPlays=0;
 const LS_LV=['any','N5','N4','N3','N2','N1'];
-const LS_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词'};
+const LS_SCOPE_LABEL={corpus:'🌐 全库语料',book:'📖 仅课本',mixed:'📖＋🌐 课本+语料',lyric:'🎵 歌词',passage:'📰 我的篇章'};
 async function lsCfgLoad(force){
   if(!lsCfgCache||force){
     try{const d=await api('/api/listening/cfg');lsCfgCache=d.cfg;lsCfgCache._stats=d.stats||[];}
@@ -3473,7 +3552,8 @@ async function lsCfgOpen(){
         <option value="corpus" ${c.scope==='corpus'?'selected':''}>全库语料</option>
         <option value="book" ${c.scope==='book'?'selected':''}>仅课本句子</option>
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
-        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option></select>
+        <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option>
+        <option value="passage" ${c.scope==='passage'?'selected':''}>📰 我的篇章（精读里录入的文章）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">规则与组句练习一致：未勾选具体课本时自动用书架里全部启用中的课本，绝不会悄悄换成语料库。</div></div>
       <span class="muted">译文选项难度</span><div><select id="lscMeaningDifficulty">
         <option value="advanced" ${c.meaning_difficulty!=='standard'?'selected':''}>高级：同主题关键词硬负例</option>
