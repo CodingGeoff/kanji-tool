@@ -2646,7 +2646,7 @@ function bkBlankHTML(q,state){
   return `<span class="cloze-blank ${state?'ok':'ng'}" id="bkBlank">${a}</span>`;
 }
 function bkQuizRender(){
-  const v=$('#bkQuizView'),q=bkQuiz.qs[bkQuiz.i],n=bkQuiz.qs.length;
+  const v=$('#bkQuizView'),q=bkQuiz.qs[bkQuiz.i],n=bkQuiz.target||bkQuiz.qs.length;
   const B=q.tokens_b&&q.tokens_b.length?rubyHTML(q.tokens_b):esc(q.before);
   const A=q.tokens_a&&q.tokens_a.length?rubyHTML(q.tokens_a):esc(q.after);
   v.innerHTML=`<div class="card quiz-wrap">
@@ -2699,14 +2699,29 @@ function bkQuizPick(i){
     </div>
   </div>`;
   document.getElementById('bkQuizExp').scrollIntoView({behavior:'smooth',block:'nearest'});
+  if(bkQuiz.scope==='multi' && bkQuiz.qs.length<bkQuiz.target &&
+     bkQuiz.qs.length-bkQuiz.i<=2)
+    bkQuizPrefetchMulti(qcfgLoad(),bkQuiz.target-bkQuiz.qs.length);
 }
 function bkQuizNext(){
   if(!bkQuiz||bkQuiz.i>=bkQuiz.qs.length)return;
   const t=Date.now(); if(t-(bkQuiz._nt||0)<400)return; bkQuiz._nt=t;
   bkQuiz.picked=null;
   bkQuiz.i++;
-  if(bkQuiz.i>=bkQuiz.qs.length)bkQuizFinish();
-  else{bkQuizRender();window.scrollTo(0,0);}
+  if(bkQuiz.i>=bkQuiz.qs.length){
+    if(bkQuiz._loadingMore){
+      bkQuiz.i--; bkQuiz.picked=true;
+      toast('下一题正在准备中，请稍候…');
+      return;
+    }
+    if(!bkQuiz._noMore && bkQuiz.qs.length<bkQuiz.target){
+      bkQuiz.i--; bkQuiz.picked=true;
+      bkQuizPrefetchMulti(qcfgLoad(),bkQuiz.target-bkQuiz.qs.length);
+      toast('正在准备下一批题目…');
+      return;
+    }
+    bkQuizFinish();
+  }else{bkQuizRender();window.scrollTo(0,0);}
 }
 async function bkQuizDrop(){
   const q=bkQuiz.qs[bkQuiz.i];
@@ -3626,15 +3641,36 @@ async function qcfgSaveAndStart(){
   bkModalClose();
   await bkQuizOpenMulti();
 }
+async function bkQuizPrefetchMulti(cfg, remaining){
+  if(!bkQuiz || !remaining || bkQuiz._loadingMore || bkQuiz._noMore)return;
+  bkQuiz._loadingMore=true;
+  try{
+    const ids=bkCur?[bkCur.id]:[...bkSel];
+    const d=await api('/api/books/cloze-multi',{method:'POST',body:JSON.stringify({
+      book_ids:ids,total:remaining,ratios:cfg.ratios,difficulty:cfg.difficulty
+    })});
+    const got=(d&&d.questions)||[];
+    const fresh=got.filter(q=>{const k=`${q.sid}|${q.name}|${q.answer}`;if(bkQuiz._seen.has(k))return false;bkQuiz._seen.add(k);return true;});
+    bkQuiz.qs.push(...fresh);
+    // 后端返回短组即表示没有更多合格题，不能让前端无限等待。
+    if(!d||d.short||fresh.length<remaining)bkQuiz._noMore=true;
+    // 不重绘当前题：用户可能正在看解析，重绘会清掉已选状态。
+  }catch(e){
+    // 网络抖动不破坏已加载的题目；到末尾时再允许重试。
+  }finally{ bkQuiz._loadingMore=false; }
+}
+
 async function bkQuizOpenMulti(){
   bkQuizShow();
   const v=$('#bkQuizView');
-  v.innerHTML='<div class="card"><div class="muted">📝 按比例出题中（课文/语料/歌词混合＋质检…）</div></div>';
+  v.innerHTML='<div class="card"><div class="muted">📝 先加载少量题目，剩余题目将在作答时后台准备…</div></div>';
   const cfg=qcfgLoad();
   const ids = bkCur? [bkCur.id] : [...bkSel];
+  // 首屏只做 3 题：质检、语法分析和干扰项生成都很重，避免用户等待整组题目。
+  const firstBatch=Math.min(Math.max(1,cfg.total||10),3);
   let d;
   try{
-    d=await api('/api/books/cloze-multi',{method:'POST',body:JSON.stringify({book_ids:ids,total:cfg.total,ratios:cfg.ratios,difficulty:cfg.difficulty})});
+    d=await api('/api/books/cloze-multi',{method:'POST',body:JSON.stringify({book_ids:ids,total:firstBatch,ratios:cfg.ratios,difficulty:cfg.difficulty})});
   }catch(e){ d={ok:false}; }
   if(!d.ok||!d.questions||!d.questions.length){
     v.innerHTML=`<div class="card quiz-wrap">
@@ -3644,8 +3680,11 @@ async function bkQuizOpenMulti(){
     </div>`;
     return;
   }
-  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:'multi',min:JSON.stringify(d.ratios||cfg.ratios),short:!!d.short,picked:null,ratios:d.ratios,counts:d.counts,explain:d.explain};
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:'multi',min:JSON.stringify(d.ratios||cfg.ratios),short:!!d.short,picked:null,ratios:d.ratios,counts:d.counts,explain:d.explain,
+    // 先展示小批量，剩余题目在用户作答时后台准备；题目不足时自动收敛到实际数量。
+    target:cfg.total, _loadingMore:false, _noMore:!!d.short, _seen:new Set(d.questions.map(q=>`${q.sid}|${q.name}|${q.answer}`))};
   bkQuizRender();
+  bkQuizPrefetchMulti(cfg, Math.max(0, cfg.total-d.questions.length));
 }
 
 
