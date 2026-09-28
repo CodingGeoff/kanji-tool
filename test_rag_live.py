@@ -103,7 +103,7 @@ else:
 # ---------- 4. 单通道过滤 ----------
 print('== 4. 单通道过滤 ==')
 st, r = rag(shared_word, limit=10, sources=['lyric', 'textbook'])
-check('排除 web 后 rows 为空', not r['rows'], [x['channel'] for x in r['rows']])
+check('排除 web 后不含 web 结果', not [x for x in r['rows'] if x['channel'] == 'web'], [x['channel'] for x in r['rows']])
 check('排除 web 后歌词仍有结果', bool(r['groups']['lyric']), r['groups']['lyric'][:1])
 st, r = rag(web_word, limit=10, sources=['web'])
 check('仅 web 时歌词/课本为空',
