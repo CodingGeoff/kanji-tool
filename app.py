@@ -25,6 +25,7 @@ import performance_tasks
 import assessment_bank
 import corpus_shards
 import federated_search
+import discourse
 
 app = Flask(__name__, static_folder='static')
 
@@ -1856,6 +1857,68 @@ def api_book_translate_lesson(bid, ):
     db.log('ai_translate', f'课本 #{bid} 翻译 {translated}/{len(sids)} 句（{cfg.source_tag}）')
     return jsonify({'ok': True, 'translated': translated, 'total': len(sids),
                     'results': results, 'source': cfg.source_tag})
+
+
+# ================================================================
+# 篇章精读（v22）：长篇文章录入 + 全自动客观题
+# ================================================================
+@app.route('/api/discourse/passages')
+def api_discourse_list():
+    return jsonify({'ok': True, 'passages': discourse.list_passages()})
+
+
+@app.route('/api/discourse/passages', methods=['POST'])
+def api_discourse_add():
+    d = request.json or {}
+    text = (d.get('text') or '').strip()
+    if len(text) < 60:
+        return jsonify({'ok': False, 'error': '正文太短（至少 60 字），篇章题需要上下文'}), 400
+    try:
+        r = discourse.import_passage(d.get('title') or '', text,
+                                     source=d.get('source') or '',
+                                     level=d.get('level') or '',
+                                     note=d.get('note') or '')
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    r['preview'] = discourse.preview_types(r['id'])
+    r['ok'] = True
+    return jsonify(r)
+
+
+@app.route('/api/discourse/passages/<int:pid>')
+def api_discourse_get(pid):
+    p = discourse.get_passage(pid)
+    if not p:
+        return jsonify({'ok': False, 'error': '不存在'}), 404
+    return jsonify({'ok': True, 'passage': p,
+                    'preview': discourse.preview_types(pid)})
+
+
+@app.route('/api/discourse/passages/<int:pid>', methods=['DELETE'])
+def api_discourse_del(pid):
+    return jsonify({'ok': discourse.delete_passage(pid)})
+
+
+@app.route('/api/discourse/quiz', methods=['POST'])
+def api_discourse_quiz():
+    d = request.json or {}
+    pid = d.get('passage_id')
+    if not pid:
+        return jsonify({'ok': False, 'reason': '未指定篇章'}), 400
+    count = _num(d.get('count'), 10, 1, 40)
+    return jsonify(discourse.make_quiz(pid, count=count, types=d.get('types')))
+
+
+@app.route('/api/discourse/answer', methods=['POST'])
+def api_discourse_answer():
+    d = request.json or {}
+    return jsonify(discourse.record_results(d.get('passage_id'), d.get('results') or []))
+
+
+@app.route('/api/discourse/stats')
+def api_discourse_stats():
+    days = _num(request.args.get('days'), 14, 1, 90)
+    return jsonify({'ok': True, 'stats': discourse.stats(days)})
 
 
 if __name__ == '__main__':
