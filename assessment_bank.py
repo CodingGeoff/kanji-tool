@@ -78,16 +78,21 @@ def list_passages(level=None,status=None):
     return out
 
 
-def generate(level=None,status='all',seed=None,include_answers=False):
+def generate(level=None,status='all',seed=None,include_answers=False,passage_id=None):
     """Generate a playable passage.
 
     ``all`` is the production catalogue: reviewed/approved material and the
     project's authored passages are all visible and playable.  Callers that
     need the old quality-gated pool can still explicitly request ``approved``.
     """
+    # ``all`` means the learner-facing catalogue.  Retired is an editorial
+    # state (do not use for new approved assembly), not a learner lockout:
+    # users may still open it, repeat it, and search its text.
     pool=[p for p in list_passages(level, None if status in (None, 'all') else status)
-          if not p['validation_issues'] and p.get('effective_status') != 'retired']
-    if not pool:return {'ok':False,'error':'没有符合等级和审核状态的篇章。可用 status=all 查看生产目录，或用 status=approved 获取已审核篇章。'}
+          if not p['validation_issues']]
+    if passage_id is not None:
+        pool=[p for p in pool if p.get('id') == str(passage_id)]
+    if not pool:return {'ok':False,'error':'没有符合条件的篇章。可用 passage_id 指定文章，或不指定以随机抽取。'}
     p=random.Random(seed if seed is not None else time.time_ns()).choice(pool)
     if not include_answers:
         for q in p['items']:

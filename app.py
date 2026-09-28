@@ -1400,7 +1400,8 @@ def api_assessment_passages():
 def api_assessment_passage_generate():
     d = request.json or {}
     return jsonify(assessment_bank.generate(d.get('level'), d.get('status', 'all'),
-                                           d.get('seed'), bool(d.get('include_answers'))))
+                                           d.get('seed'), bool(d.get('include_answers')),
+                                           d.get('passage_id')))
 
 
 @app.route('/api/assessment/passages/<passage_id>/review', methods=['POST'])
