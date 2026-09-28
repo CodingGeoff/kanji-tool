@@ -18,18 +18,25 @@ nav{display:flex;gap:4px;flex-wrap:wrap}
 nav button{border:none;background:none;padding:8px 14px;font-size:14px;cursor:pointer;border-radius:8px;color:var(--sub)}
 nav button.active{background:var(--accent);color:#fff}
 nav button .badge{background:var(--gold);color:#fff;border-radius:9px;padding:1px 7px;font-size:11px;margin-left:4px}
-main{max-width:980px;margin:0 auto;padding:22px 16px 80px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}
+main{max-width:980px;margin:0 auto;padding:22px 16px 80px;min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px;min-width:0;overflow-wrap:anywhere}
 .muted{color:var(--sub);font-size:13px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0}
+.row>*{min-width:0;max-width:100%}
+img,video,canvas,svg{max-width:100%;height:auto}
 button.btn{border:1px solid var(--line);background:#fff;padding:8px 16px;border-radius:9px;cursor:pointer;font-size:14px}
 button.btn:hover{border-color:var(--accent);color:var(--accent)}
 button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.btn.green{background:var(--accent2);border-color:var(--accent2);color:#fff}
 button.btn.warn{background:#c77f38;border-color:#c77f38;color:#fff}
 button.btn.danger{color:#b5495b}
-input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff}
+input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff;max-width:100%;min-width:0}
 textarea{width:100%;min-height:90px;resize:vertical}
+/* 所有配置弹窗共用可收缩网格：1fr 默认的 min-content 会被长 select
+   撑出手机视口，必须显式使用 minmax(0,1fr)。 */
+.cfg-grid{margin-top:12px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 12px;align-items:center;font-size:14px;min-width:0}
+.cfg-grid>*{min-width:0;max-width:100%}
+.cfg-grid>div,.cfg-grid>select{width:100%}
 ruby{ruby-position:over}
 rt{font-size:0.5em;color:var(--accent);font-weight:400;letter-spacing:0}
 /* 存疑读音：琥珀色注音 + 底部点线，低调但可辨识 */
@@ -83,7 +90,7 @@ body.adv .jp[data-raw]:hover{background:#faf6ec;border-radius:8px;box-shadow:ins
 .rag-pill.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .rag-group{border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px 14px;margin-top:12px}
 .rag-group h4{font-size:14px;margin-bottom:8px}
-.rag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.rag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:10px}
 .rag-card{border:1px solid var(--line);border-radius:14px;padding:12px;background:#fff}
 .rag-card .head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
 .rag-card .title{font-weight:700;overflow-wrap:anywhere}
@@ -180,7 +187,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .verwarn{margin-top:10px;padding:8px 12px;border-radius:9px;background:#fdf3e7;color:#c77f38;font-size:13px;line-height:1.5}
 
 /* ---------- v16 教育心理学深度模块 ---------- */
-.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px;margin-top:12px}
 .psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .psy-card h4{margin:0 0 8px 0;font-size:15px}
 .psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
@@ -689,7 +696,8 @@ async function showAbout(){
 
 /* ---------- v13 挖空练习独立界面 ---------- */
 .quiz-wrap{max-width:780px;margin:0 auto}
-.quiz-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.quiz-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.quiz-top>button:first-child{white-space:nowrap;flex:0 0 auto}
 .quiz-prog{font-size:15px;font-weight:700}
 .quiz-q{font-size:27px;line-height:2.6;margin:18px 0 6px;overflow-wrap:anywhere}
 .cloze-blank{display:inline-flex;align-items:center;justify-content:center;
@@ -756,9 +764,19 @@ async function showAbout(){
 .sb-mode.adv{background:#fdf0e8;color:#c26a2d}
 .sb-swapnote{font-size:12.5px;color:#a08c5a;background:#fdf6e8;border-radius:8px;
   padding:5px 10px;margin-top:8px;display:inline-block}
-@media(max-width:600px){.sb-tile{font-size:17.5px;padding:8px 11px}.sb-pairs{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){
+  .sb-tile{font-size:17.5px;padding:8px 11px;max-width:100%;overflow-wrap:anywhere;white-space:normal}
+  .sb-pairs{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .cfg-grid{grid-template-columns:minmax(0,1fr);gap:5px}
+  .cfg-grid>span.muted:not(:first-child){margin-top:8px}
+  .cfg-grid>select,.cfg-grid>input,.cfg-grid>div{width:100%!important;justify-self:stretch!important}
+  #bkModal{padding:10px!important}
+  #bkModal>.card{padding:15px 13px!important;width:100%!important;overflow-x:hidden}
+  .quiz-top>.sb-badges{flex-basis:100%}
+  .quiz-top>.sb-badges .tag,.quiz-top>.sb-badges .sb-mode{max-width:100%;overflow-wrap:anywhere}
+}
 /* ---------- v15 出题配置面板 ---------- */
-.qcfg-grid{display:grid;grid-template-columns:110px 1fr 52px;gap:8px 10px;align-items:center;margin-top:12px}
+.qcfg-grid{display:grid;grid-template-columns:110px minmax(0,1fr) 52px;gap:8px 10px;align-items:center;margin-top:12px}
 .qcfg-grid .lbl{font-size:14px;font-weight:600}
 .qcfg-slider{width:100%}
 .qcfg-pct{font-size:13px;color:var(--accent);font-weight:700;text-align:right}
@@ -773,7 +791,7 @@ async function showAbout(){
 .qcfg-prev .s{font-size:18px;line-height:1.9}
 
 /* ---------- v16 教育心理学深度模块 ---------- */
-.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.psy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px;margin-top:12px}
 .psy-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .psy-card h4{margin:0 0 8px 0;font-size:15px}
 .psy-card .val{font-size:22px;font-weight:800;color:var(--accent2)}
@@ -1043,7 +1061,8 @@ function reveal(){
   $('#ansBtns').innerHTML=`
     <button class="btn green" onclick="answer('ok')">😀 认识</button>
     <button class="btn warn" onclick="answer('hard')">🤔 模糊</button>
-    <button class="btn" style="border-color:var(--accent);color:var(--accent)" onclick="answer('ng')">😵 忘记</button>`;
+    <button class="btn" style="border-color:var(--accent);color:var(--accent)" onclick="answer('ng')">😵 忘记</button>
+    ${it.sentence?'<button class="btn" onclick="copySentenceById(\'revSent\')" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>':''}`;
 }
 let _answering=false;
 async function answer(r){
@@ -1876,6 +1895,33 @@ function copyFallback(txt,done){
   try{ document.execCommand('copy'); done(); }catch(e){ toast('复制失败，请长按手动复制'); }
   document.body.removeChild(ta);
 }
+/* 练习答案统一复制入口：只读取答案区 data-raw 中的规范答案原句，不会把
+   注音、译文、讲解或用户的错误排列混进剪贴板。复制前再走一次服务端完整句
+   语法门禁；门禁是保守工程质检，不冒充对自然语言正确性的数学证明。 */
+async function copyVerifiedAnswerSentence(text){
+  text=(text||'').trim();
+  if(!text){toast('当前答案没有可复制的完整句子');return;}
+  try{
+    const chk=await api('/api/grammar/check',{method:'POST',body:JSON.stringify({text,strict:false})});
+    if(!chk||chk.ok!==true){
+      toast('该原句未通过完整句语法质检，已停止复制');
+      return;
+    }
+  }catch(e){
+    toast('暂时无法完成语法质检，请稍后重试');
+    return;
+  }
+  copyText(text,'答案原句');
+}
+function copyAnswerSentence(btn){
+  const root=btn&&btn.closest?btn.closest('.quiz-exp'):null;
+  const el=root&&root.querySelector('.jp[data-raw]');
+  copyVerifiedAnswerSentence(el&&el.dataset?el.dataset.raw:'');
+}
+function copySentenceById(id){
+  const el=document.getElementById(id);
+  copyVerifiedAnswerSentence(el&&el.dataset?el.dataset.raw:'');
+}
 function ktvEdit(){
   $('#ktvTitleIn').value=ktvCur.title;
   $('#ktvArtistIn').value=ktvCur.artist||'';
@@ -2486,7 +2532,7 @@ async function bkCfgOpen(){
   const c=bkCfg||{};
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>⚙ 学习配置（每个环节都可自定义）</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="cfg-grid">
       <span class="muted">例句来源</span><select id="cfgSrc">
         <option value="book" ${c.example_source==='book'?'selected':''}>仅本书句子</option>
         <option value="corpus" ${c.example_source==='corpus'?'selected':''}>仅全库语料</option>
@@ -2640,6 +2686,7 @@ function bkQuizPick(i){
       ${q.structure&&q.structure!=='—'?`<br><span class="muted">接续：${esc(q.structure)}</span>`:''}</div>
     <div class="quiz-nav">
       <button class="btn primary" onclick="bkQuizNext()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
       <button class="btn danger" onclick="bkQuizDrop()" title="句子有误/截断/答案不对：从题库中移除，以后不再出现">⚠ 题目有误，不再出</button>
     </div>
@@ -2707,6 +2754,7 @@ async function bkQuizFinish(){
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b>
           ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`
           :`<div class="muted" style="font-size:13.5px;color:var(--gold)">（暂无翻译）<button class="btn mini" style="font-size:11px;padding:2px 8px;margin-left:6px" onclick="bkQuizTransOne(${q.sid},this)">🤖 翻译</button></div>`}
         <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
@@ -2769,8 +2817,11 @@ async function sbOpen(opts){
   }else if(d.scope_auto_all&&(d.scope==='book'||d.scope==='mixed')){
     toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
   }
+  if(d.translation_mix_relaxed)toast('所设译文比例的题源不足，已由另一类题目补足并如实标记');
   sbQuiz={qs:d.questions,i:0,ok:0,ans:[],mode:d.mode,level:d.level,
           scope:d.scope,scopeAutoAll:!!d.scope_auto_all,scopeNote:d.scope_note,
+          translationMode:d.translation_mode,translated:d.actual_translated||0,
+          untranslated:d.actual_untranslated||0,
           bookIds:d.book_ids||[],sel:[],checked:false,
           pairSel:null,pairErr:0,pairDone:0};
   sbRender();
@@ -2781,6 +2832,7 @@ function sbModeBadge(){
   const sl=SB_SCOPE_LABEL[sbQuiz.scope]||'';
   return `<span class="sb-mode ${m==='basic'?'basic':'adv'}">${m==='basic'?'初级·纯净词块':'高级·带混淆'}</span>
     <span class="tag">难度 ${sbQuiz.level==='any'?'不限':sbQuiz.level}</span>
+    <span class="tag" title="本组排序题的实际译文构成">译文 ${sbQuiz.translated}／无译文 ${sbQuiz.untranslated}</span>
     ${sl?`<span class="tag" title="实际题源（如与你的配置不符，说明已按规则自动调整，鼠标悬停查看原因）">${sl}${sbQuiz.scopeAutoAll?`·全部${sbQuiz.bookIds.length}本`:''}</span>`:''}`;
 }
 function sbRender(){
@@ -2810,15 +2862,16 @@ function sbRender(){
   }
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${q.swap?'把词块排成一个语法正确的句子':'把词块排成句子'}</b></div>
-    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:'<div class="muted" style="margin-top:6px">（此句暂无译文，按语法正确排列即可）</div>'}
+    ${q.translation?`<div style="font-size:16.5px;margin-top:6px;line-height:1.7">译文：${esc(q.translation)}</div>`:`<div class="muted" style="margin-top:6px;line-height:1.7">（此句暂无译文：仍须填满全部 <b>${q.n_required}</b> 个句子槽位来复原完整目标句；只组成一个分句不算完成。${q.alt_group?'同一槽位出现多个候选时任选其一，不必把候选全部用上。':''}日语允许的完整句语序均认可。）</div>`}
     ${q.swap?`<div class="sb-swapnote">✨ 语料变体题：原句的「${esc(q.swap.from)}${esc(q.swap.particle)}」已按语料真实搭配换成「${esc(q.swap.to)}${esc(q.swap.particle)}」，语法结构不变</div>`:''}
     <div class="sb-area ans jp" id="sbAns"><span class="ph">点击下方词块，按顺序组成句子…</span></div>
     <div class="sb-area jp" id="sbBank">
       ${q.tiles.map((t,k)=>`<button class="sb-tile" id="sbT${k}" onclick="sbTileTap(${k})">${sbTileHTML(t)}</button>`).join('')}
     </div>
-    <div class="quiz-nav">
+    <div class="quiz-nav" style="align-items:center">
       <button class="btn primary" id="sbCheckBtn" onclick="sbCheck()" disabled>检查</button>
       <button class="btn" onclick="sbReset()">重置</button>
+      <span class="muted" id="sbNeed" style="font-size:12.5px">已填 0 / ${q.n_required} 个必要槽位</span>
     </div>
     <div id="sbQuizExp"></div>
   </div>`;
@@ -2840,6 +2893,11 @@ function sbSyncTiles(){
     if(b)b.style.visibility=sbQuiz.sel.includes(k)?'hidden':'visible';
   });
   const btn=$('#sbCheckBtn');if(btn)btn.disabled=!sbQuiz.sel.length;
+  const need=$('#sbNeed');
+  if(need){
+    const real=sbQuiz.sel.filter(k=>(q.spec.tile_map||{})[q.tiles[k].id]>=0).length;
+    need.textContent=`已填 ${real} / ${q.n_required} 个必要槽位${sbQuiz.sel.length>real?`（另有 ${sbQuiz.sel.length-real} 个混淆块）`:''}`;
+  }
 }
 function sbReset(){if(sbQuiz.checked)return;sbQuiz.sel=[];sbSyncTiles();}
 async function sbCheck(){
@@ -2869,6 +2927,7 @@ async function sbCheck(){
     ${(q.grammar||[]).length?`<div class="ex">${q.grammar.map(g=>`<span class="lv lv-${g.level}">${g.level}</span> <b>${esc(g.name||'')}</b>${g.structure&&g.structure!=='—'?`<span class="muted">（${esc(g.structure)}）</span>`:''}<br><span style="font-size:14px">${esc(g.explain||'')}</span>`).join('<br>')}</div>`:''}
     <div class="quiz-nav">
       <button class="btn primary" onclick="sbNext()">${sbQuiz.i+1>=sbQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>`:''}
     </div>
   </div>`;
@@ -2937,6 +2996,7 @@ async function sbFinish(){
       return `<div class="quiz-rev">
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span>${q.alt_count>1?`<span class="muted" style="font-size:12px">（${q.alt_count} 种合法语序）</span>`:''}${q.swap?'<span class="muted" style="font-size:12px">（语料变体题）</span>':''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
       </div>`;}).join('')}
   </div>`;
@@ -2950,7 +3010,7 @@ async function sbCfgOpen(){
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🧩 组句练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
     <div class="muted" style="margin-top:6px;font-size:12.5px">「初级/高级模式」与「N 级难度」是<b>两条独立轴</b>：模式决定词块形态（是否带混淆干扰、是否语料换词），难度决定选句的语法级别，可自由组合。</div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="sbcOn" ${c.enabled!==false?'checked':''}><span>开启组句练习</span></label>
       <span class="muted">模式（题目形态）</span><select id="sbcMode">
         <option value="basic" ${c.mode!=='advanced'?'selected':''}>初级 —— 只给所需词块（默认语料换词变体）</option>
@@ -2963,11 +3023,19 @@ async function sbCfgOpen(){
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
         <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（无译文·零干扰）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">「仅课本/课本＋语料」：在某本书详情页内打开练习只用这本书；在书架页且没有勾选课本时，自动使用书架里<b>全部启用中的课本</b>（不会悄悄换成语料库）；一本课本都没有时才会诚实退回全库语料。练习界面右上角的题源标签会标出实际用了什么。</div></div>
+      <span class="muted">译文条件（组句）</span><select id="sbcTrMode">
+        <option value="with" ${c.translation_mode==='with'?'selected':''}>必须有译文（可安全使用语义混淆）</option>
+        <option value="without" ${c.translation_mode==='without'?'selected':''}>必须无译文（零语义干扰，纯考语序）</option>
+        <option value="mixed" ${(!c.translation_mode||c.translation_mode==='mixed')?'selected':''}>有译文＋无译文混合</option></select>
+      <span class="muted">混合译文比例</span><div class="row" style="gap:8px">有译文 <input id="sbcTrRatio" type="number" min="0" max="100" value="${c.translated_ratio??50}" style="width:72px">% <span class="muted">（其余为无译文；仅混合模式生效）</span></div>
       <span class="muted">每组题数</span><input id="sbcN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
       <span class="muted">题型占比</span><div class="row" style="gap:8px">组句 <input id="sbcTArr" type="number" min="0" max="100" value="${(c.types||{}).arrange??80}" style="width:64px">% ／ 配对 <input id="sbcTPair" type="number" min="0" max="100" value="${(c.types||{}).pairs??20}" style="width:64px">%</div>
       <span class="muted">词块数范围</span><div class="row" style="gap:8px"><input id="sbcMinT" type="number" min="2" max="6" value="${c.min_tiles||3}" style="width:64px"> ～ <input id="sbcMaxT" type="number" min="3" max="14" value="${c.max_tiles||9}" style="width:64px"> 块</div>
+      <span class="muted">混淆策略（高级）</span><select id="sbcDProfile">
+        <option value="precise" ${c.distractor_profile!=='balanced'?'selected':''}>精确最小对立（推荐：时态/极性/格关系，宁缺毋滥）</option>
+        <option value="balanced" ${c.distractor_profile==='balanced'?'selected':''}>均衡扩展（不足时允许经过双门禁的句外词）</option></select>
       <span class="muted">干扰块（高级）</span><div class="row" style="gap:8px"><input id="sbcDN" type="number" min="0" max="6" value="${c.distractors??3}" style="width:64px"> 个
-        <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态变形</span></label>
+        <label class="advtog"><input type="checkbox" id="sbcDV" ${(c.distractor_kinds||{}).verb_form!==false?'checked':''}><span>时态/极性</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDP" ${(c.distractor_kinds||{}).particle!==false?'checked':''}><span>换助词</span></label>
         <label class="advtog"><input type="checkbox" id="sbcDW" ${(c.distractor_kinds||{}).vocab!==false?'checked':''}><span>句外词</span></label></div>
       <span class="muted">多答案（高级）</span><div class="row" style="gap:8px"><label class="advtog"><input type="checkbox" id="sbcAlt" ${c.alt_answers!==false?'checked':''}><span>槽位可互换名词（任选其一均判对）</span></label>最多 <input id="sbcAltN" type="number" min="1" max="4" value="${c.alt_max||2}" style="width:64px"> 个</div>
@@ -2978,16 +3046,19 @@ async function sbCfgOpen(){
         <option value="always" ${c.show_furigana==='always'?'selected':''}>始终显示</option>
         <option value="never" ${c.show_furigana==='never'?'selected':''}>从不显示</option></select>
     </div>
-    <div class="muted" style="margin-top:10px;font-size:12.5px">稳健判卷：日语格成分（〜は/〜が/〜を/〜に/〜で、时间词、副词）句内可自由换序 —— 所有语法正确的语序都判对；干扰块经等价性过滤（は↔が、に↔へ 这类意义不变的替换绝不出现），用错必然可判。</div>
+    <div class="muted" style="margin-top:10px;font-size:12.5px;line-height:1.7">稳健判卷：句内格成分的合法换序全部认可。有译文时才允许语义混淆；无译文题始终零语义干扰。精确模式只保留时态/极性与经语料反查的非等价格关系，は↔が、に↔へ 等可能保持意义的替换全部禁用；无法证明唯一错误的候选宁可不出。</div>
     ${stHTML}
     <div class="row" style="margin-top:12px"><button class="btn primary" onclick="sbCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`,660);
 }
 async function sbCfgSave(){
   const body={enabled:$('#sbcOn').checked,mode:$('#sbcMode').value,level:$('#sbcLevel').value,
-    scope:$('#sbcScope').value,count:parseInt($('#sbcN').value)||6,
+    scope:$('#sbcScope').value,translation_mode:$('#sbcTrMode').value,
+    translated_ratio:isNaN(parseInt($('#sbcTrRatio').value))?50:parseInt($('#sbcTrRatio').value),
+    count:parseInt($('#sbcN').value)||6,
     types:{arrange:parseInt($('#sbcTArr').value)||0,pairs:parseInt($('#sbcTPair').value)||0},
     min_tiles:parseInt($('#sbcMinT').value)||3,max_tiles:parseInt($('#sbcMaxT').value)||9,
     distractors:isNaN(parseInt($('#sbcDN').value))?3:parseInt($('#sbcDN').value),
+    distractor_profile:$('#sbcDProfile').value,
     distractor_kinds:{verb_form:$('#sbcDV').checked,particle:$('#sbcDP').checked,vocab:$('#sbcDW').checked},
     alt_answers:$('#sbcAlt').checked,alt_max:parseInt($('#sbcAltN').value)||2,
     swap:$('#sbcSwap').checked,swap_prob:(parseInt($('#sbcSwapP').value)||0)/100,
@@ -3051,7 +3122,7 @@ async function lsOpen(){
   if(!d.ok||!d.questions||!d.questions.length){
     v.innerHTML=`<div class="card quiz-wrap">
       <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🎧 听力练习</b></div>
-      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：meaning 题型需要句子已有译文，discriminate 题型需要语料里有足够多同类名词可换——可在 🎧 听力配置里切换题源/放宽难度，或去语料库/AI翻译补充更多带译文的句子。'}</div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：听后选义需要译文，听音辨句需要足够多长度相近的真实句，双空最小对立需要句中同时存在可复验的词汇/格成分与极性形式。可切换题源或放宽难度。'}</div>
       <div class="quiz-nav"><button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button></div>
     </div>`;
     return;
@@ -3069,7 +3140,7 @@ function lsRender(){
   const v=$('#bkQuizView'),q=lsQuiz.qs[lsQuiz.i],n=lsQuiz.qs.length;
   lsQuiz.picked=null;lsQuiz.checked=false;_lsPlays=0;
   const sl=LS_SCOPE_LABEL[lsQuiz.scope]||'';
-  const qtypeLabel=q.qtype==='meaning'?'听后选义':'听音辨句';
+  const qtypeLabel={meaning:'听后选义',discriminate:'听音辨句',cloze:'双空最小对立'}[q.qtype]||q.qtype;
   const top=`<div class="quiz-top">
       <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
       <span class="quiz-prog">🎧 听力 ${lsQuiz.i+1} / ${n}</span>
@@ -3078,16 +3149,19 @@ function lsRender(){
       <span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
-  const hint=q.qtype==='meaning'?'听录音，选出正确的中文/英文释义':'听录音，选出与录音完全一致的那句话';
+  const hint={meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
+  const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
+    ${clozePrompt}
     <div style="margin-top:12px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
       <div id="lsPlayBox" class="muted" style="margin-top:6px;font-size:12.5px">还没有播放过</div>
     </div>
     <div class="sb-area jp" id="lsOpts" style="margin-top:16px">
-      ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})">${esc(o)}</button>`).join('')}
+      ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})" disabled>选项 ${k+1}（播放后显示）</button>`).join('')}
     </div>
+    <div class="muted" id="lsUnlockHint" style="font-size:12.5px;margin-top:5px">先播放录音，随后解锁选项</div>
     <div class="quiz-nav">
       <button class="btn primary" id="lsCheckBtn" onclick="lsCheck()" disabled>检查</button>
     </div>
@@ -3098,10 +3172,13 @@ function lsPlayTap(){
   const q=lsQuiz.qs[lsQuiz.i];
   if(q.max_plays&&_lsPlays>=q.max_plays){toast(`本题最多重播 ${q.max_plays} 次`);return;}
   _lsPlays++;
+  document.querySelectorAll('.ls-opt').forEach((b,i)=>{b.disabled=false;b.textContent=q.options[i];});
+  const unlock=$('#lsUnlockHint');if(unlock)unlock.textContent='选项已解锁，请依据录音作答';
   lsPlay(q.text,q.rate);
 }
 function lsPick(k){
   if(lsQuiz.checked)return;
+  if(!_lsPlays){toast('请先播放录音再作答');return;}
   lsQuiz.picked=k;
   document.querySelectorAll('.ls-opt').forEach((b,i)=>b.classList.toggle('sel',i===k));
   $('#lsCheckBtn').disabled=false;
@@ -3120,13 +3197,16 @@ async function lsCheck(){
     else if(i===lsQuiz.picked)b.classList.add('ng');
   });
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
-  const swapNote=q.swapped?`<div class="muted" style="font-size:13px;margin-top:6px">🔁 干扰项把「${esc(q.swapped.from)}」换成了语料里真实出现过的「${esc(q.swapped.to.join('／'))}」——不是编造出来的假词</div>`:'';
+  const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
+  const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
+  const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。</div>`:'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
-    ${swapNote}
+    ${contrastNote}${meaningNote}${discNote}
     <div class="quiz-nav">
       <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid},this)">☆收藏</button>`:''}
     </div>
   </div>`;
@@ -3160,8 +3240,8 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px">规则引擎能自动出的听力题，上限就是「听音辨形辨义」：meaning=听后选义（需要该句已有译文），discriminate=听音辨句（从四条长度、字面相近的真实语料原句中挑出录音句；绝不机械换词造句）。真正需要理解上下文的听力理解题见 🤖 AI 出题草稿箱。</div>
-    <div style="margin-top:12px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;font-size:14px">
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性。中英译文高级模式：先从扩大后的真实译文池检索共享高信息关键词/短语的同主题句，再匹配人称、肯否、疑问类型、长度及日文结构；仅关键动作、对象、时间或数量不同。高级题凑不齐三个相近且唯一错误的真实译文时直接放弃，不再以无关句补足。</div>
+    <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
         ${LS_LV.map(l=>`<option value="${l}" ${c.level===l?'selected':''}>${l==='any'?'不限（随机）':l+' 级语法句'}</option>`).join('')}</select>
@@ -3171,13 +3251,17 @@ async function lsCfgOpen(){
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
         <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">规则与组句练习一致：未勾选具体课本时自动用书架里全部启用中的课本，绝不会悄悄换成语料库。</div></div>
+      <span class="muted">译文选项难度</span><div><select id="lscMeaningDifficulty">
+        <option value="advanced" ${c.meaning_difficulty!=='standard'?'selected':''}>高级：同主题关键词硬负例</option>
+        <option value="standard" ${c.meaning_difficulty==='standard'?'selected':''}>标准：结构与长度相近</option></select>
+        <div class="muted" style="font-size:12px;margin-top:4px">高级模式宁缺毋滥：四项共享实质词汇，不能只靠话题差异排除。</div></div>
       <span class="muted">语速（听力难度轴）</span><select id="lscRate">
         <option value="slower" ${c.rate==='slower'?'selected':''}>更慢（入门）</option>
         <option value="slow" ${c.rate==='slow'?'selected':''}>慢速</option>
         <option value="normal" ${(!c.rate||c.rate==='normal')?'selected':''}>正常语速</option>
         <option value="fast" ${c.rate==='fast'?'selected':''}>较快（挑战）</option></select>
       <span class="muted">每组题数</span><input id="lscN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
-      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??60}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??40}" style="width:64px">%</div>
+      <span class="muted">题型占比</span><div class="row" style="gap:8px">听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??30}" style="width:64px">% ／ 听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??25}" style="width:64px">% ／ 双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??45}" style="width:64px">%</div>
       <span class="muted">每题最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
     </div>
     ${stHTML}
@@ -3185,8 +3269,9 @@ async function lsCfgOpen(){
 }
 async function lsCfgSave(){
   const body={enabled:$('#lscOn').checked,level:$('#lscLevel').value,scope:$('#lscScope').value,
+    meaning_difficulty:$('#lscMeaningDifficulty').value,
     rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
-    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0},
+    types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0},
     max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};
   try{
     const r=await api('/api/listening/cfg',{method:'POST',body:JSON.stringify(body)});
@@ -3870,6 +3955,7 @@ async function bkQuizPickPsy(i){
     <div class="psy-card" style="margin-top:8px"><h4>🤔 元认知提示</h4><div class="sub">${esc((function(){const prompts=["为什么这个答案是正确的？","这个语法点和之前学过的哪个相似？","下次怎么避免这个错误？","试着用自己的话解释这个语法"];return prompts[Math.floor(Math.random()*prompts.length)];})())}</div></div>
     <div class="quiz-nav">
       <button class="btn primary" onclick="bkQuizNextPsy()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
       <button class="btn danger" onclick="bkQuizDrop()" title="题目有误">⚠ 题目有误，不再出</button>
     </div>
@@ -3912,6 +3998,7 @@ async function bkQuizFinishPsy(){
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b> <span class="bloom-badge bloom-${q.bloom||'apply'}">${bloomLabel(q.bloom||'apply')}</span> <span class="scaffold-tag">${q.scaffold||''}</span> ${q.mastery!=null?`<span class="muted">${(q.mastery*100).toFixed(0)}%掌握</span>`:''}
           ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
         <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
       </div>`;

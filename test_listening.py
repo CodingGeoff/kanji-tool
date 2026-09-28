@@ -7,9 +7,10 @@
      干扰项均为真实译文、答案在选项中
   3. discriminate 题：4 个选项均为真实语料完整句、互不相同，
      答案与原句完全一致，绝不通过机械替换名词合成坏句
-  4. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
+  4. 双空最小对立：分句逻辑/词汇/格成分与极性联合挖空、2×2 唯一答案、整句复验
+  5. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
      "仅课本" 不会泄漏语料库句子
-  5. 统计记录
+  6. 统计记录
 临时库隔离，不碰真实数据。"""
 import os
 import sys
@@ -52,9 +53,13 @@ random.seed(20260926)
 
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
-check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal', f'默认配置 {cfg}')
-cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999, 'bogus_key': 'x'})
-check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20,
+check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
+      and cfg['types'].get('cloze') == 45 and cfg['meaning_difficulty'] == 'advanced',
+      f'默认配置含高级译文硬负例和高难度双空题：{cfg}')
+cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999,
+                              'meaning_difficulty': 'bogus', 'bogus_key': 'x'})
+check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20
+      and cfg2['meaning_difficulty'] == 'advanced',
       f'保存并做边界修正（count 上限 20）：{cfg2}')
 check('bogus_key' not in cfg2, '非白名单键不写入')
 ls.save_listening_cfg({'scope': 'corpus', 'rate': 'normal', 'count': 6})
@@ -82,11 +87,51 @@ d = ls.make_quiz(count=12, scope='corpus')
 check(d['ok'], f'出题成功：{d}')
 meaning_qs = [q for q in d['questions'] if q['qtype'] == 'meaning']
 check(bool(meaning_qs), 'meaning 题型应出现')
+with db.get_conn() as c:
+    attested_translations = {r['translation'] for r in c.execute(
+        "SELECT translation FROM sentences WHERE translation IS NOT NULL AND trim(translation)<>''").fetchall()}
 for q in meaning_qs:
     check(len(q['options']) == 4 and len(set(q['options'])) == 4, f'4 个选项且不重复：{q["options"]}')
     check(q['answer'] in q['options'], f'答案在选项中：{q}')
     langs = {ls._tr_lang(o) for o in q['options']}
     check(len(langs) == 1, f'4 个选项语言必须一致（否则靠文字系统就能蒙对）：{q["options"]} → {langs}')
+    check(all(o in attested_translations for o in q['options']),
+          f'中英选项全部来自数据库真实译文，不机械篡改：{q["options"]}')
+    check(q.get('distractor_source') == 'attested_translation_lexical_hard_negative'
+          and q.get('meaning_difficulty') == 'advanced'
+          and len(q.get('distractor_audit') or []) == 3,
+          '高级译文干扰项必须标记为词汇硬负例并携带三项审计证据')
+    for audit in q.get('distractor_audit') or []:
+        check(audit.get('lexical_overlap', 0) >= 0.18 and bool(audit.get('shared_terms')),
+              f'每个高级干扰项必须与答案共享可审计的高信息词：{audit}')
+        check({'grammar_overlap', 'same_polarity', 'same_tense', 'same_question_type',
+               'same_translation_shape'} <= set(audit), f'硬负例审计维度完整：{audit}')
+
+# 中英文最小语义对立：必须优先同话题、只改变地点/人物/时间，而不是无关句。
+for controlled, unrelated in [
+    ([
+        {'text': '私は昨日メアリーと電車で東京へ行った。', 'translation': 'I went to Tokyo by train with Mary yesterday.'},
+        {'text': '私は昨日メアリーと電車で大阪へ行った。', 'translation': 'I went to Osaka by train with Mary yesterday.'},
+        {'text': '私は昨日トムと電車で東京へ行った。', 'translation': 'I went to Tokyo by train with Tom yesterday.'},
+        {'text': '私は今朝メアリーと飛行機で東京へ行った。', 'translation': 'I went to Tokyo by plane with Mary this morning.'},
+        {'text': '猫が窓辺で眠っている。', 'translation': 'The cat is sleeping beside the window.'},
+    ], 'The cat is sleeping beside the window.'),
+    ([
+        {'text': '彼は今日電車で東京へ行った。', 'translation': '他今天坐火车去了东京。'},
+        {'text': '彼は今日電車で大阪へ行った。', 'translation': '他今天坐火车去了大阪。'},
+        {'text': '彼は昨日飛行機で東京へ行った。', 'translation': '他昨天坐飞机去了东京。'},
+        {'text': '彼女は今日電車で東京を離れた。', 'translation': '她今天坐火车离开了东京。'},
+        {'text': '猫は窓辺で寝ている。', 'translation': '猫在窗边睡觉。'},
+    ], '猫在窗边睡觉。'),
+]:
+    hard = ls._build_meaning_q(controlled[0], controlled, 'advanced',
+                               ls._meaning_search_context(controlled))
+    check(hard is not None and len(hard['options']) == 4,
+          f'高级模式可构造四项中英最小语义对立：{hard}')
+    if hard:
+        check(unrelated not in hard['options'], f'高级模式不得混入无关话题：{hard["options"]}')
+        check(all(len(a['shared_terms']) >= 2 for a in hard['distractor_audit']),
+              f'长句干扰项至少共享两个信息锚点：{hard["distractor_audit"]}')
 
 print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])
@@ -116,7 +161,76 @@ for q in disc_qs:
                           '彼に助けを求めても国民だ。'),
               f'不得生成「無駄だ」机械换词坏句：{opt}')
 
-print('== 4. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
+print('== 4. 双空最小对立：分句逻辑/词汇/格成分 × 极性，四条完整句均质检 ==')
+cloze_row = {'sid': 900001, 'text': '彼女は毎日図書館で本を読んでいます。',
+             'translation': '她每天在图书馆看书。', 'source': 'unit_test'}
+q = ls._build_cloze_q(cloze_row)
+check(q is not None, '可生成双空最小对立题')
+if q:
+    check(q['qtype'] == 'cloze' and len(q['options']) == 4
+          and len(set(q['options'])) == 4 and q['answer'] in q['options'],
+          f'双空题 2×2 四项且答案唯一：{q}')
+    check(len(q.get('prompt_parts') or []) == 3 and len(q.get('blank_answers') or []) == 2,
+          '题面同时挖两个互不重叠的空')
+    check(q.get('distractor_source') == 'minimal_pair_grammar_checked'
+          and len(set(q.get('candidate_sentences') or [])) == 4,
+          '四个选项均对应唯一完整候选句')
+    for sent in q.get('candidate_sentences') or []:
+        check(ls._sound_sentence(sent), f'最小对立候选必须通过整句语法门禁：{sent}')
+    check(any(('ません' in s or 'ない' in s) for s in q['candidate_sentences']),
+          f'至少含一个否定极性、可产生相反意义：{q["candidate_sentences"]}')
+
+# 多分句优先考几乎同音的接续逻辑：ので（原因）↔のに（逆接），并同时考
+# 主句肯定/否定；只听见名词无法用排除法秒选。
+clause_q = ls._build_cloze_q({
+    'sid': 900002,
+    'text': '雨が降っているので、試合は中止になっていません。',
+    'source': 'unit_test',
+})
+check(clause_q is not None, '多分句可生成「接续逻辑 × 极性」双空题')
+if clause_q:
+    check(clause_q['blank_answers'][0] == 'ので'
+          and clause_q['contrast']['lexical_kind'] == '分句逻辑（原因↔逆接）',
+          f'第一空应精确考 ので↔のに：{clause_q}')
+    check(any('のに' in s for s in clause_q['candidate_sentences'])
+          and any('なっています' in s for s in clause_q['candidate_sentences']),
+          f'四项同时覆盖接续反转和极性反转：{clause_q["candidate_sentences"]}')
+    check(all(ls._sound_sentence(s) for s in clause_q['candidate_sentences']),
+          '多分句四条最小对立完整句全部通过语法门禁')
+
+# 纯形态回归：肯定/否定与过去/非过去必须整段替换，不能留下半截活用。
+for original, expected in [
+    ('本を読んでいます。', '本を読んでいません。'),
+    ('本を読みました。', '本を読みませんでした。'),
+    ('学生です。', '学生ではありません。'),
+]:
+    pv = ls._polarity_variant(original)
+    check(pv and pv['text'] == expected,
+          f'极性最小对立 {original} → {expected}（实际 {pv}）')
+
+# 真实语料属性测试：不是只保证手写样例；随机性下每道产出的四句仍须满足
+# 唯一性、可重建性和语法门禁。
+with db.get_conn() as c:
+    audit_rows = [dict(r) for r in c.execute(
+        'SELECT id sid,text,translation,source FROM sentences '
+        'WHERE length(text) BETWEEN 8 AND 60 ORDER BY id LIMIT 240').fetchall()]
+n_cloze = 0
+for row in audit_rows:
+    cq = ls._build_cloze_q(row)
+    if not cq:
+        continue
+    n_cloze += 1
+    rebuilt = (cq['prompt_parts'][0] + cq['blank_answers'][0]
+               + cq['prompt_parts'][1] + cq['blank_answers'][1]
+               + cq['prompt_parts'][2])
+    check(rebuilt == cq['text'], f'双空题可无损重建原句：{cq}')
+    check(len(cq['options']) == len(set(cq['options'])) == 4,
+          f'真实语料双空题四项唯一：{cq["options"]}')
+    check(all(ls._sound_sentence(s) for s in cq['candidate_sentences']),
+          f'真实语料四条完整候选均过门禁：{cq["candidate_sentences"]}')
+check(n_cloze >= 15, f'240 条真实语料至少稳定生成 15 道高难双空题（实际 {n_cloze}）')
+
+print('== 5. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
 bk = textbook.import_book({'title': '听力测试课本', 'author': '', 'level': '',
                            'lessons': [{'title': '第1課', 'sentences': [g[0] for g in GOOD_ZH]}]})
 book_sids = {r['sentence_id'] for r in db.get_conn().execute(
@@ -129,7 +243,7 @@ for q in d['questions']:
         check(q['sid'] in book_sids, f'"仅课本" 题目必须来自该课本：{q.get("sid")}')
 
 d0 = ls.make_quiz(count=5, scope='book', book_ids=[])
-print('== 5. 空书架诚实退化 + 关闭开关 ==')
+print('== 6. 空书架诚实退化 + 关闭开关 ==')
 with sqlite3.connect(api_db) as c0:
     c0.execute('DELETE FROM books')
     c0.execute('DELETE FROM book_lessons')
@@ -142,7 +256,7 @@ d = ls.make_quiz()
 check(d['ok'] is False and '关闭' in (d.get('reason') or ''), f'关闭开关生效：{d}')
 ls.save_listening_cfg({'enabled': True})
 
-print('== 6. 统计记录 ==')
+print('== 7. 统计记录 ==')
 r = ls.record_results([{'qtype': 'meaning', 'level': 'N4', 'ok': True},
                        {'qtype': 'discriminate', 'level': 'N4', 'ok': False}])
 check(r['ok'] and r['asked'] == 2 and r['correct'] == 1, f'计分 {r}')

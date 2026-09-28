@@ -74,6 +74,11 @@ CHUNK_CASES = [
     # 课本 OCR 回归：「おわんももとへ」应为「おわんを口もとへ」。
     ('それで、おわんを口もとへ持ってきて、吸う習慣がついた。',
      ['それで', 'おわんを', '口もとへ', '持ってきて', '吸う習慣が', 'ついた']),
+    # 「という」是引用/命名接续，不得拆成「坂本と｜いう日本人…」。
+    ('先週、坂本という日本人留学生と知り合いました。',
+     ['先週', '坂本という日本人留学生と', '知り合いました']),
+    ('身を飾るという働きも、たいへん重要になっています。',
+     ['身を', '飾るという働きも', 'たいへん重要になっています']),
 ]
 for text, want in CHUNK_CASES:
     p = sb.parse_sentence(text)
@@ -133,7 +138,8 @@ r = sb.check_arrangement(spec, ['t4', 't0', 't1', 't2', 't3'])
 check(not r['ok'] and '谓语' in r['feedback'], f'谓语错位应判错并提示（{r["feedback"]}）')
 # 缺块
 r = sb.check_arrangement(spec, ['t0', 't1', 't2', 't4'])
-check(not r['ok'] and '少用' in r['feedback'], '缺块应判错并指出缺了什么')
+check(not r['ok'] and '完整目标句' in r['feedback'] and '少用' in r['feedback'],
+      '即使所选片段自身语法正确，缺块仍应判错并明确要求复原完整句')
 # 重复块
 r = sb.check_arrangement(spec, ['t0', 't0', 't1', 't2', 't3', 't4'])
 check(not r['ok'], '重复用块应判错')
@@ -159,6 +165,19 @@ check(not r['ok'] and ('分句' in r['feedback'] or '谓语' in r['feedback']),
       f'跨区移动应判错（{r["feedback"]}）')
 r = sb.check_arrangement(specB, ['t0', 't1', 't2', 't3'])
 check(r['ok'], '原序应判对')
+
+# 用户实测回归：读点也可只是状语后的停顿，不是硬分句边界。
+# 「このように、色は…」与「色はこのように…」均为正确语序。
+p_soft, spec_soft = _spec_of('このように、色は人々にいろいろな感じを与え、生活に役立っているのです。')
+soft_surfs = [c['surface'] for c in p_soft['chunks']]
+check(soft_surfs == ['このように', '色は', '人々に', 'いろいろな感じを', '与え', '生活に', '役立っているのです'],
+      f'读点回归句切块稳定：{soft_surfs}')
+r = sb.check_arrangement(spec_soft, ['t1', 't0', 't2', 't3', 't4', 't5', 't6'])
+check(r['ok'], f'「色はこのように…」是同分句内状语换序，应判对（{r["feedback"]}）')
+# 真正的谓语读点仍然是硬边界，「生活に」不得越过「与え、」。
+r = sb.check_arrangement(spec_soft, ['t0', 't1', 't2', 't3', 't5', 't4', 't6'])
+check(not r['ok'] and '分句' in r['feedback'],
+      f'谓语后的读点仍须阻止跨分句（{r["feedback"]}）')
 
 # 引用と句：两种语序均判对
 p3, specC = _spec_of('彼は来ないかもしれないと言っていた。')
@@ -249,6 +268,12 @@ for text in ['私は昨日図書館で本を読みました。', '彼女は毎�
                for x in ('が', 'は', 'も', 'へ')):
             check(False, f'出现等价助词干扰块：{d}')
 check(n_d >= 2, f'两句应产出若干干扰块（{n_d}）')
+# 精确模式即使勾选 vocab 也不得退化为随机句外词；均衡模式才显式允许。
+precise_cfg = dict(cfg, distractor_profile='precise', distractors=4,
+                   distractor_kinds={'verb_form': False, 'particle': False, 'vocab': True})
+check(sb.make_distractors(sb.parse_sentence('私は昨日図書館で本を読みました。'),
+                          '私は昨日図書館で本を読みました。', precise_cfg) == [],
+      '精确最小对立模式禁用无法充分证明语义唯一性的随机句外词')
 # 时态变形干扰
 p = sb.parse_sentence('私は昨日図書館で本を読みました。')
 vf = sb._verb_form_variants(p['chunks'][-1])
@@ -373,6 +398,8 @@ check(c0['mode'] in ('basic', 'advanced') and c0['level'] in ['any'] + sb.LEVELS
       '默认配置合法')
 c1 = sb.save_builder_cfg({'mode': 'advanced', 'level': 'N3', 'count': 99,
                           'max_tiles': 999, 'swap_prob': 7,
+                          'translation_mode': 'bad', 'translated_ratio': 999,
+                          'distractor_profile': 'bad',
                           'types': {'arrange': 0, 'pairs': 0},
                           'distractor_kinds': {'vocab': False, 'bogus': True},
                           'evil_key': 'x'})
@@ -380,6 +407,9 @@ check(c1['mode'] == 'advanced' and c1['level'] == 'N3', 'mode 与 level 独立�
 check(c1['count'] == 20, f'count 上限修正为 20（{c1["count"]}）')
 check(c1['max_tiles'] <= 14, f'max_tiles 上限修正（{c1["max_tiles"]}）')
 check(c1['swap_prob'] <= 1.0, f'swap_prob 修正到 0-1（{c1["swap_prob"]}）')
+check(c1['translation_mode'] == 'mixed' and c1['translated_ratio'] == 100,
+      f'译文模式/比例非法值安全修正：{c1["translation_mode"]}/{c1["translated_ratio"]}')
+check(c1['distractor_profile'] == 'precise', '非法混淆策略回落精确最小对立')
 check(sum(c1['types'].values()) > 0, '题型占比全 0 时回落默认')
 check('evil_key' not in c1 and 'bogus' not in c1['distractor_kinds'],
       '白名单过滤未知键')
@@ -391,6 +421,8 @@ check(c2['mode'] == 'basic' and c2['level'] == 'N3', '改 mode 不动 level（�
 c3 = sb.save_builder_cfg({'level': 'any'})
 check(c3['mode'] == 'basic' and c3['level'] == 'any', '改 level 不动 mode（两轴独立）')
 sb.save_builder_cfg({'mode': 'basic', 'level': 'any', 'count': 6,
+                     'translation_mode': 'mixed', 'translated_ratio': 50,
+                     'distractor_profile': 'precise',
                      'types': {'arrange': 80, 'pairs': 20}, 'max_tiles': 9})
 
 # ================================================================
@@ -422,6 +454,30 @@ for x in q['questions']:
             ids = [tid for i in o for tid, ci in x['spec']['tile_map'].items() if ci == i]
             check(sb.check_arrangement(x['spec'], ids)['ok'],
                   f'白名单语序必判对：{x["text"]}')
+# 译文覆盖轴：必须有译文/必须无译文绝不跨池；混合模式按比例，池不足才如实放宽。
+sb.save_builder_cfg({'translation_mode': 'with', 'types': {'arrange': 100, 'pairs': 0}})
+q_with = sb.make_quiz(count=6, mode='basic', level='any')
+with_arr = [x for x in q_with['questions'] if x['qtype'] == 'arrange']
+check(with_arr and all((x.get('translation') or '').strip() for x in with_arr),
+      '“必须有译文”模式的所有排序题均有译文')
+check(q_with['actual_untranslated'] == 0, '有译文模式返回的实际构成可核验')
+
+sb.save_builder_cfg({'translation_mode': 'without'})
+q_without = sb.make_quiz(count=6, mode='basic', level='any')
+without_arr = [x for x in q_without['questions'] if x['qtype'] == 'arrange']
+check(without_arr and all(not (x.get('translation') or '').strip() for x in without_arr),
+      '“必须无译文”模式的所有排序题均无译文')
+check(q_without['actual_translated'] == 0, '无译文模式返回的实际构成可核验')
+
+sb.save_builder_cfg({'translation_mode': 'mixed', 'translated_ratio': 50})
+q_mix = sb.make_quiz(count=6, mode='basic', level='any')
+check(q_mix['actual_translated'] + q_mix['actual_untranslated'] == q_mix['n_arrange'],
+      '混合模式实际译文构成与排序题总数一致')
+if not q_mix['translation_mix_relaxed'] and q_mix['n_arrange'] == 6:
+    check(q_mix['actual_translated'] == 3 and q_mix['actual_untranslated'] == 3,
+          f'题源充足时严格执行 50/50（{q_mix["actual_translated"]}/{q_mix["actual_untranslated"]}）')
+
+sb.save_builder_cfg({'translation_mode': 'with'})
 qa = sb.make_quiz(count=4, mode='advanced', level='any')
 check(qa['ok'] and qa['count'] >= 1, f'advanced 出题成功（{qa["count"]} 题）')
 adv_has_fake = False

@@ -52,6 +52,7 @@ CASES = [
     ('私は毎日日本語を勉強している。', 'ている', '〜ている（習慣・反復）'),
     ('彼は今、東京で働いている。', 'ている', '〜ている（習慣・反復）'),
     ('子供たちが庭で走っている。', 'ている', '〜ている（動作の進行）'),
+    ('色は生活に役立っている。', 'ている', '〜ている（結果状態・存続）'),
     # ---- 8. 〜ていく / 〜てくる ----
     ('鳥が空へ飛んでいく。', 'ていく', '〜ていく（空間移動）'),
     ('これからだんだん寒くなっていく。', 'ていく', '〜ていく（時間推移・変化）'),
@@ -96,6 +97,21 @@ def main():
             failed.append((text, expect, '命中但讲解缺少判据'))
             continue
         passed += 1
+    # 「このように」是方式指示副词，不是推定ようだ，也不是目的ように。
+    try:
+        pts = [p for p in grammar.analyze('このように、色は生活に役立っている。')
+               if p.get('kind') == 'pattern']
+        false_names = [p['name'] for p in pts
+                       if 'ようだ' in p['name'] or p['name'].startswith('〜ように（目的')]
+        if false_names:
+            failed.append(('このように、色は生活に役立っている。',
+                           '不应识别为推定/目的', f'误报: {false_names}'))
+        else:
+            passed += 1
+    except Exception as e:  # pragma: no cover
+        failed.append(('このように、色は生活に役立っている。',
+                       '不应识别为推定/目的', f'analyze异常: {e}'))
+
     for text, expect in FALLBACK_CASES:
         try:
             names = [p['name'] for p in grammar.analyze(text) if p.get('kind') == 'pattern']

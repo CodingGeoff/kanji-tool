@@ -192,7 +192,9 @@ PATTERNS = [
     P('〜ことにする（決心）', 'N3', '辞書形 + ことにする', '自己决定做某事',
       [{'l': '事'}, {'s': 'に'}, {'l': '為る'}]),
     P('〜ようだ／みたいだ（比況・推定）', 'N3', '連体形 + ようだ', '好像〜（根据观察的推断或比喻）',
-      [{'l': ('様', 'みたい'), 'p1': '形状詞'}, {'l': ('だ', 'です'), 'opt': True}]),
+      [{'l': ('様', 'みたい'), 'p1': '形状詞'},
+       {'l': ('だ', 'です'), 'p1': '助動詞',
+        'cf': ('終止形', '連体形', '意志推量形')}]),
     P('〜らしい（推定・典型）', 'N3', '〜 + らしい', '据说/看来〜（有依据的推断），接名词也可表「典型的〜」',
       [{'ct': '助動詞-ラシイ'}]),
     P('〜はずだ（確信）', 'N3', '連体形 + はずだ', '按道理应该〜（有依据的确信）',
@@ -206,7 +208,10 @@ PATTERNS = [
     P('〜ために（目的・原因）', 'N3', '辞書形/名詞の + ために', '为了〜（目的）；接过去形则表原因',
       [{'l': '為'}, {'s': 'に', 'opt': True}]),
     P('〜ように（目的・引用）', 'N3', '辞書形/ない形 + ように', '为了能〜（无意志动词的目的）；也用于转述请求',
-      [{'l': '様', 'p1': ('形状詞', '名詞')}, {'s': 'に'}]),
+      [{'l': '様', 'p1': ('形状詞', '名詞')}, {'s': 'に'}],
+      # 排除「このように／そのように」等指示性方式副词；目的/间接指示的
+      # ように前面必须是活用谓语（できるように／忘れないように）。
+      prev_cf=('終止形', '連体形', '未然形')),
     P('〜まま（放任）', 'N3', 'た形/名詞の + まま', '保持某状态不变地〜',
       [{'l': ('儘', '侭', 'まま')}]),
     P('〜うちに（時間帯）', 'N3', '辞書形/ている + うちに', '趁着〜的时候（错过就来不及）',
@@ -445,7 +450,7 @@ AUXILIARIES = {
 # ---------------------------------------------------------------
 _TPLS = [
     '「{surface}」是{level}句型「{name}」（接续：{structure}）——{meaning}。在本句「{ctx}」中就是这个用法。',
-    '这里的「{surface}」用到了「{name}」：{meaning}。它的接续方式是 {structure}，请对照句中「{ctx}」体会。',
+    '这里的「{surface}」用到了「{name}」：{meaning}。接续方式为 {structure}，请结合句中「{ctx}」体会。',
     '注意「{ctx}」这一段：核心语法是「{name}」（{level}）。{meaning}，形态上表现为 {structure}。',
     '「{name}」登场了：{meaning}。本句里它以「{surface}」的形式出现，前后文是「{ctx}」。',
     '拆解「{ctx}」：这是{level}必考的「{name}」，结构为 {structure}。含义：{meaning}。',
@@ -462,7 +467,7 @@ _TPLS_SINGLE = [
 # 名称里已含「surface」时使用（避免「た」「た」式重复引用）
 _TPLS_NOSURF = [
     '这是{level}句型{name}（接续：{structure}）——{meaning}。本句「{ctx}」中就是这个用法。',
-    '{name}：{meaning}。接续方式是 {structure}，请对照句中「{ctx}」体会。',
+    '{name}：{meaning}。接续方式为 {structure}，请结合句中「{ctx}」体会。',
     '注意「{ctx}」这一段：核心语法是{name}（{level}）。{meaning}，形态上表现为 {structure}。',
     '{name}登场：{meaning}。前后文是「{ctx}」。',
 ]
@@ -716,6 +721,9 @@ _STATE_VERBS = frozenset({
     'きまる', '始まる', 'はじまる', '終わる', 'おわる', '着く', 'つく',
     '帰る', 'かえる', '行く', 'いく', '来る', 'くる', '生まれる',
     'うまれる', '卒業する', '入学する', '就職する', '退職する',
+    # 「役立っている」描述功能持续成立（有用/起作用），不是眼下正在进行
+    # 一个可观察动作。
+    '役立つ', 'やくだつ',
 })
 _OCCUPATION_VERBS = frozenset({
     '働く', 'はたらく', '勤める', 'つとめる', '努める', '務める',
@@ -1233,18 +1241,66 @@ def _char_spans(text, words):
     return spans
 
 
+_PHRASE_EDGE_PUNCT = _STOP_PUNCT | {'、', '，', ',', '；', ';', '：', ':',
+                                            '「', '」', '『', '』', '（', '）',
+                                            '(', ')', '【', '】', '…', '‥'}
+_CONTEXT_DEP_POS = {'助詞', '助動詞', '接尾辞'}
+
+
 def _context3(words, s, e, lr=4, rr=3):
-    """三段式上下文：核心语法点前后各取若干形态素、不跨句 → (before, core, after)"""
-    lo = max(0, s - lr)
-    for j in range(s - 1, lo - 1, -1):
-        if words[j].surface in _STOP_PUNCT:
-            lo = j + 1
+    """返回可独立阅读的「前文、核心、后文」语法片段。
+
+    形态素窗口不能生硬地从读点、助词、助动词或词尾开始，也不能在一个活用
+    词的中间结束。这里先以句号/读点等划定分句，再把左边界向前对齐到自立词，
+    把右边界延伸到助词・助动词链结束。核心高亮跨度保持不变。
+    """
+    n = len(words)
+    if not (0 <= s < e <= n):
+        return '', '', ''
+
+    # 不跨越任何句读/括号边界；边界符本身不进入引用片段。
+    bound_lo = 0
+    for j in range(s - 1, -1, -1):
+        if words[j].surface in _PHRASE_EDGE_PUNCT or words[j].feature.pos1 == '補助記号':
+            bound_lo = j + 1
             break
-    hi = min(len(words), e + rr)
-    for j in range(e, hi):
-        if words[j].surface in _STOP_PUNCT:
-            hi = j
+    bound_hi = n
+    for j in range(e, n):
+        if words[j].surface in _PHRASE_EDGE_PUNCT or words[j].feature.pos1 == '補助記号':
+            bound_hi = j
             break
+
+    lo = max(bound_lo, s - lr)
+    # 若定长窗口正好切在功能词/词尾上，向左补到所属自立词；绝不跨标点。
+    while lo > bound_lo and words[lo].feature.pos1 in _CONTEXT_DEP_POS:
+        lo -= 1
+    while lo < s and (words[lo].surface in _PHRASE_EDGE_PUNCT
+                      or words[lo].feature.pos1 == '補助記号'):
+        lo += 1
+    # 引号/读点后可能紧跟引用助词等功能词（「…」と言った）。既不能把右引号
+    # 放在片段开头，也不能让片段从孤立的「と」起头；此时向右收至自立词。
+    while lo < s and words[lo].feature.pos1 in _CONTEXT_DEP_POS:
+        lo += 1
+
+    hi = min(bound_hi, e + rr)
+    # 定长窗口若切在活用词中间，继续吸收其接续助词/助动词链，得到完整词形。
+    while hi < bound_hi:
+        prev_f = words[hi - 1].feature
+        next_f = words[hi].feature
+        prev_cf = prev_f.cForm or ''
+        needs_tail = (
+            next_f.pos1 in _CONTEXT_DEP_POS
+            or prev_f.pos1 == '接頭辞'
+            or (prev_f.pos1 in ('動詞', '形容詞', '助動詞')
+                and prev_cf.startswith(('未然形', '連用形')))
+        )
+        if not needs_tail:
+            break
+        hi += 1
+    while hi > e and (words[hi - 1].surface in _PHRASE_EDGE_PUNCT
+                      or words[hi - 1].feature.pos1 == '補助記号'):
+        hi -= 1
+
     before = ''.join(w.surface for w in words[lo:s])
     core = ''.join(w.surface for w in words[s:e])
     after = ''.join(w.surface for w in words[e:hi])
