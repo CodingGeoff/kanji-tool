@@ -7,7 +7,7 @@
      干扰项均为真实译文、答案在选项中
   3. discriminate 题：4 个选项均为真实语料完整句、互不相同，
      答案与原句完全一致，绝不通过机械替换名词合成坏句
-  4. 双空最小对立：词汇/格成分与极性联合挖空、2×2 唯一答案、整句复验
+  4. 双空最小对立：分句逻辑/词汇/格成分与极性联合挖空、2×2 唯一答案、整句复验
   5. scope 稳健性：与组句练习共用同一套 resolve_book_scope，
      "仅课本" 不会泄漏语料库句子
   6. 统计记录
@@ -118,7 +118,7 @@ for q in disc_qs:
                           '彼に助けを求めても国民だ。'),
               f'不得生成「無駄だ」机械换词坏句：{opt}')
 
-print('== 4. 双空最小对立：词汇/格成分 × 极性，四条完整句均质检 ==')
+print('== 4. 双空最小对立：分句逻辑/词汇/格成分 × 极性，四条完整句均质检 ==')
 cloze_row = {'sid': 900001, 'text': '彼女は毎日図書館で本を読んでいます。',
              'translation': '她每天在图书馆看书。', 'source': 'unit_test'}
 q = ls._build_cloze_q(cloze_row)
@@ -137,6 +137,24 @@ if q:
     check(any(('ません' in s or 'ない' in s) for s in q['candidate_sentences']),
           f'至少含一个否定极性、可产生相反意义：{q["candidate_sentences"]}')
 
+# 多分句优先考几乎同音的接续逻辑：ので（原因）↔のに（逆接），并同时考
+# 主句肯定/否定；只听见名词无法用排除法秒选。
+clause_q = ls._build_cloze_q({
+    'sid': 900002,
+    'text': '雨が降っているので、試合は中止になっていません。',
+    'source': 'unit_test',
+})
+check(clause_q is not None, '多分句可生成「接续逻辑 × 极性」双空题')
+if clause_q:
+    check(clause_q['blank_answers'][0] == 'ので'
+          and clause_q['contrast']['lexical_kind'] == '分句逻辑（原因↔逆接）',
+          f'第一空应精确考 ので↔のに：{clause_q}')
+    check(any('のに' in s for s in clause_q['candidate_sentences'])
+          and any('なっています' in s for s in clause_q['candidate_sentences']),
+          f'四项同时覆盖接续反转和极性反转：{clause_q["candidate_sentences"]}')
+    check(all(ls._sound_sentence(s) for s in clause_q['candidate_sentences']),
+          '多分句四条最小对立完整句全部通过语法门禁')
+
 # 纯形态回归：肯定/否定与过去/非过去必须整段替换，不能留下半截活用。
 for original, expected in [
     ('本を読んでいます。', '本を読んでいません。'),
@@ -146,6 +164,28 @@ for original, expected in [
     pv = ls._polarity_variant(original)
     check(pv and pv['text'] == expected,
           f'极性最小对立 {original} → {expected}（实际 {pv}）')
+
+# 真实语料属性测试：不是只保证手写样例；随机性下每道产出的四句仍须满足
+# 唯一性、可重建性和语法门禁。
+with db.get_conn() as c:
+    audit_rows = [dict(r) for r in c.execute(
+        'SELECT id sid,text,translation,source FROM sentences '
+        'WHERE length(text) BETWEEN 8 AND 60 ORDER BY id LIMIT 240').fetchall()]
+n_cloze = 0
+for row in audit_rows:
+    cq = ls._build_cloze_q(row)
+    if not cq:
+        continue
+    n_cloze += 1
+    rebuilt = (cq['prompt_parts'][0] + cq['blank_answers'][0]
+               + cq['prompt_parts'][1] + cq['blank_answers'][1]
+               + cq['prompt_parts'][2])
+    check(rebuilt == cq['text'], f'双空题可无损重建原句：{cq}')
+    check(len(cq['options']) == len(set(cq['options'])) == 4,
+          f'真实语料双空题四项唯一：{cq["options"]}')
+    check(all(ls._sound_sentence(s) for s in cq['candidate_sentences']),
+          f'真实语料四条完整候选均过门禁：{cq["candidate_sentences"]}')
+check(n_cloze >= 15, f'240 条真实语料至少稳定生成 15 道高难双空题（实际 {n_cloze}）')
 
 print('== 5. scope 稳健性：与组句练习共用同一套解析，"仅课本" 不泄漏语料库 ==')
 bk = textbook.import_book({'title': '听力测试课本', 'author': '', 'level': '',

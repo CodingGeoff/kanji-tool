@@ -15,7 +15,7 @@
 
   1. meaning       听后选义：从 4 个同语言译文中选义。
   2. discriminate  听音辨句：从 4 条真实完整语料中辨认原句。
-  3. cloze         双空最小对立：题面同时挖掉一个词汇/格成分和一个
+  3. cloze         双空最小对立：题面同时挖掉一个分句接续/词汇/格成分和一个
                    时态・极性成分，四个选项是二者的 2×2 组合。错误极性可让
                    意义完全相反（如「ている」↔「ていない」），词汇项优先
                    使用同助词+同谓语的语料实证搭配。候选整句全部重新经过
@@ -261,7 +261,7 @@ def _build_discriminate_q(row, sentence_pool):
 
 
 # ================================================================
-# 题型 3：双空最小对立（词汇/格成分 × 时态/极性）
+# 题型 3：双空最小对立（分句逻辑/词汇/格成分 × 极性）
 # ================================================================
 # 只收录无需动词活用生成器也能安全替换的完整表面形；顺序最长优先。
 # 通用“反义词库”无法判断语境和搭配，因此只生成可复验的形态极性对立。
@@ -301,6 +301,49 @@ def _polarity_variant(text):
     return None
 
 
+def _clause_logic_variant(text):
+    """多分句最小对立：只改接续关系，不改两侧命题。
+
+    「ので／のに」只有一个假名不同，却把原因关系翻成逆接；
+    「から／けれど」把原因翻成转折。必须由形态素确认它确实是接续形式，
+    避免误改名词中的同形字符串，并对改写后的完整句再次质检。
+    """
+    try:
+        toks = sb._tag(text)
+    except Exception:
+        return None
+    spans, pos = [], 0
+    for tok in toks:
+        i = text.find(tok['s'], pos)
+        if i < 0:
+            i = pos
+        spans.append((i, i + len(tok['s'])))
+        pos = i + len(tok['s'])
+
+    candidates = []
+    for i, tok in enumerate(toks):
+        # UniDic: の(準体助詞) + で/に(助動詞だ・連用形)
+        if (tok['s'] == 'の' and tok['p2'] == '準体助詞' and i + 1 < len(toks)
+                and toks[i + 1]['p1'] == '助動詞'
+                and toks[i + 1]['lemma'] == 'だ'
+                and toks[i + 1]['s'] in ('で', 'に')):
+            old = 'の' + toks[i + 1]['s']
+            new = 'のに' if old == 'ので' else 'ので'
+            candidates.append((spans[i][0], old, new, '分句逻辑（原因↔逆接）'))
+        elif tok['p2'] == '接続助詞' and tok['s'] in ('から', 'けれど', 'けれども'):
+            old = tok['s']
+            new = 'けれど' if old == 'から' else 'から'
+            candidates.append((spans[i][0], old, new, '分句逻辑（原因↔转折）'))
+
+    random.shuffle(candidates)
+    for start, old, new, kind in candidates:
+        changed = _replace_once_at(text, start, old, new)
+        if _sound_sentence(changed):
+            return {'text': changed, 'from': old, 'to': new, 'start': start,
+                    'kind': kind}
+    return None
+
+
 def _lexical_variant(text, parsed):
     """优先实证名词搭配；不足时退到格关系对立，完整句均重新质检。"""
     got = sb._swap_variant(text, parsed)
@@ -334,7 +377,8 @@ def _build_cloze_q(row):
     parsed = sb.parse_sentence(text)
     if not parsed:
         return None
-    lex = _lexical_variant(text, parsed)
+    # 多分句优先考接续逻辑；单句再考词汇/格关系。
+    lex = _clause_logic_variant(text) or _lexical_variant(text, parsed)
     pol = _polarity_variant(text)
     if not lex or not pol:
         return None

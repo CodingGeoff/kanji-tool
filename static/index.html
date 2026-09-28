@@ -3102,7 +3102,7 @@ function lsRender(){
       <span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
-  const hint={meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清词汇/格关系与句尾时态・极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
+  const hint={meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
@@ -3112,8 +3112,9 @@ function lsRender(){
       <div id="lsPlayBox" class="muted" style="margin-top:6px;font-size:12.5px">还没有播放过</div>
     </div>
     <div class="sb-area jp" id="lsOpts" style="margin-top:16px">
-      ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})">${esc(o)}</button>`).join('')}
+      ${q.options.map((o,k)=>`<button class="sb-tile ls-opt" id="lsOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:15px" onclick="lsPick(${k})" disabled>选项 ${k+1}（播放后显示）</button>`).join('')}
     </div>
+    <div class="muted" id="lsUnlockHint" style="font-size:12.5px;margin-top:5px">先播放录音，随后解锁选项</div>
     <div class="quiz-nav">
       <button class="btn primary" id="lsCheckBtn" onclick="lsCheck()" disabled>检查</button>
     </div>
@@ -3124,10 +3125,13 @@ function lsPlayTap(){
   const q=lsQuiz.qs[lsQuiz.i];
   if(q.max_plays&&_lsPlays>=q.max_plays){toast(`本题最多重播 ${q.max_plays} 次`);return;}
   _lsPlays++;
+  document.querySelectorAll('.ls-opt').forEach((b,i)=>{b.disabled=false;b.textContent=q.options[i];});
+  const unlock=$('#lsUnlockHint');if(unlock)unlock.textContent='选项已解锁，请依据录音作答';
   lsPlay(q.text,q.rate);
 }
 function lsPick(k){
   if(lsQuiz.checked)return;
+  if(!_lsPlays){toast('请先播放录音再作答');return;}
   lsQuiz.picked=k;
   document.querySelectorAll('.ls-opt').forEach((b,i)=>b.classList.toggle('sel',i===k));
   $('#lsCheckBtn').disabled=false;
@@ -3186,7 +3190,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">新增「双空最小对立」：一句中同时挖掉词汇/格成分和句尾时态・极性，四项按 2×2 组合，必须听清两个位置；否定项可令句意完全相反。词汇优先来自同谓语的真实语料搭配，四条候选完整句全部通过语法门禁。Python 分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此系统采用可审计的保守变换，不伪造“智能理解”。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">新增「双空最小对立」：一句中同时挖掉分句接续或词汇/格成分，以及句尾极性，四项按 2×2 组合，必须听清两个位置；否定项可令句意完全相反。多分句优先考「ので／のに」等逻辑反转；词汇优先来自同谓语的真实语料搭配，四条候选完整句全部通过语法门禁。Python 分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此系统采用可审计的保守变换，不伪造“智能理解”。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
