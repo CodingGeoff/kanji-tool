@@ -1399,8 +1399,8 @@ def api_assessment_passages():
 @app.route('/api/assessment/passages/generate', methods=['POST'])
 def api_assessment_passage_generate():
     d = request.json or {}
-    return jsonify(assessment_bank.generate(d.get('level'), d.get('status', 'approved'),
-                                             d.get('seed'), bool(d.get('include_answers'))))
+    return jsonify(assessment_bank.generate(d.get('level'), d.get('status', 'all'),
+                                           d.get('seed'), bool(d.get('include_answers'))))
 
 
 @app.route('/api/assessment/passages/<passage_id>/review', methods=['POST'])
