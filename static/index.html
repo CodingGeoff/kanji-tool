@@ -213,6 +213,40 @@ body.ktv-song.showhdr header{display:flex;position:static}
 .psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* ===== 篇章精读：答题 + 原文 双栏 / 移动端抽屉 ===== */
+.dc-split{display:flex;gap:16px;align-items:flex-start;max-width:1460px;margin:0 auto}
+.dc-qcol{flex:1 1 0;min-width:0}
+.dc-rcol{flex:0 0 440px;position:sticky;top:10px;max-height:calc(100vh - 20px);
+  display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;overflow:hidden}
+.dc-rbar{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);
+  flex-wrap:wrap;background:var(--card);position:sticky;top:0;z-index:2}
+.dc-rbar .btn{padding:3px 9px;font-size:12.5px}
+.dc-reader{overflow:auto;padding:12px 14px 40px;line-height:2.1;font-size:16px;-webkit-overflow-scrolling:touch}
+.dc-reader h4{margin:16px 0 6px;font-size:15.5px;color:var(--accent2);border-left:3px solid var(--accent2);padding-left:8px}
+.dc-reader .cap{color:var(--sub);font-size:13px;margin:6px 0}
+.dc-reader p{margin:0 0 12px}
+.dc-s{transition:background .3s}
+.dc-s.hit{background:rgba(255,193,7,.35);border-radius:4px;box-shadow:0 0 0 3px rgba(255,193,7,.35)}
+.dc-locked{flex:0 0 440px;position:sticky;top:10px}
+.dc-fab{display:none}
+@media(max-width:1060px){
+  .dc-split{display:block}
+  .dc-rcol{position:fixed;left:0;right:0;bottom:0;top:auto;flex:none;width:auto;z-index:70;
+    max-height:80vh;border-radius:16px 16px 0 0;transform:translateY(102%);
+    transition:transform .25s ease;box-shadow:0 -10px 30px rgba(0,0,0,.35)}
+  .dc-rcol.open{transform:translateY(0)}
+  .dc-locked{position:static;margin-top:12px}
+  .dc-fab{display:flex;position:fixed;right:14px;bottom:18px;z-index:71;align-items:center;gap:6px;
+    padding:11px 16px;border-radius:24px;border:none;background:var(--accent);color:#fff;
+    font-size:15px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
+  .dc-reader{font-size:17px;padding-bottom:70px}
+}
+@media(max-width:560px){
+  .dc-reader{line-height:2.2}
+  #dcQuizView .sb-tile{font-size:15.5px}
+}
+
 .psy-section{margin-top:14px}
 /* v18: RAG 分阶段检索进度条 + AI 翻译面板 */
 .rag-prog{margin-top:10px}
@@ -851,6 +885,40 @@ async function showAbout(){
 .psy-tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .psy-tabs button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .psy-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* ===== 篇章精读：答题 + 原文 双栏 / 移动端抽屉 ===== */
+.dc-split{display:flex;gap:16px;align-items:flex-start;max-width:1460px;margin:0 auto}
+.dc-qcol{flex:1 1 0;min-width:0}
+.dc-rcol{flex:0 0 440px;position:sticky;top:10px;max-height:calc(100vh - 20px);
+  display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;overflow:hidden}
+.dc-rbar{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);
+  flex-wrap:wrap;background:var(--card);position:sticky;top:0;z-index:2}
+.dc-rbar .btn{padding:3px 9px;font-size:12.5px}
+.dc-reader{overflow:auto;padding:12px 14px 40px;line-height:2.1;font-size:16px;-webkit-overflow-scrolling:touch}
+.dc-reader h4{margin:16px 0 6px;font-size:15.5px;color:var(--accent2);border-left:3px solid var(--accent2);padding-left:8px}
+.dc-reader .cap{color:var(--sub);font-size:13px;margin:6px 0}
+.dc-reader p{margin:0 0 12px}
+.dc-s{transition:background .3s}
+.dc-s.hit{background:rgba(255,193,7,.35);border-radius:4px;box-shadow:0 0 0 3px rgba(255,193,7,.35)}
+.dc-locked{flex:0 0 440px;position:sticky;top:10px}
+.dc-fab{display:none}
+@media(max-width:1060px){
+  .dc-split{display:block}
+  .dc-rcol{position:fixed;left:0;right:0;bottom:0;top:auto;flex:none;width:auto;z-index:70;
+    max-height:80vh;border-radius:16px 16px 0 0;transform:translateY(102%);
+    transition:transform .25s ease;box-shadow:0 -10px 30px rgba(0,0,0,.35)}
+  .dc-rcol.open{transform:translateY(0)}
+  .dc-locked{position:static;margin-top:12px}
+  .dc-fab{display:flex;position:fixed;right:14px;bottom:18px;z-index:71;align-items:center;gap:6px;
+    padding:11px 16px;border-radius:24px;border:none;background:var(--accent);color:#fff;
+    font-size:15px;box-shadow:0 6px 18px rgba(0,0,0,.3)}
+  .dc-reader{font-size:17px;padding-bottom:70px}
+}
+@media(max-width:560px){
+  .dc-reader{line-height:2.2}
+  #dcQuizView .sb-tile{font-size:15.5px}
+}
+
 .psy-section{margin-top:14px}
 
 </style>
@@ -1125,61 +1193,151 @@ async function dcStart(id,count,difficulty,study,mode){
   const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify(
     {passage_id:id,count,difficulty:difficulty||undefined,mode:mode||'mixed',secure:true})});
   if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
-  let full='';
-  try{ const p=await api('/api/discourse/passages/'+id);
-       full=(p.passage.sentences||[]).map(x=>x.kind==='heading'?('\n【'+x.text+'】\n'):x.text).join(''); }catch(e){}
+  let rows=[];
+  try{ const p=await api('/api/discourse/passages/'+id); rows=(p.passage.sentences||[]); }catch(e){}
   dcQuiz={pid:id,quizId:d.quiz_id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
-          study:!!study,full,peeked:false,mix:d.difficulty_mix||{},nFresh:d.n_fresh,nInput:d.n_input};
-  if(d.n_fresh<d.questions.length)toast(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的；做过的题会换一套干扰项重新出`);
+          study:!!study,rows,furi:null,furiOn:false,peeked:false,readerOpen:false,
+          nFresh:d.n_fresh,nInput:d.n_input};
   $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
-  dcRender();
+  dcShell();
+  if(d.n_fresh<d.questions.length)toast(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
 }
 function dcQuit(){ dcQuiz=null; dcLoad(); }
-function dcTextPanel(q){
-  const open=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked;
-  if(!open){
-    return `<div class="muted" style="margin-top:10px;font-size:12.5px">
-      🔒 闭卷题：先凭记忆和上下文作答。
-      <button class="btn" style="padding:3px 10px;font-size:12.5px" onclick="dcPeek()">我要看原文（本题改记为「参考原文」，不计入闭卷成绩）</button></div>`;
-  }
-  const why=dcQuiz.study?'精读模式：对照原文学习，本轮不计分'
-    :(q.text_policy==='open'?'开卷题：本题考的就是在原文里定位信息的速度，看原文是正常做法'
-      :'你已查看原文，本题记为「参考原文」，不计入闭卷成绩');
-  return `<details style="margin-top:10px" ${q.text_policy==='open'||dcQuiz.study?'open':''}>
-    <summary class="muted" style="cursor:pointer;font-size:12.5px">📄 原文（${esc(why)}）</summary>
-    <div class="jp" style="white-space:pre-wrap;line-height:2;font-size:15px;margin-top:6px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(dcQuiz.full)}</div>
-  </details>`;
+
+/* ---------- 阅读面板（桌面右栏 / 手机底部抽屉） ---------- */
+function dcFontSize(delta){
+  let v=parseInt(localStorage.getItem('dcFont')||'16',10);
+  if(delta)v=Math.max(13,Math.min(26,v+delta));
+  localStorage.setItem('dcFont',v);
+  const el=$('#dcReader'); if(el)el.style.fontSize=v+'px';
+  return v;
 }
-function dcPeek(){ dcQuiz.peeked=true; dcRender(true); }
+function dcReaderHTML(){
+  const rows=dcQuiz.rows||[];
+  const furi=dcQuiz.furiOn&&dcQuiz.furi?Object.fromEntries(dcQuiz.furi.map(r=>[r.idx,r.tokens])):null;
+  let html='',bodyN=0;
+  for(const r of rows){
+    const tk=furi&&furi[r.idx];
+    const txt=tk?rubyHTML(tk):esc(r.text);
+    if(r.kind==='heading'){html+=`<h4>${txt}</h4>`;}
+    else if(r.kind==='caption'){html+=`<div class="cap">${txt}</div>`;}
+    else{html+=`<p><span class="dc-s" id="dcS${bodyN}">${txt}</span></p>`;bodyN++;}
+  }
+  return html||'<div class="muted">（没有正文）</div>';
+}
+function dcShell(){
+  const fs=parseInt(localStorage.getItem('dcFont')||'16',10);
+  $('#dcQuizView').innerHTML=`<div class="dc-split">
+    <div class="dc-qcol" id="dcQcol"></div>
+    <aside class="dc-rcol" id="dcRcol">
+      <div class="dc-rbar">
+        <b style="font-size:13.5px">📄 原文</b>
+        <span class="muted" id="dcReadNote" style="font-size:12px"></span>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="dcFontSize(-1)">A−</button>
+        <button class="btn" onclick="dcFontSize(1)">A＋</button>
+        <button class="btn" id="dcFuriBtn" onclick="dcToggleFuri()">ふりがな</button>
+        <button class="btn" onclick="dcCloseReader()">✕</button>
+      </div>
+      <div class="dc-reader jp" id="dcReader" style="font-size:${fs}px">${dcReaderHTML()}</div>
+    </aside>
+  </div>
+  <button class="dc-fab" id="dcFab" onclick="dcFabTap()">📄 原文</button>`;
+  dcRender();
+}
+function dcMobile(){ return window.matchMedia('(max-width:1060px)').matches; }
+function dcOpenReader(force){
+  const q=dcQuiz.qs[dcQuiz.i];
+  if(!force&&!dcQuiz.study&&q.text_policy!=='open'&&!dcQuiz.peeked&&!dcQuiz.checked){dcPeek();return;}
+  dcQuiz.readerOpen=true;
+  const el=$('#dcRcol'); if(el){el.style.display='flex';el.classList.add('open');}
+  dcSyncFab();   // 打开后按钮要立刻变成「收起」，否则再点一次会以为没反应
+}
+function dcCloseReader(){
+  dcQuiz.readerOpen=false;
+  const el=$('#dcRcol');
+  if(el){el.classList.remove('open'); if(!dcMobile())el.style.display='none';}
+  dcSyncFab();
+}
+function dcFabTap(){ dcQuiz.readerOpen?dcCloseReader():dcOpenReader(); }
+function dcSyncFab(){
+  const f=$('#dcFab'); if(!f)return;
+  const q=dcQuiz.qs[dcQuiz.i];
+  const free=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked||dcQuiz.checked;
+  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文（记为参考）');
+}
+async function dcToggleFuri(){
+  if(!dcQuiz.furi){
+    $('#dcFuriBtn').textContent='…';
+    try{ const d=await api('/api/discourse/passages/'+dcQuiz.pid+'/furigana'); dcQuiz.furi=d.rows||[]; }
+    catch(e){ toast('注音失败'); $('#dcFuriBtn').textContent='ふりがな'; return; }
+  }
+  dcQuiz.furiOn=!dcQuiz.furiOn;
+  $('#dcFuriBtn').textContent=dcQuiz.furiOn?'✓ ふりがな':'ふりがな';
+  const el=$('#dcReader'); const top=el.scrollTop;
+  el.innerHTML=dcReaderHTML(); el.scrollTop=top;
+}
+function dcJump(i){
+  dcOpenReader(true);
+  setTimeout(()=>{
+    const el=document.getElementById('dcS'+i); if(!el)return;
+    el.scrollIntoView({block:'center',behavior:'smooth'});
+    el.classList.add('hit'); setTimeout(()=>el.classList.remove('hit'),2600);
+  },60);
+}
+function dcPeek(){
+  dcQuiz.peeked=true;
+  dcRender(true);
+  dcOpenReader(true);
+  dcSyncFab();
+  toast('本题记为「参考原文」，不计入闭卷成绩');
+}
+/* ---------- 题目区 ---------- */
 function dcRender(keepPick){
-  const v=$('#dcQuizView'),q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
+  const q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
   if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
   const DIFF={easy:'易',medium:'中',hard:'难'};
-  v.innerHTML=`<div class="card quiz-wrap">
+  const open=dcQuiz.study||q.text_policy==='open';
+  $('#dcQcol').innerHTML=`<div class="card quiz-wrap" style="max-width:none">
     <div class="quiz-top">
       <button class="btn" onclick="dcQuit()">‹ 退出</button>
       <span class="quiz-prog">📖 ${esc(dcQuiz.title)} ${dcQuiz.i+1} / ${n}</span>
       <span class="sb-badges"><span class="tag">${esc(q.type_label||q.qtype)}</span>
         <span class="tag">难度 ${DIFF[q.difficulty]||q.difficulty}</span>
-        <span class="tag">${q.text_policy==='open'?'开卷·扫读':'闭卷'}</span>
-        ${dcQuiz.study?'<span class="tag">精读模式·不计分</span>':''}</span>
+        <span class="tag">${q.answer_format==='input'?'填空':'选择'}</span>
+        <span class="tag">${open?'开卷·扫读':'闭卷'}</span>
+        ${dcQuiz.study?'<span class="tag">精读·不计分</span>':''}</span>
       <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${dcQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
     <div style="margin-top:14px;font-size:16px"><b>${esc(q.prompt).replace(/\n/g,'<br>')}</b></div>
-    <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap">${esc(q.context)}</div>
-    ${dcTextPanel(q)}
+    <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap;word-break:break-word">${esc(q.context)}</div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文':'🔒 看原文（本题记为参考，不计入闭卷分）'}</button>
+      <span class="muted" style="font-size:12.5px">${open?'扫读题：对着原文找答案就是本题要练的能力':'闭卷题：先凭上下文作答，作答后可随意回看'}</span>
+    </div>
     <div class="sb-area" id="dcOpts" style="margin-top:14px">
       ${q.answer_format==='input'
-        ? `<div class="row" style="gap:8px;align-items:center">
-             <input id="dcInput" style="flex:1;min-width:180px;font-size:18px;padding:8px 10px" placeholder="直接输入原文里的那个词/助词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
-           </div>
-           <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案与解析都在服务器上，判完才回传</div>`
-        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+        ? `<input id="dcInput" style="width:100%;font-size:18px;padding:10px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
+           <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案在服务器上，判完才回传</div>`
+        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px;white-space:normal;word-break:break-word" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
     </div>
     <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${(q.answer_format==='input'||dcQuiz.picked!=null)?'':'disabled'}>检查</button></div>
     <div id="dcExp"></div></div>`;
-  if(q.answer_format==='input'){const el=$('#dcInput');if(el)el.focus();}
+  const note=$('#dcReadNote');
+  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题':'闭卷题');
+  const rc=$('#dcRcol');
+  if(rc){
+    if(dcMobile()){ rc.classList.toggle('open',!!dcQuiz.readerOpen); rc.style.display='flex'; }
+    else{
+      const show=open||dcQuiz.readerOpen||dcQuiz.peeked;
+      rc.style.display=show?'flex':'none';
+      dcQuiz.readerOpen=show;
+    }
+  }
+  dcSyncFab();
+  if(q.answer_format==='input'&&!keepPick){const el=$('#dcInput');if(el)el.focus();}
+  if(!keepPick)window.scrollTo(0,0);
 }
 function dcPick(k){
   if(dcQuiz.checked)return;
@@ -1222,14 +1380,16 @@ async function dcCheck(){
     <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
       <b>判定依据（${DC_OBJ[r.objectivity]||r.objectivity}）</b>
       <ul style="margin:4px 0 0 18px">${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
-    ${!dcQuiz.study&&q.text_policy!=='open'?`<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">📄 回看原文（已作答，随便看）</summary>
-      <div class="jp" style="white-space:pre-wrap;line-height:2;font-size:15px;margin-top:6px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(dcQuiz.full)}</div></details>`:''}
-    <div class="quiz-nav"><button class="btn primary" onclick="dcNext()">${dcQuiz.i+1>=dcQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button></div>
+    <div class="quiz-nav">
+      ${q.sent_idx!=null?`<button class="btn" onclick="dcJump(${q.sent_idx})">📄 跳到原文出处</button>`:''}
+      <button class="btn primary" onclick="dcNext()">${dcQuiz.i+1>=dcQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
+    </div>
   </div>`;
+  dcSyncFab();
 }
 function dcNext(){
   dcQuiz.i++;
-  if(dcQuiz.i>=dcQuiz.qs.length)dcFinish(); else {dcRender();window.scrollTo(0,0);}
+  if(dcQuiz.i>=dcQuiz.qs.length)dcFinish(); else dcRender();
 }
 async function dcFinish(){
   try{ await api('/api/discourse/answer',{method:'POST',body:JSON.stringify({passage_id:dcQuiz.pid,results:dcQuiz.ans})}); }catch(e){}

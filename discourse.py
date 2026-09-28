@@ -157,13 +157,53 @@ def _clean_lines(text):
     return out
 
 
-def _is_heading(line):
-    """小标题/栏目标签：没有句末标点、不太长、不以助词结尾的独立行。"""
-    if not line or line[-1] in _SENT_FINAL:
-        return False
+# 说话人标签 / 图片说明常见结尾（新闻正文里大量出现的「非句子行」）
+_ROLE_TAIL = re.compile(
+    r'(さん|氏|教授|名誉教授|准教授|課長|課長代理|局長|部長|社長|会長|大統領|首相|'
+    r'知事|市長|町長|村長|議員|記者|担当|代表|所長|支局|理事長|委員長|監督|選手)$')
+_PAREN_ONLY = re.compile(r'^[（(].*[）)]$')
+_TAGLINE = re.compile(r'^[^\s]{1,12}$')
+
+
+def classify_line(line, first=False):
+    """把一行归类：body（正文句）/ heading（小标题）/ caption（图注·说话人标签·栏目标签）。
+    新闻正文里有大量「不是句子」的行，混为一谈就会出坏题：
+      「トランプ大統領」  → 说话人标签，不是小标题
+      「電気代の明細書」  → 图片说明
+      「クマ被害」        → 栏目标签
+      「「AIを止めろ」」  → 独立成段的引语，**是正文**
+    """
+    if not line:
+        return 'caption'
+    # 1) **整行都是引语**（开头引号 + 结尾引号）＝ 独立成段的发言，是正文，
+    #    往往还是全篇最精彩的部分。而「ハンター「あのようなクマは初めて」」
+    #    「3分の2の自治体が「今後に不安」」这种引号只占一部分的，是小标题。
+    if line[0] in '「『“' and line[-1] in '」』”':
+        return 'body'
+    if line[-1] in _SENT_FINAL:
+        # 标题行常以「？」结尾（なぜ今進展？）：首行且不含句点时按标题处理
+        if first and '。' not in line and len(line) <= 60:
+            return 'heading'
+        return 'body'
     if len(line) > 44:
-        return False
-    return True
+        return 'body'          # 太长又没句号：当正文处理，交给后续门禁去筛
+    if _PAREN_ONLY.match(line):
+        return 'caption'       # （ワシントン支局記者 黒瀬総一郎）
+    if _ROLE_TAIL.search(line):
+        return 'caption'       # ショウさん / 伊吾田宏正 教授
+    if re.search(r'[（(][^（()）]{1,20}[）)]$', line):
+        return 'caption'       # 建設中のデータセンター（バージニア州）＝图片说明
+    if '・' in line and ' ' not in line and len(line) <= 12:
+        return 'caption'       # 文化・芸術・エンタメ
+    if len(line) < 10 and _TAGLINE.match(line):
+        return 'caption'       # クマ被害 / 深掘りコンテンツ / 長崎県
+    if not any(t['p1'] in ('動詞', '形容詞', '助動詞') for t in tag(line)) and len(line) < 10:
+        return 'caption'
+    return 'heading'
+
+
+def _is_heading(line):
+    return classify_line(line) == 'heading'
 
 
 def split_paragraphs(text):
@@ -200,14 +240,16 @@ def split_sentences(para):
 
 def parse_text(text):
     """把任意粘贴文本解析成 [(para_idx, kind, sentence)]。
-    kind：'heading'（小标题/栏目行，不参与大部分出题）或 'body'。
+    kind：'body'（正文句）/ 'heading'（小标题）/ 'caption'（图注·说话人标签·栏目标签）。
     对「一整篇报道」「几段话」「一段话」「一行字」都必须给出合理结果。"""
-    rows, pi = [], 0
+    rows, pi, first = [], 0, True
     for para in split_paragraphs(text):
         got = False
         for line in para:
-            if _is_heading(line):
-                rows.append((pi, 'heading', line))
+            kind = classify_line(line, first=first)
+            first = False
+            if kind in ('heading', 'caption'):
+                rows.append((pi, kind, line))
                 got = True
                 continue
             for sent in split_sentences(line):
@@ -238,7 +280,12 @@ def quality_report(text_or_rows):
         checker = None
     for i, t in body:
         tags = []
-        if len(t) > 160:
+        quoted = t[:1] in '「『“'
+        # 体言止め（「…笹木野地区。」）与引语段落是新闻体的正常写法，
+        # 保守的语法门禁会大面积误报，这里先识别出来再决定报不报。
+        toks = tag(t.rstrip('。！？!?'))
+        taigen = bool(toks) and toks[-1]['p1'] in ('名詞', '接尾辞')
+        if len(t) > (240 if quoted else 160):
             tags.append('超长句（可能没切干净，或原文本身是长句）')
         if not re.search(r'[ぁ-んァ-ヶ一-龥]', t):
             tags.append('不含日语文字（可能是残留的界面文字）')
@@ -248,9 +295,14 @@ def quality_report(text_or_rows):
             try:
                 r = checker(t)
                 if not r.get('ok', True):
+                    noise = ['随机', '拼接', 'ランダム']
+                    if taigen:
+                        noise += ['未检测到有效谓语']      # 体言止め
+                    if quoted:
+                        noise += ['未检测到有效谓语', '文献出处', '括号附注',
+                                  '悬空终结']              # 引语原样保留
                     msgs = [m for m in (r.get('issues') or r.get('errors') or [])
-                            if not any(k in str(m) for k in
-                                       ('随机', '拼接', 'ランダム'))]
+                            if not any(k in str(m) for k in noise)]
                     # 「随机假名拼接」类判据是为了拦截生成式垃圾文本，
                     # 对「〜ということです」「〜とみられる」这种新闻体固定说法
                     # 会大量误报，这里不往用户面前报。
@@ -300,6 +352,35 @@ def import_passage(title, text, source='', level='', note='', to_corpus=False):
     return {'id': pid, 'title': title, 'n_para': n_para, 'n_sent': len(body),
             'n_heading': len(rows) - len(body), 'n_char': len(text),
             'corpus_added': added}
+
+
+_FURI_CACHE = {}
+
+
+def furigana_rows(pid):
+    """整篇文章的注音（按行返回 tokens），供阅读面板的「ふりがな」开关使用。
+    一次算完并缓存——长文章逐句请求会把浏览器打爆。"""
+    p = get_passage(pid)
+    if not p:
+        return []
+    key = (pid, p.get('updated_at'))
+    if _FURI_CACHE.get('key') == key:
+        return _FURI_CACHE['rows']
+    try:
+        import furigana
+    except Exception:
+        return []
+    rows = []
+    for s in p['sentences']:
+        try:
+            rows.append({'idx': s['idx'], 'kind': s.get('kind') or 'body',
+                         'tokens': furigana.annotate(s['text'])})
+        except Exception:
+            rows.append({'idx': s['idx'], 'kind': s.get('kind') or 'body',
+                         'tokens': [{'s': s['text']}]})
+    _FURI_CACHE.clear()
+    _FURI_CACHE.update({'key': key, 'rows': rows})
+    return rows
 
 
 def add_to_corpus(pid):
@@ -356,6 +437,7 @@ def get_passage(pid):
 
 
 def delete_passage(pid):
+    _PASSAGE_CACHE.pop(pid, None)
     init()
     with db.get_conn() as c:
         c.execute('DELETE FROM passage_sents WHERE passage_id=?', (pid,))
@@ -571,9 +653,12 @@ class Passage:
         self.id = pid
         self.title = title
         self.sents, self.para_of, self.headings = [], [], []
+        self.captions = []
         for pa, kind, t in rows:
             if kind == 'heading':
                 self.headings.append({'para': pa, 'text': t})
+            elif kind == 'caption':
+                self.captions.append({'para': pa, 'text': t})
             else:
                 self.sents.append(t)
                 self.para_of.append(pa)
@@ -607,13 +692,28 @@ def build(title, text):
     return Passage(title=title, rows=parse_text(text))
 
 
-def load(pid):
+_PASSAGE_CACHE = {}
+
+
+def load(pid, refresh=False):
+    """读一篇文章（带缓存）。万字级长文的形态素分析约 1~3 秒，
+    组卷/预览/统计会反复用到同一篇，缓存后只付一次代价。"""
     row = get_passage(pid)
     if not row:
+        _PASSAGE_CACHE.pop(pid, None)
         return None
+    key = (row.get('updated_at'), row.get('n_sent'))
+    if not refresh:
+        hit = _PASSAGE_CACHE.get(pid)
+        if hit and hit[0] == key:
+            return hit[1]
     rows = [(s['para_idx'], s.get('kind') or 'body', s['text'])
             for s in row['sentences']]
-    return Passage(title=row.get('title', ''), rows=rows, pid=pid)
+    P = Passage(title=row.get('title', ''), rows=rows, pid=pid)
+    if len(_PASSAGE_CACHE) > 12:
+        _PASSAGE_CACHE.clear()
+    _PASSAGE_CACHE[pid] = (key, P)
+    return P
 
 
 # ================================================================
@@ -710,7 +810,9 @@ def g_anaphora(P, rng):
                     context='\n'.join(P.sents[max(0, i - 2):i]) + '\n' + k + '＿＿' + tail,
                     options=cand[:3] + [noun], answer=noun,
                     objectivity='verbatim',
-                    evidence=[f'答案「{noun}」为原文用词，且在前文已出现（全篇共 {P.freq[noun]} 次），构成指示语照应链',
+                    evidence=[f'答案「{noun}」为原文用词；在本句之前的正文中逐字检索到 '
+                              f'{before.count(noun)} 次（第 {P.sents.index(next(x for x in P.sents[:i] if noun in x)) + 1} 句起），'
+                              '构成指示语照应链',
                               '三个干扰项在全篇仅出现 1 次、且不在本句中，不存在可被「' + t['s'] + '」回指的先行词'],
                     explain=f'「{t["s"]}＋名詞」必须回指前文已提到的事物，这里指的是前文的「{noun}」。',
                     sent_idx=i, stem=f'anaphora:{i}:{j}', pool_n=len(cand))
@@ -727,6 +829,13 @@ def _equiv(a, b):
     return any({a, b} <= g for g in _EQUIV)
 
 
+# 形式上是名词、实际已固化为副词/接续表达的词：它们后面的「に/と/で」
+# 不是格关系，挖空会变成无解的怪题
+_ADV_FOSSIL = {'とも', 'ため', 'ほか', 'うえ', 'ころ', 'まま', 'とおり', 'ごと',
+               'ぶり', '以上', '以下', '以外', '以来', '一方', 'あまり', 'ほど',
+               'かぎり', 'うち', 'さい', 'とき', 'ばあい', 'もと', 'なか'}
+
+
 def g_particle(P, rng):
     """格助词还原：干扰项必须在语料库里与该名词「零共现」，否则不出题。"""
     out = []
@@ -734,9 +843,23 @@ def g_particle(P, rng):
         for j, t in enumerate(toks):
             if t['p1'] != '助詞' or t['p2'] != '格助詞' or t['s'] not in _CASE_P:
                 continue
-            if j == 0 or toks[j - 1]['p1'] != '名詞' or len(toks[j - 1]['s']) < 2:
+            if j == 0 or len(toks[j - 1]['s']) < 2:
                 continue
-            noun, ans = toks[j - 1]['s'], t['s']
+            prev = toks[j - 1]
+            if prev['p1'] != '名詞' or prev['p2'] not in ('普通名詞', '固有名詞'):
+                continue
+            if prev['s'] in _ADV_FOSSIL:
+                continue      # 「下院ともに」「そのうえに」这类固化副词表达不是格关系
+            noun, ans = prev['s'], t['s']
+            # 名词若是更长复合词的一部分（データ|センター），取完整的名词串做检索键，
+            # 否则「センターに」这种半截词会让语料检索失真
+            k0 = j - 1
+            while k0 > 0 and toks[k0 - 1]['p1'] == '名詞' and \
+                    toks[k0 - 1]['p2'] in ('普通名詞', '固有名詞'):
+                k0 -= 1
+            full_noun = ''.join(x['s'] for x in toks[k0:j])
+            if corpus_count(full_noun + ans) >= 1:
+                noun = full_noun
             base = corpus_count(noun + ans)
             if base < 1:
                 continue                  # 正确搭配自身无语料实证 → 不出
@@ -768,7 +891,8 @@ def g_particle(P, rng):
                     evidence=[f'答案「{noun}{ans}」为原文原样，语料库中另有 {base} 句实证',
                               '三个干扰项与「' + noun + '」在整个语料库中共现次数为 0（零实证门禁）'],
                     explain=f'「{noun}{ans}」是本文实际使用、且语料库反复出现的搭配。',
-                    sent_idx=i, stem=f'particle:{i}:{j}', pool_n=len(distr))
+                    sent_idx=i, stem=f'particle:{i}:{j}', pool_n=len(distr),
+                    probe=noun)
             if _valid(q):
                 out.append(q)
     return out
@@ -1485,7 +1609,7 @@ def g_compound_particle(P, rng):
                           f'三个干扰项与前接名词「{noun}」在语料库中共现次数均为 0，'
                           '且在本文其它位置也没出现'],
                 explain=f'「{noun}{hit}」＝{cls}。机能表现选错会直接改变句子的逻辑关系。',
-                sent_idx=i, stem=f'cp:{i}:{pos}', pool_n=len(distr))
+                sent_idx=i, stem=f'cp:{i}:{pos}', pool_n=len(distr), probe=noun)
         if _valid(q):
             out.append(q)
     return out
@@ -1801,9 +1925,11 @@ def make_multi(P, rng, pools, limit=40):
                 cand.append((q1, q2))
         rng.shuffle(cand)
         for q1, q2 in cand[:3]:
-            ctx = _merge_context(P, si, q1, q2)
+            ctx, order = _merge_context(P, si, q1, q2)
             if not ctx:
                 continue
+            if order[0] != q1['answer']:      # ① 在句中更靠前 → 保证 q1 对应 ①
+                q1, q2 = q2, q1
             q = _mk('multi',
                     title='多空还原',
                     prompt='①②の空欄に入る組み合わせとして正しいものを選べ',
@@ -1839,18 +1965,19 @@ def make_multi(P, rng, pools, limit=40):
 
 
 def _merge_context(P, si, q1, q2):
-    """把两道单空题的挖空合并到同一句上；位置算不准就放弃（不硬凑）。"""
+    """把两道单空题的挖空合并到同一句上。
+    **① 永远是句中靠前的那个空**（返回的顺序同时决定 sub_answers 的顺序），
+    否则题面会出现「（②）…（①）」这种读起来别扭的编号。位置算不准就放弃。"""
     src = P.sents[si] if 0 <= si < len(P.sents) else ''
     if not src:
-        return None
+        return None, None
     a1, a2 = q1['answer'], q2['answer']
     p1, p2 = src.find(a1), src.find(a2)
     if p1 < 0 or p2 < 0 or abs(p1 - p2) < max(len(a1), len(a2)):
-        return None
+        return None, None
     (pa, wa), (pb, wb) = sorted([(p1, a1), (p2, a2)])
-    mark_a = '（①）' if (pa, wa) == (p1, a1) else '（②）'
-    mark_b = '（②）' if mark_a == '（①）' else '（①）'
-    return src[:pa] + mark_a + src[pa + len(wa):pb] + mark_b + src[pb + len(wb):]
+    ctx = src[:pa] + '（①）' + src[pa + len(wa):pb] + '（②）' + src[pb + len(wb):]
+    return ctx, (wa, wb)
 
 
 # ================================================================

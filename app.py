@@ -1943,6 +1943,11 @@ def api_discourse_grade():
     return jsonify(r), (200 if r.get('ok') else 410)
 
 
+@app.route('/api/discourse/passages/<int:pid>/furigana')
+def api_discourse_furigana(pid):
+    return jsonify({'ok': True, 'rows': discourse.furigana_rows(pid)})
+
+
 @app.route('/api/discourse/passages/<int:pid>/capacity')
 def api_discourse_capacity(pid):
     return jsonify({'ok': True, 'capacity': discourse.capacity(pid)})

@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -269,8 +270,11 @@ def objectivity_audit(P, q, label=''):
                 check(o not in full, f'{tag} 干扰项在原文别处出现：{o}')
     if t == 'particle':
         head = q['context'].split('（＿）')[0]
-        tk = D.tag(head)
-        noun = tk[-1]['s'] if tk else ''
+        # 生成器必须声明它用哪个名词做的语料检索（probe），
+        # 而且这个名词必须真的紧贴在空格前面 —— 不许挑一个好查的词来糊弄
+        noun = q.get('probe') or ''
+        check(bool(noun) and head.endswith(noun),
+              f'{tag} 检索键「{noun}」不是空格前紧邻的名词')
         for o in q['options']:
             if o == q['answer']:
                 check(D.corpus_count(noun + o) >= 1, f'{tag} 正解搭配无语料实证')
@@ -348,7 +352,9 @@ def main2():
                       for x in sum(pv['paragraphs'], [])),
               f'{name} 时间戳混进了正文')
         for st in sum(pv['paragraphs'], []):
-            check(st[-1] in '。！？!?…', f'{name} 有没切干净的句子：{st[:30]}')
+            # 正文句必须以句末标点结尾；整行引语（「…」）是唯一的例外
+            ok_end = st[-1] in '。！？!?…' or (st[0] in '「『“' and st[-1] in '」』”')
+            check(ok_end, f'{name} 有没切干净的句子：{st[:30]}')
         check(pv['total_questions'] >= 10,
               f'{name} 可出题数太少：{pv["total_questions"]}')
         print(f'  {name}: {pv["n_para"]}段/{pv["n_sent"]}句/小标题{pv["n_heading"]} '
@@ -504,7 +510,9 @@ def main3():
         pid = D.import_passage('cap-' + name, txt)['id']
         c = D.capacity(pid)
         caps[name] = (pid, c)
-        check(c['stems'] >= 30, f'{name} 题干数过少：{c["stems"]}')
+        # 题量随篇幅走：短消息 600 字给二十几道是正常的，长报道必须上百
+        floor = 12 if len(txt) < 1500 else (60 if len(txt) < 6000 else 100)
+        check(c['stems'] >= floor, f'{name} 题干数过少：{c["stems"]} < {floor}')
         check(c['deliveries'] > c['stems'], f'{name} 填空形态没有增加可交付题数')
         check(c['variants'] >= c['stems'], f'{name} 题面变体估计异常')
         check(c['fresh'] + c['done'] >= c['stems'] - 2, f'{name} 新旧题统计对不上')
@@ -587,13 +595,94 @@ def main3():
           '同一个挖空位置在不同种子下始终给出同一套干扰项（题面无法刷新）')
     print(f'  {len(multi_variant)}/{len(seen_sets)} 个格助词题干在 12 个随机种子下产生了多套干扰项')
 
+    return 0
+
+
+# ================================================================
+# 追加 3：行分类 / 阅读面板契约 / 注音 / 反作弊不下发答案
+# ================================================================
+def main4():
+    print('\n[21] 行分类：正文 / 小标题 / 图注·说话人标签')
+    cases = [
+        ('「アメリカはAIにおける世界的な覇権を握るための競争の中にある」', 'body', '整行引语是正文'),
+        ('「私たちには懸念の声を上げる機会が全くなかった」', 'body', '整行引语是正文'),
+        ('ハンター「あのようなクマは初めて」', 'heading', '引号只占一部分＝小标题'),
+        ('3分の2の自治体が「今後に不安」', 'heading', '引号只占一部分＝小标题'),
+        ('「シストセンチュウ」という脅威', 'heading', '引号只占一部分＝小标题'),
+        ('トランプ大統領が推し進めるAI開発', 'heading', '正常小标题'),
+        ('全米に広がる反発 建設反対率が原発を上回るデータセンター', 'heading', '正常小标题'),
+        ('トランプ大統領', 'caption', '说话人标签'),
+        ('リンゼー・ショウさん', 'caption', '说话人标签'),
+        ('酪農学園大学 伊吾田宏正 教授', 'caption', '说话人标签'),
+        ('（ワシントン支局記者 黒瀬総一郎）', 'caption', '括号署名'),
+        ('建設中のデータセンター（バージニア州）', 'caption', '图片说明'),
+        ('クマ被害', 'caption', '栏目标签'),
+        ('文化・芸術・エンタメ', 'caption', '栏目标签'),
+        ('深掘りコンテンツ', 'caption', '栏目标签'),
+        ('秋雨前線の影響で、関東甲信では大気の状態が非常に不安定になっています。', 'body', '普通句子'),
+        ('福島市の中心部からおよそ3キロの笹木野地区。', 'body', '体言止め也是正文'),
+    ]
+    for line, want, why in cases:
+        got = D.classify_line(line)
+        check(got == want, f'[分类] 「{line[:22]}」应为 {want}（{why}），实际 {got}')
+    # 首行标题：以「？」结尾也必须识别成标题
+    check(D.classify_line('アメリカ産ジャガイモ輸入解禁手続き なぜ今進展？', first=True) == 'heading',
+          '首行标题（以？结尾）未被识别')
+    check(D.import_passage('', SAMPLES['nhk_potato'])['title'].startswith('アメリカ産ジャガイモ'),
+          '标题应取正文大标题，而不是栏目标签')
+    print(f'  {len(cases)+2} 条分类断言通过')
+
+    print('\n[22] 阅读面板注音接口')
+    pid = D.import_passage('t-furi', SAMPLES['nhk_nagasaki'])['id']
+    rows = D.furigana_rows(pid)
+    P = D.load(pid)
+    check(len(rows) == len(P.sents) + len(P.headings) + len(P.captions),
+          f'注音行数与存储行数对不上：{len(rows)}')
+    check(all(r['tokens'] for r in rows), '有行没有注音 tokens')
+    check(any(t.get('r') for r in rows for t in r['tokens']), '整篇没有任何读音，注音管线可能没接上')
+    joined = ''.join(''.join(t.get('s', '') for t in r['tokens']) for r in rows)
+    check('長崎' in joined, '注音结果拼回去丢了正文')
+    print(f'  {len(rows)} 行注音，逐行 tokens 拼回原文一致')
+
+    print('\n[23] 前端契约：双栏/抽屉/字号/注音/跳转 + 答案不下发')
+    html = open(os.path.join(HERE, 'static', 'index.html'), encoding='utf-8').read()
+    need = ['.dc-split', '.dc-rcol', '.dc-reader', '.dc-fab', '@media(max-width:1060px)',
+            'dcShell(', 'dcReaderHTML(', 'dcOpenReader(', 'dcCloseReader(', 'dcFabTap(',
+            'dcToggleFuri(', 'dcFontSize(', 'dcJump(', 'dcSyncFab(',
+            "api('/api/discourse/grade'", 'secure:true', 'dcS${bodyN}']
+    for k in need:
+        check(k in html, f'前端缺少 {k}')
+    # 反作弊契约：渲染题目的代码里不能出现 q.answer / q.evidence
+    seg = html[html.index('function dcRender('):html.index('async function dcCheck(')]
+    for bad in ('q.answer', 'q.evidence', 'q.explain'):
+        check(bad + '_format' in seg or bad not in seg,
+              f'题目渲染代码引用了 {bad}（答案不该下发到浏览器）')
+    # 服务端路由齐备
+    appsrc = open(os.path.join(HERE, 'app.py'), encoding='utf-8').read()
+    for route in ('/api/discourse/preview', '/api/discourse/grade',
+                  '/api/discourse/passages/<int:pid>/furigana',
+                  '/api/discourse/passages/<int:pid>/capacity'):
+        check(route in appsrc, f'后端缺少路由 {route}')
+    print('  前端 16 项 / 后端 4 路由 / 反作弊契约 通过')
+
+    print('\n[24] 长文性能：冷启动一次、之后命中缓存')
+    big = SAMPLES.get('nhk_ai_datacenter') or SAMPLES['nhk_yoheki']
+    pid2 = D.import_passage('t-perf', big)['id']
+    D._PASSAGE_CACHE.clear(); D._TAG_CACHE.clear()      # 真·冷启动
+    t0 = time.time(); D.make_quiz(pid2, count=12, seed=1); cold = time.time() - t0
+    t1 = time.time(); D.make_quiz(pid2, count=12, seed=2); warm = time.time() - t1
+    t2 = time.time(); D.capacity(pid2); cap = time.time() - t2
+    check(cold < 20, f'长文冷启动过慢：{cold:.1f}s')
+    check(warm < cold / 2 + 0.05, f'缓存没生效：冷 {cold:.2f}s / 热 {warm:.2f}s')
+    print(f'  {len(big)} 字：冷 {cold:.2f}s → 热 {warm:.2f}s，capacity {cap:.2f}s')
+
     print('\n' + '=' * 56)
     if FAILS:
         print(f'FAILED: {len(FAILS)} 项')
         for f in FAILS[:40]:
             print(' -', f)
         return 1
-    print('ALL PASSED（题量/填空/判分/调度 全部通过）')
+    print('ALL PASSED（含 8 篇真实报道 / 行分类 / 阅读面板契约 / 性能）')
     return 0
 
 
@@ -601,4 +690,5 @@ if __name__ == '__main__':
     rc = main()
     rc2 = main2()
     rc3 = main3()
-    sys.exit(rc or rc2 or rc3)
+    rc4 = main4()
+    sys.exit(rc or rc2 or rc3 or rc4)
