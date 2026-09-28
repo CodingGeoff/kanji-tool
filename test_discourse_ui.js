@@ -8,7 +8,8 @@ const src = fs.readFileSync('static/index.html', 'utf8');
 let script = src.split('<script>').pop().split('</script>')[0];
 // eval 里的 let/const 不会变成全局，测试需要读写模块级状态 → 仅测试期改成 var
 script = script.replace(/\blet dcQuiz=null;/, 'var dcQuiz=null;')
-               .replace(/\blet dcPv=null;/, 'var dcPv=null;');
+               .replace(/\blet dcPv=null;/, 'var dcPv=null;')
+               .replace(/\blet dcBusy=false,dcSeq=0;/, 'var dcBusy=false,dcSeq=0;');
 
 let FAILS = [];
 const check = (c, m) => { if (!c) { FAILS.push(m); console.log('  FAIL:', m); } };
@@ -101,6 +102,7 @@ global.fetch = async (url, opt) => {
   const j = d => ({ json: async () => d, ok: true, status: 200, text: async () => JSON.stringify(d) });
   if (url.includes('/api/discourse/quiz')) return j(QUIZ);
   if (url.includes('/furigana')) return j(FURI);
+  if (url.includes('/capacities')) return j({ ok: true, capacities: { 7: { stems: 119, deliveries: 207, variants: 1451298, fresh: 100, done: 19 } } });
   if (url.includes('/capacity')) return j({ ok: true, capacity: { stems: 119, deliveries: 207, variants: 1451298, fresh: 100, done: 19 } });
   if (url.includes('/api/discourse/grade')) return j(GRADE);
   if (/\/api\/discourse\/passages\/\d+$/.test(url)) return j({ ok: true, passage: PASSAGE, preview: {} });
@@ -133,10 +135,13 @@ try { eval(script); } catch (e) { console.log('脚本加载异常（忽略初始
   check(reader.includes('id="dcS0"') && reader.includes('id="dcS2"'), '正文句缺少 dcS 锚点 id');
   check(!reader.includes('id="dcS3"'), '锚点编号把小标题也算进去了（跳转会跳错行）');
 
-  console.log('[UI-3] 闭卷题：答案与解析不在页面里');
+  console.log('[UI-3] 闭卷题：答案与解析不在页面里；挖空渲染成空框、选项带序号');
   let qhtml = el('dcQcol').innerHTML;
   check(qhtml.includes('闭卷'), '闭卷题没有标注');
-  check(qhtml.includes('4人（＿）襲い'), '题面上下文没渲染');
+  check(qhtml.includes('4人') && qhtml.includes('襲い'), '题面上下文没渲染');
+  check(qhtml.includes('dc-blank'), '挖空没有渲染成统一空框（课本同款样式）');
+  check(qhtml.includes('<i class="ol">ア</i>') && qhtml.includes('<i class="ol">イ</i>'), '选项缺少 アイウエ 序号');
+  check(qhtml.includes('看原文＝看答案'), '「看原文＝看答案」的按钮文案没有说清楚');
   check(!qhtml.includes('答案「4人を」'), '未作答就把判定依据渲染出来了（泄题）');
   check(!/正解：/.test(qhtml), '未作答就显示了正解');
 
@@ -210,8 +215,54 @@ try { eval(script); } catch (e) { console.log('脚本加载异常（忽略初始
     `FAB 文案未随状态变化（${fabClosed} → ${fabOpen}）`);
   check(el('dcRcol')._cls.has('open'), '移动端抽屉没有打开');
 
+  console.log('[UI-11] 多空题：①② 编号空框 + 判分后正解分别填回两个空');
+  const MULTI = { ok: true, quiz_id: 'q-2', title: PASSAGE.title, n_fresh: 1, n_input: 0,
+    difficulty_mix: { hard: 1 }, rows: PASSAGE.sentences,
+    questions: [{ qid: '7-9', qtype: 'multi', type_label: '多空还原', difficulty: 'hard',
+      text_policy: 'closed', answer_format: 'choice', prompt: '①②の空欄に入る組み合わせとして正しいものを選べ',
+      context: '「AIの未来（①）『アメリカ第一主義』のアプローチが必要。それはつまり『人間（②）第一に考える』ことを意味する」',
+      options: ['① に ／ ② を', '① と ／ ② を'], sent_idx: 2 }] };
+  global.fetch = async (url, opt) => {
+    calls.push({ url, body: opt && opt.body });
+    const j = d => ({ json: async () => d, ok: true, status: 200, text: async () => JSON.stringify(d) });
+    if (url.includes('/api/discourse/quiz')) return j(MULTI);
+    if (url.includes('/api/discourse/grade')) return j({ ok: true, correct: false, answer: '① に ／ ② を',
+      sub_answers: ['に', 'を'], objectivity: 'verbatim', evidence: ['e'], explain: 'x' });
+    if (url.includes('/furigana')) return j(FURI);
+    if (url.includes('/capacities')) return j({ ok: true, capacities: { 7: { stems: 119, deliveries: 207, variants: 1451298, fresh: 100, done: 19 } } });
+    if (/\/api\/discourse\/passages\/\d+$/.test(url)) return j({ ok: true, passage: PASSAGE, preview: {} });
+    if (url.includes('/api/discourse/passages')) return j({ ok: true, passages: [{ id: 7, title: PASSAGE.title, n_para: 3, n_sent: 3, n_char: 120 }] });
+    if (url.includes('/api/discourse/stats')) return j({ ok: true, stats: { total: 0 } });
+    if (url.includes('/api/discourse/answer')) return j({ ok: true, saved: 1 });
+    return j({ ok: true });
+  };
+  await dcStart(7, 1);
+  const mq = el('dcQcol').innerHTML;
+  check((mq.match(/class="dc-blank"/g) || []).length === 2, '多空题应该有两个空框');
+  check(mq.includes('>①</span>') && mq.includes('>②</span>'), '①② 编号没有留在空框里');
+  dcPick(0); await dcCheck();
+  check(el('dcExp').innerHTML.includes('① に ／ ② を'), '判分后没有显示多空题正解');
+
+  console.log('[UI-12] 连点防抖：组卷进行中再点直接忽略，不叠出第二套题');
+  calls.length = 0;
+  const s1 = dcStart(7, 3);                 // 不 await 第一笔，立刻再点一次
+  const s2 = dcStart(7, 3);
+  await Promise.all([s1, s2]);
+  check(calls.filter(c => c.url.includes('/api/discourse/quiz')).length === 1,
+    '连点仍然发出了多次组卷请求（就是「闪过一大堆题目」的根源）');
+  check(dcBusy === false, '忙碌标记没有复位（会卡死后续操作）');
+
+  console.log('[UI-13] 列表加载：题量统计走批量接口，一次请求全拿');
+  calls.length = 0;
+  await dcLoad();
+  await new Promise(r => setTimeout(r, 30));
+  check(calls.some(c => c.url.includes('/api/discourse/passages/capacities')),
+    '没有调用批量题量接口');
+  check(el('dcCap7').innerHTML.includes('题干 <b>119</b>'), '题量统计没有填进列表');
+  check(!calls.some(c => c.url.endsWith('/capacity')), '还在按篇逐个请求题量');
+
   } catch (e) { console.log('运行时异常:', e && e.stack || e); FAILS.push('运行时异常: ' + (e && e.message)); }
   console.log('\n' + '='.repeat(56));
   if (FAILS.length) { console.log(`FAILED: ${FAILS.length} 项`); FAILS.forEach(f => console.log(' -', f)); process.exit(1); }
-  console.log('UI ALL PASSED（10 组前端行为断言）');
+  console.log('UI ALL PASSED（13 组前端行为断言）');
 })();

@@ -415,6 +415,8 @@ def add_to_corpus(pid):
                 n += 1
         except Exception:
             continue
+    if n:
+        corpus_invalidate()      # 语料变了：倒排索引与实证计数立即作废重算
     return n
 
 
@@ -588,6 +590,8 @@ def get_passage(pid):
 
 def delete_passage(pid):
     _PASSAGE_CACHE.pop(pid, None)
+    _CAP_CACHE.pop(pid, None)        # 题量/题型统计缓存一并清掉
+    _PVT_CACHE.pop(pid, None)
     init()
     with db.get_conn() as c:
         c.execute('DELETE FROM passage_sents WHERE passage_id=?', (pid,))
@@ -652,23 +656,125 @@ def _is_person_like(w):
 # ================================================================
 _CORPUS_CACHE = {}
 
+# ---- v23 性能：语料倒排索引 -----------------------------------------------
+# corpus_count 原来是一条 LIKE '%…%' 全表扫描：一次 capacity() / make_quiz()
+# 要扫上千次（每次 ~2.3ms，一篇长文合计约 3 秒）。语料实证只问一件事——
+# 「包含某子串的句子有几句」，而子串基本都是「名词+助词」这种短串，
+# 所以把整个语料库压成一个字符 bigram → 句子id集合 的倒排索引：
+#   1. 查询串的任何一个 bigram 在索引里不存在 → 该串必然零命中，直接返回 0；
+#   2. 否则取最短的一张倒排表当候选（真命中一定在里面），再逐句 in 精确核对。
+# 实测本库（1.9 万句）1134 个真实查询 2.8s → 0.004s，结果与 SQL 完全一致；
+# 倒排不可用时（读库失败 / 语料大到内存放不下）自动退回原 SQL 扫描。
+_CORPUS_IDX = None            # None=未构建  False=不可用(退回SQL)  (texts, postings)=就绪
+_CORPUS_IDX_MAX = 80000       # 语料句数超过这个值就不再建索引（保护小内存容器）
+_CORPUS_IDX_LOCK = threading.Lock()
+_CORPUS_STAMP = None          # (MAX(rowid), COUNT(*))：语料版本戳
+_CORPUS_STAMP_AT = 0.0        # 版本戳上次核对时间：限频，每秒最多查一次
+
+
+def corpus_invalidate():
+    """语料变动后立即作废倒排索引与计数缓存（add_to_corpus 等入库路径调用）。
+    交给时间限频的版本戳也能兜住，这里只是让「刚录入的句子立刻参与实证」。"""
+    global _CORPUS_IDX, _CORPUS_STAMP, _CORPUS_STAMP_AT
+    with _CORPUS_IDX_LOCK:
+        _CORPUS_IDX = None
+        _CORPUS_STAMP = None
+        _CORPUS_STAMP_AT = 0.0
+    _CORPUS_CACHE.clear()
+
+
+def _corpus_index():
+    """惰性构建倒排索引；语料有增删（版本戳变化）时自动重建。
+    任何一步失败都返回 None，corpus_count 会退回 SQL 扫描，功能不受影响。"""
+    global _CORPUS_IDX, _CORPUS_STAMP, _CORPUS_STAMP_AT
+    now = time.time()
+    idx = _CORPUS_IDX
+    if idx and now - _CORPUS_STAMP_AT < 1.0:
+        return idx                                   # 热路径：1 秒内核对过版本
+    with _CORPUS_IDX_LOCK:
+        idx = _CORPUS_IDX
+        if idx and now - _CORPUS_STAMP_AT < 1.0:
+            return idx                               # 别的线程刚核对过
+        # 版本戳：MAX(rowid) 走索引末尾、COUNT(*) 走最小索引，都在微秒级
+        if now - _CORPUS_STAMP_AT >= 1.0:
+            try:
+                with db.get_conn() as c:
+                    r = c.execute('SELECT MAX(rowid) m, COUNT(*) n FROM sentences').fetchone()
+                stamp = (r['m'], r['n'])
+            except Exception:
+                return idx or None
+            _CORPUS_STAMP_AT = now
+            if _CORPUS_STAMP is not None and stamp != _CORPUS_STAMP:
+                _CORPUS_STAMP = stamp                # 语料变了：旧索引/旧计数全部作废
+                _CORPUS_IDX = None
+                _CORPUS_CACHE.clear()
+                idx = None
+            else:
+                _CORPUS_STAMP = stamp
+        if _CORPUS_IDX is False:
+            return None                              # 语料太大：内存优先，退回 SQL
+        if _CORPUS_IDX is not None:
+            return _CORPUS_IDX
+        try:
+            with db.get_conn() as c:
+                n = c.execute('SELECT COUNT(*) n FROM sentences').fetchone()['n']
+                if n > _CORPUS_IDX_MAX:
+                    _CORPUS_IDX = False
+                    return None
+                texts = [r[0] for r in c.execute('SELECT text FROM sentences')]
+        except Exception:
+            return None
+        postings = {}
+        for i, t in enumerate(texts):
+            for j in range(len(t) - 1):
+                g = t[j:j + 2]
+                s = postings.get(g)
+                if s is None:
+                    postings[g] = {i}
+                else:
+                    s.add(i)
+        _CORPUS_IDX = (texts, postings)
+        return _CORPUS_IDX
+
+
+def _index_count(sub, texts, postings):
+    """倒排求候选 + 原文精确复核：结果与 LIKE 扫描逐条一致。"""
+    L = len(sub)
+    if L < 2:
+        return sum(1 for t in texts if sub in t)
+    best = None
+    for j in range(L - 1):
+        p = postings.get(sub[j:j + 2])
+        if not p:
+            return 0                                 # 语料里没有这个 bigram → 必然零命中
+        if best is None or len(p) < len(best):
+            best = p                                 # 最短倒排表：真命中必在其中
+    return sum(1 for i in best if sub in texts[i])
+
 
 def corpus_count(sub):
     """语料库里包含该字符串的句子数；库不可用时返回 -1（表示无法取证）。"""
     if not sub:
         return 0
-    if sub in _CORPUS_CACHE:
-        return _CORPUS_CACHE[sub]
-    try:
-        with db.get_conn() as c:
-            r = c.execute("SELECT COUNT(*) n FROM sentences WHERE text LIKE ? ESCAPE '\\'",
-                          ('%' + sub.replace('\\', '\\\\').replace('%', '\\%')
-                           .replace('_', '\\_') + '%',)).fetchone()
-        n = int(r['n'])
-    except Exception:
-        n = -1
-    if len(_CORPUS_CACHE) > 3000:
-        _CORPUS_CACHE.clear()
+    hit = _CORPUS_CACHE.get(sub)
+    if hit is not None:
+        return hit
+    n = -1
+    idx = _corpus_index()
+    if idx is not None:
+        n = _index_count(sub, idx[0], idx[1])
+    else:
+        try:
+            with db.get_conn() as c:
+                r = c.execute("SELECT COUNT(*) n FROM sentences WHERE text LIKE ? ESCAPE '\\'",
+                              ('%' + sub.replace('\\', '\\\\').replace('%', '\\%')
+                               .replace('_', '\\_') + '%',)).fetchone()
+            n = int(r['n'])
+        except Exception:
+            n = -1
+    if len(_CORPUS_CACHE) > 4000:      # 防抖动：丢最旧的一半，而不是全清重来
+        for k in list(_CORPUS_CACHE)[:2000]:
+            _CORPUS_CACHE.pop(k, None)
     _CORPUS_CACHE[sub] = n
     return n
 
@@ -843,6 +949,8 @@ def build(title, text):
 
 
 _PASSAGE_CACHE = {}
+_CAP_CACHE = {}       # pid -> (key, 题量统计的静态部分)   内容/语料不变就不再重算
+_PVT_CACHE = {}       # pid -> (key, 各题型可出题数)       同上
 
 
 def load(pid, refresh=False):
@@ -860,6 +968,7 @@ def load(pid, refresh=False):
     rows = [(s['para_idx'], s.get('kind') or 'body', s['text'])
             for s in row['sentences']]
     P = Passage(title=row.get('title', ''), rows=rows, pid=pid)
+    P.cache_key = key                # 题量/题型统计的缓存键（内容变了统计才要重算）
     if len(_PASSAGE_CACHE) > 12:
         _PASSAGE_CACHE.clear()
     _PASSAGE_CACHE[pid] = (key, P)
@@ -2436,8 +2545,14 @@ def make_quiz(passage_id, count=10, types=None, seed=None, difficulty=None,
             for k2 in sorted(_QUIZ_CACHE, key=lambda x: _QUIZ_CACHE[x]['ts'])[:20]:
                 _QUIZ_CACHE.pop(k2, None)
     fresh = sum(1 for q in picked if base_stem(q.get('stem')) not in seen)
+    # rows：整篇文章的行（含小标题/图注），随卷一并下发——前端不用再发第二个
+    # 请求去拉原文（那个接口还要算一遍各题型题量，冷启动时是又一个三秒）。
+    row = get_passage(passage_id) or {}
+    rows = [{'idx': s['idx'], 'para_idx': s['para_idx'],
+             'kind': s.get('kind') or 'body', 'text': s['text']}
+            for s in (row.get('sentences') or [])]
     return {'ok': True, 'quiz_id': quiz_id, 'passage_id': passage_id, 'title': P.title,
-            'n_sent': len(P.sents), 'questions': out_qs,
+            'n_sent': len(P.sents), 'questions': out_qs, 'rows': rows,
             'available': {t: len(v) for t, v in pools.items()},
             'coverage': sorted({q['qtype'] for q in picked}),
             'n_input': n_input, 'n_fresh': fresh, 'secure': bool(secure),
@@ -2472,7 +2587,9 @@ def grade(quiz_id, qid, response):
         else:
             ok = str(response).strip() == q['answer']
     log_item(box['pid'], q, ok)
+    # sub_answers：多空题的两个正解（判分后回传，前端把它们分别填回 ①② 空框）
     return {'ok': True, 'correct': bool(ok), 'answer': q['answer'],
+            'sub_answers': q.get('sub_answers') or None,
             'evidence': q['evidence'], 'explain': q.get('explain', ''),
             'objectivity': q['objectivity']}
 
@@ -2501,31 +2618,82 @@ def capacity(passage_id, P=None):
       deliveries   —— 计入「选择/填空」两种形态后的可交付题数
       variants     —— 再计入干扰项可替换组合后的不同题面数（下界估计）
       done / fresh —— 已做过 / 还没做过的题干数
-    """
+    v23 性能：生成器跑出来的静态部分（stems/deliveries/variants/per_type）
+    按篇章内容 + 语料版本缓存，列表页/反复打开不再重算；done/fresh 走
+    曝光日志实时算，做完题立刻变。"""
     P = P or load(passage_id)
     if not P:
         return {}
-    rng = random.Random(3)
-    pools = _gen_all(P, rng)
-    pools['multi'] = make_multi(P, rng, pools)
-    stems, deliveries, variants = 0, 0, 0
-    per_type = {}
-    for t, qs in pools.items():
-        stems += len(qs)
-        d = sum(2 if can_input(q) else 1 for q in qs)
-        deliveries += d
-        v = 0
-        for q in qs:
-            k = max(1, len(q['options']) - 1)
-            n_pool = int(q.get('pool_n') or k)      # 只有明确知道候选池大小时才算组合
-            v += max(1, _choose(max(n_pool, k), k))
-        variants += v
-        per_type[t] = {'stems': len(qs), 'deliveries': d}
+    key = (P.id, getattr(P, 'cache_key', None), _CORPUS_STAMP)
+    hit = _CAP_CACHE.get(passage_id) if P.id == passage_id else None
+    if not hit or hit[0] != key:
+        rng = random.Random(3)
+        pools = _gen_all(P, rng)
+        pools['multi'] = make_multi(P, rng, pools)
+        stems, deliveries, variants = 0, 0, 0
+        per_type = {}
+        all_stems = set()
+        for t, qs in pools.items():
+            stems += len(qs)
+            d = sum(2 if can_input(q) else 1 for q in qs)
+            deliveries += d
+            v = 0
+            for q in qs:
+                k = max(1, len(q['options']) - 1)
+                n_pool = int(q.get('pool_n') or k)      # 只有明确知道候选池大小时才算组合
+                v += max(1, _choose(max(n_pool, k), k))
+            variants += v
+            per_type[t] = {'stems': len(qs), 'deliveries': d}
+            all_stems.update(base_stem(q.get('stem')) for q in qs)
+        hit = (key, {'stems': stems, 'deliveries': deliveries, 'variants': variants,
+                     'per_type': per_type, 'all_stems': all_stems})
+        if P.id == passage_id:
+            if len(_CAP_CACHE) > 24:
+                for k2 in list(_CAP_CACHE)[:12]:
+                    _CAP_CACHE.pop(k2, None)
+            _CAP_CACHE[passage_id] = hit
+    static = hit[1]
     seen = {base_stem(k) for k in seen_stems(passage_id)}
-    all_stems = {base_stem(q.get('stem')) for qs in pools.values() for q in qs}
-    return {'stems': stems, 'deliveries': deliveries, 'variants': variants,
-            'per_type': per_type,
+    all_stems = static['all_stems']
+    return {'stems': static['stems'], 'deliveries': static['deliveries'],
+            'variants': static['variants'], 'per_type': static['per_type'],
             'done': len(all_stems & seen), 'fresh': len(all_stems - seen)}
+
+
+def all_capacities():
+    """所有篇章的题量统计：列表页一次拿全，代替「每篇一个请求」的逐个慢加载。"""
+    return {p['id']: capacity(p['id']) for p in list_passages()}
+
+
+_warm_lock = threading.Lock()
+_warm_on = {'v': False}
+
+
+def warm_async(pids=None):
+    """后台预热篇章统计（组卷用的生成器 + 语料倒排 + 题量/题型缓存）。
+    列表页一打开就触发，等用户真点「开考 / 题量 / 题型」时已是热路径。"""
+    with _warm_lock:
+        if _warm_on['v']:
+            return
+        _warm_on['v'] = True
+
+    def _w():
+        try:
+            if pids:
+                for pid in pids:
+                    capacity(pid)
+                    preview_types(pid)
+            else:
+                all_capacities()
+                for p in list_passages():
+                    preview_types(p['id'])
+        except Exception:
+            pass
+        finally:
+            with _warm_lock:
+                _warm_on['v'] = False
+
+    threading.Thread(target=_w, daemon=True).start()
 
 
 def _choose(n, k):
@@ -2537,10 +2705,16 @@ def _choose(n, k):
 
 
 def preview_types(passage_id, P=None):
-    """这篇文章每种题型各能出多少道。"""
+    """这篇文章每种题型各能出多少道。
+    v23 性能：结果按篇章内容缓存（固定随机种子，本身是确定性的）。"""
     P = P or load(passage_id)
     if not P:
         return {}
+    cacheable = P.id == passage_id and getattr(P, 'cache_key', None) is not None
+    if cacheable:
+        hit = _PVT_CACHE.get(passage_id)
+        if hit and hit[0] == P.cache_key:
+            return dict(hit[1])
     rng = random.Random(7)
     out = {}
     for t, fn in GENERATORS.items():
@@ -2548,7 +2722,12 @@ def preview_types(passage_id, P=None):
             out[t] = len([q for q in fn(P, rng) if _valid(q)])
         except Exception:
             out[t] = 0
-    return out
+    if cacheable:
+        if len(_PVT_CACHE) > 24:
+            for k in list(_PVT_CACHE)[:12]:
+                _PVT_CACHE.pop(k, None)
+        _PVT_CACHE[passage_id] = (P.cache_key, out)
+    return dict(out)
 
 
 def preview(text, title='', sample=3):

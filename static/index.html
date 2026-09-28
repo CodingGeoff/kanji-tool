@@ -30,6 +30,7 @@ button.btn.primary{background:var(--accent);border-color:var(--accent);color:#ff
 button.btn.green{background:var(--accent2);border-color:var(--accent2);color:#fff}
 button.btn.warn{background:#c77f38;border-color:#c77f38;color:#fff}
 button.btn.danger{color:#b5495b}
+button.btn:disabled{opacity:.5;cursor:default;pointer-events:none}
 input,textarea,select{border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff;max-width:100%;min-width:0}
 textarea{width:100%;min-height:90px;resize:vertical}
 /* 所有配置弹窗共用可收缩网格：1fr 默认的 min-content 会被长 select
@@ -244,7 +245,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
 }
 @media(max-width:560px){
   .dc-reader{line-height:2.2}
-  #dcQuizView .sb-tile{font-size:15.5px}
+  /* v23.1 选项已改用 .dc-opt（见文末新增样式） */
 }
 
 .psy-section{margin-top:14px}
@@ -668,8 +669,8 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <textarea id="dcText" rows="10" style="width:100%;margin-top:8px;font-size:15px;line-height:1.9"
         placeholder="ここに日本語の文章をまるごと貼り付けてください。段落は空行で区切ります。"></textarea>
       <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
-        <button class="btn primary" onclick="dcPreview()">① 先预览（不入库）</button>
-        <button class="btn" id="dcConfirmBtn" onclick="dcImport()" disabled>② 确认录入</button>
+        <button class="btn primary" onclick="dcPreview(event)">① 先预览（不入库）</button>
+        <button class="btn" id="dcConfirmBtn" onclick="dcImport(event)" disabled>② 确认录入</button>
         <label class="advtog" title="勾选后这篇文章的句子会并入语料库，组句 / 听力 / 挖空 / 语料检索立刻就能练到它">
           <input type="checkbox" id="dcToCorpus" checked><span>同时并入语料库（组句·听力·挖空共用）</span></label>
         <span class="muted" id="dcImportHint" style="font-size:12.5px"></span>
@@ -680,7 +681,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
       <div class="row" style="justify-content:space-between"><b>我的篇章</b>
         <span class="row" style="gap:8px">
           <span class="muted" id="dcStatLine" style="font-size:12.5px"></span>
-          <button class="btn mini" onclick="dcSeed(true)"
+          <button class="btn mini" onclick="dcSeed(true,event)"
             title="重新载入仓库自带的示例文章（samples/*.txt）。已在库中的不会重复录入">📥 内置篇章</button>
         </span></div>
       <div id="dcList" style="margin-top:8px"></div>
@@ -920,10 +921,43 @@ async function showAbout(){
 }
 @media(max-width:560px){
   .dc-reader{line-height:2.2}
-  #dcQuizView .sb-tile{font-size:15.5px}
+  /* v23.1 选项已改用 .dc-opt（见文末新增样式） */
 }
 
 .psy-section{margin-top:14px}
+
+/* ===== v23.1 篇章精读题面：课本同款挖空 + 统一放大字号 ===== */
+.dc-prompt{font-size:19px;font-weight:700;line-height:1.8;margin-top:16px;overflow-wrap:anywhere}
+.dc-ctx{margin-top:12px;font-size:19px;line-height:2.4;white-space:pre-wrap;word-break:break-word}
+.dc-blank{display:inline-flex;align-items:center;justify-content:center;
+  min-width:2.9em;height:1.72em;margin:0 6px;padding:0 12px;vertical-align:baseline;
+  background:#fdf6e8;border:2.5px solid var(--gold);border-radius:12px;
+  color:#a08c5a;font-size:.9em;font-weight:700;white-space:nowrap;
+  transform:translateY(-3px);transition:.2s}
+.dc-blank.ok{background:#e7f2ec;border-color:var(--accent2);color:var(--accent2)}
+.dc-blank.ng{background:#fbe9ea;border-color:var(--accent);color:var(--accent)}
+.dc-blank ruby rt{font-size:.5em}
+.dc-opt{display:flex;align-items:center;gap:12px;width:100%;text-align:left;margin:8px 0;
+  padding:12px 14px;font-size:17.5px;line-height:1.6;border:2px solid var(--line);border-radius:14px;
+  background:#fff;cursor:pointer;transition:.15s;white-space:normal;word-break:break-word;font-family:inherit}
+.dc-opt:hover:not(:disabled){border-color:var(--accent);color:var(--accent);
+  box-shadow:0 3px 14px rgba(0,0,0,.08);transform:translateY(-1px)}
+.dc-opt .ol{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  min-width:28px;height:28px;border-radius:50%;background:#f2efe7;color:var(--sub);
+  font-size:14px;font-weight:700;font-style:normal}
+.dc-opt.sel{border-color:var(--gold);background:#fdf6e8}
+.dc-opt.sel .ol{background:var(--gold);color:#fff}
+.dc-opt.ok{border-color:var(--accent2);background:#e7f2ec}
+.dc-opt.ok .ol{background:var(--accent2);color:#fff}
+.dc-opt.ng{border-color:var(--accent);background:#fbe9ea}
+.dc-opt.ng .ol{background:var(--accent);color:#fff}
+#dcQuizView #dcInput{font-size:20px;padding:12px}
+@media(max-width:560px){
+  .dc-prompt{font-size:18px}
+  .dc-ctx{font-size:18px;line-height:2.3}
+  .dc-opt{font-size:16px;padding:10px 12px}
+  .dc-blank{min-width:2.5em;margin:0 4px}
+}
 
 </style>
 
@@ -1096,9 +1130,29 @@ const DC_TYPE={connective:'接续词还原',anaphora:'指示语照应',particle:
   insert:'句子插入',order:'语序重排',truth:'内容一致',fact:'数值检索',quote:'引语话者',absent:'扫读辨词',headword:'复现词链'};
 const DC_OBJ={verbatim:'答案＝原文原样',contradiction:'错误项与原文显式矛盾',rule:'答案由写死的规则唯一确定'};
 let dcQuiz=null;
+/* 一次只允许一个篇章操作在跑：操作中的按钮全部进入忙碌态（看得见反馈），
+   连点不再叠出重复请求——之前连点「测验模式」会一口气建好几套题，
+   服务端慢慢吐回来时页面就闪现一堆题目。 */
+let dcBusy=false,dcSeq=0;
+function dcLock(btn,msg){
+  document.querySelectorAll('#tab-discourse button').forEach(b=>{if(b.id!=='dcConfirmBtn')b.disabled=true;});
+  const old=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent=msg||'…';}
+  return function(){
+    document.querySelectorAll('#tab-discourse button').forEach(b=>{if(b.id!=='dcConfirmBtn')b.disabled=false;});
+    if(btn){btn.disabled=false;btn.textContent=old;}
+  };
+}
+function dcCapHTML(x){
+  return `题干 <b>${x.stems}</b> 个 · 选择/填空两种形态共 <b>${x.deliveries}</b> 道 · `+
+    `换干扰项后不同题面 <b>${x.variants>=10000?(x.variants/10000).toFixed(1)+'万':x.variants}</b> 种 · `+
+    `<b style="color:${x.fresh?'var(--accent2)':'var(--sub)'}">还没做过 ${x.fresh}</b> / 已做过 ${x.done}`;
+}
 async function dcLoad(){
+  const seq=++dcSeq;                       // 旧一轮列表请求回来时不许覆盖新一轮
   $('#dcQuizView').classList.add('hidden'); $('#dcMain').classList.remove('hidden');
   let d; try{ d=await api('/api/discourse/passages'); }catch(e){ return; }
+  if(seq!==dcSeq)return;
   const ps=d.passages||[];
   $('#dcList').innerHTML = ps.length? ps.map(p=>`
     <div class="sent-item">
@@ -1107,50 +1161,68 @@ async function dcLoad(){
         <span class="muted" style="font-size:12.5px">${p.n_para}段 · ${p.n_sent}句 · ${p.n_char}字${p.source?' · '+esc(p.source):''}</span>
       </div>
       <div class="row" style="margin-top:6px;gap:6px">
-        <button class="btn primary" onclick="dcStart(${p.id},10)">测验模式（10题·闭卷）</button>
-        <button class="btn" onclick="dcStart(${p.id},20)">20题</button>
-        <button class="btn" onclick="dcStart(${p.id},12,'hard')">只练难题</button>
-        <button class="btn" onclick="dcStart(${p.id},10,null,true)">精读模式（对照原文·不计分）</button>
-        <button class="btn" onclick="dcStart(${p.id},10,null,false,'input')">填空模式（最难·不给选项）</button>
+        <button class="btn primary" onclick="dcStart(${p.id},10,undefined,undefined,undefined,event)">测验模式（10题·闭卷）</button>
+        <button class="btn" onclick="dcStart(${p.id},20,undefined,undefined,undefined,event)">20题</button>
+        <button class="btn" onclick="dcStart(${p.id},12,'hard',undefined,undefined,event)">只练难题</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,true,undefined,event)">精读模式（对照原文·不计分）</button>
+        <button class="btn" onclick="dcStart(${p.id},10,null,false,'input',event)">填空模式（最难·不给选项）</button>
         <button class="btn" onclick="dcInfo(${p.id})">题量 / 题型 / 原文</button>
-        <button class="btn danger" onclick="dcDel(${p.id})">删除</button>
+        <button class="btn danger" onclick="dcDel(${p.id},event)">删除</button>
       </div>
-      <div class="muted" id="dcCap${p.id}" style="font-size:12.5px;margin-top:4px"></div>
+      <div class="muted" id="dcCap${p.id}" style="font-size:12.5px;margin-top:4px;min-height:19px">题量统计中…</div>
       <div id="dcInfo${p.id}"></div>
     </div>`).join('') : `<div class="muted" style="padding:14px">还没有篇章。把一整篇日语文章粘进上面的框里即可。
       ${d.builtin?`<div style="margin-top:8px">仓库自带 <b>${d.builtin}</b> 篇内置文章，可一键载入：
-        <button class="btn mini primary" onclick="dcSeed()">📥 载入内置篇章</button></div>`:''}</div>`;
-  for(const p of ps){
-    api('/api/discourse/passages/'+p.id+'/capacity').then(c=>{
-      const el=$('#dcCap'+p.id); if(!el||!c.ok)return; const x=c.capacity;
-      el.innerHTML=`题干 <b>${x.stems}</b> 个 · 选择/填空两种形态共 <b>${x.deliveries}</b> 道 · `+
-        `换干扰项后不同题面 <b>${x.variants>=10000?(x.variants/10000).toFixed(1)+'万':x.variants}</b> 种 · `+
-        `<b style="color:${x.fresh?'var(--accent2)':'var(--sub)'}">还没做过 ${x.fresh}</b> / 已做过 ${x.done}`;
-    }).catch(()=>{});
+        <button class="btn mini primary" onclick="dcSeed(undefined,event)">📥 载入内置篇章</button></div>`:''}</div>`;
+  /* 题量统计：一次请求全拿（不再每篇一个请求挨个慢加载）。
+     占位行固定高度，统计到达时列表不再跳动——按钮也不会在点击瞬间挪位。 */
+  if(ps.length){
+    api('/api/discourse/passages/capacities').then(c=>{
+      if(seq!==dcSeq||!c||!c.ok)return;
+      const caps=c.capacities||{};
+      for(const p of ps){
+        const el=$('#dcCap'+p.id); if(!el)continue;
+        const x=caps[p.id];
+        el.innerHTML=x?dcCapHTML(x):'';
+      }
+    }).catch(()=>{
+      if(seq!==dcSeq)return;                 // 拿不到统计就把占位行清掉，不留「统计中」挂在那
+      for(const p of ps){const el=$('#dcCap'+p.id); if(el&&el.textContent==='题量统计中…')el.textContent='';}
+    });
   }
   try{ const st=await api('/api/discourse/stats?days=14');
+    if(seq!==dcSeq)return;
     const s2=st.stats||{}; $('#dcStatLine').textContent = s2.total? `近14天：${s2.ok}/${s2.total} 正确（${s2.rate}%）`:'';
   }catch(e){}
 }
 /* 内置篇章（samples/*.txt）一键载入：云端磁盘是临时的，重新部署后篇章会清空，
    这里给一个不用重新粘贴原文的恢复入口。已存在的同名/同文篇章会自动跳过。 */
-async function dcSeed(force){
-  toast('载入中…');
-  let r; try{ r=await api('/api/discourse/seed',{method:'POST',body:JSON.stringify({force:!!force})}); }
-  catch(e){ toast('载入失败'); return; }
-  const n=(r.added||[]).length;
-  toast(n?`已载入 ${n} 篇内置文章`:'内置文章都已在库中');
-  dcLoad();
+async function dcSeed(force,ev){
+  if(dcBusy)return; dcBusy=true;
+  const unlock=dcLock(ev&&ev.target,'载入中…');
+  try{
+    let r; try{ r=await api('/api/discourse/seed',{method:'POST',body:JSON.stringify({force:!!force})}); }
+    catch(e){ toast('载入失败'); return; }
+    const n=(r.added||[]).length;
+    toast(n?`已载入 ${n} 篇内置文章`:'内置文章都已在库中');
+    await dcLoad();
+  } finally { dcBusy=false; unlock(); }
 }
 let dcPv=null;
-async function dcPreview(){
+async function dcPreview(ev){
+  if(dcBusy)return;
   const text=$('#dcText').value.trim();
   if(text.length<20){toast('正文太短');return;}
-  $('#dcImportHint').textContent='解析中…';
-  let d; try{ d=await api('/api/discourse/preview',{method:'POST',body:JSON.stringify({title:$('#dcTitle').value,text,sample:3})}); }
-  catch(e){ $('#dcImportHint').textContent=''; toast('解析失败'); return; }
-  if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'解析失败'); return; }
-  dcPv=d; $('#dcImportHint').textContent=''; $('#dcConfirmBtn').disabled=false;
+  dcBusy=true; $('#dcConfirmBtn').disabled=true;      // 解析中不允许确认录入
+  const unlock=dcLock(ev&&ev.target,'解析中…');
+  let ok=false;
+  try{
+    $('#dcImportHint').textContent='解析中…';
+    let d; try{ d=await api('/api/discourse/preview',{method:'POST',body:JSON.stringify({title:$('#dcTitle').value,text,sample:3})}); }
+    catch(e){ $('#dcImportHint').textContent=''; toast('解析失败'); return; }
+    if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'解析失败'); return; }
+    ok=true;
+    dcPv=d; $('#dcImportHint').textContent=''; $('#dcConfirmBtn').disabled=false;
   const cnt=Object.entries(d.counts).filter(([k,v])=>v>0).sort((a,b)=>b[1]-a[1]);
   const q=d.quality||{};
   $('#dcPreviewBox').innerHTML=`<div style="margin-top:12px;border-top:1px dashed var(--line);padding-top:12px">
@@ -1178,20 +1250,37 @@ async function dcPreview(){
       </div>`).join('')}</details>`:''}
     <div class="muted" style="margin-top:10px;font-size:12.5px">确认无误后点「② 确认录入」。</div>
   </div>`;
+  } finally { dcBusy=false; unlock(); $('#dcConfirmBtn').disabled=!ok&&!dcPv; }
 }
-async function dcImport(){
+async function dcImport(ev){
+  if(dcBusy)return;
   const text=$('#dcText').value.trim();
   if(text.length<60){toast('正文太短，篇章题需要上下文（至少 60 字）');return;}
-  $('#dcImportHint').textContent='录入中…';
-  const d=await api('/api/discourse/passages',{method:'POST',body:JSON.stringify(
-    {title:$('#dcTitle').value,source:$('#dcSource').value,text,to_corpus:$('#dcToCorpus').checked})});
-  if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'录入失败'); return; }
-  $('#dcImportHint').textContent=`已录入：${d.n_para}段 / ${d.n_sent}句 / 可出题 ${Object.values(d.preview).reduce((a,b)=>a+b,0)} 道${d.corpus_added?` / 并入语料库 ${d.corpus_added} 句`:''}`;
-  $('#dcText').value='';$('#dcTitle').value='';$('#dcSource').value='';
-  $('#dcPreviewBox').innerHTML='';$('#dcConfirmBtn').disabled=true;dcPv=null;
-  dcLoad();
+  dcBusy=true;
+  const unlock=dcLock(ev&&ev.target,'录入中…');
+  let ok=false;
+  try{
+    $('#dcImportHint').textContent='录入中…';
+    const d=await api('/api/discourse/passages',{method:'POST',body:JSON.stringify(
+      {title:$('#dcTitle').value,source:$('#dcSource').value,text,to_corpus:$('#dcToCorpus').checked})});
+    if(!d.ok){ $('#dcImportHint').textContent=''; toast(d.error||'录入失败'); return; }
+    ok=true;
+    $('#dcImportHint').textContent=`已录入：${d.n_para}段 / ${d.n_sent}句 / 可出题 ${Object.values(d.preview).reduce((a,b)=>a+b,0)} 道${d.corpus_added?` / 并入语料库 ${d.corpus_added} 句`:''}`;
+    $('#dcText').value='';$('#dcTitle').value='';$('#dcSource').value='';
+    $('#dcPreviewBox').innerHTML='';$('#dcConfirmBtn').disabled=true;dcPv=null;
+    await dcLoad();
+  } catch(e){ toast('录入失败'); }
+  finally { dcBusy=false; unlock(); $('#dcConfirmBtn').disabled=ok||!dcPv; }
 }
-async function dcDel(id){ if(!confirm('删除这篇文章？'))return; await api('/api/discourse/passages/'+id,{method:'DELETE'}); dcLoad(); }
+async function dcDel(id,ev){
+  if(dcBusy)return;
+  if(!confirm('删除这篇文章？'))return;
+  dcBusy=true;
+  const unlock=dcLock(ev&&ev.target,'删除中…');
+  try{ await api('/api/discourse/passages/'+id,{method:'DELETE'}); await dcLoad(); }
+  catch(e){ toast('删除失败'); }
+  finally { dcBusy=false; unlock(); }
+}
 async function dcInfo(id){
   const box=$('#dcInfo'+id);
   if(box.innerHTML){box.innerHTML='';return;}
@@ -1205,23 +1294,32 @@ async function dcInfo(id){
       <div class="jp" style="margin-top:6px;line-height:2;font-size:15px">${(d.passage.sentences||[]).map(x=>esc(x.text)).join('')}</div>
     </details></div>`;
 }
-async function dcStart(id,count,difficulty,study,mode){
-  const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify(
-    {passage_id:id,count,difficulty:difficulty||undefined,mode:mode||'mixed',secure:true})});
-  if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
-  let rows=[];
-  try{ const p=await api('/api/discourse/passages/'+id); rows=(p.passage.sentences||[]); }catch(e){}
-  dcQuiz={pid:id,quizId:d.quiz_id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
-          study:!!study,rows,furi:null,furiOn:false,peeked:false,readerOpen:false,
-          nFresh:d.n_fresh,nInput:d.n_input};
-  $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
-  dcShell();
-  const msgs=[];
-  if(d.n_fresh<d.questions.length)msgs.push(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
-  const nType=Object.keys(d.type_mix||{}).length;
-  if(nType&&(d.type_relaxed||nType*3<d.questions.length))
-    msgs.push(`本篇可出的题型有限，这套只覆盖 ${nType} 种`);
-  if(msgs.length)toast(msgs.join('；'));
+async function dcStart(id,count,difficulty,study,mode,ev){
+  /* 组卷是异步的：没反馈时用户会连点，以前每次点击都再建一套题，
+     服务端慢慢吐回来时 dcQuiz 被一套套覆盖重渲染——就是那个
+     「突然闪过一大堆题目」的偶发 bug。现在：忙碌态 + 连点忽略。 */
+  if(dcBusy){toast('正在组卷，请稍候…');return;}
+  dcBusy=true;
+  const unlock=dcLock(ev&&ev.target,'⏳ 正在组卷…');
+  try{
+    const d=await api('/api/discourse/quiz',{method:'POST',body:JSON.stringify(
+      {passage_id:id,count,difficulty:difficulty||undefined,mode:mode||'mixed',secure:true})});
+    if(!d.ok||!(d.questions||[]).length){toast(d.reason||'这篇文章暂时出不了题（可能太短或线索不足）');return;}
+    let rows=d.rows||[];                      // 原文随卷下发，少一个来回
+    if(!rows.length){ try{ const p=await api('/api/discourse/passages/'+id); rows=(p.passage.sentences||[]); }catch(e){} }
+    dcQuiz={pid:id,quizId:d.quiz_id,title:d.title,qs:d.questions,i:0,ok:0,ans:[],picked:null,checked:false,
+            study:!!study,rows,furi:null,furiOn:false,peeked:false,readerOpen:false,
+            nFresh:d.n_fresh,nInput:d.n_input};
+    $('#dcMain').classList.add('hidden'); $('#dcQuizView').classList.remove('hidden');
+    dcShell();
+    const msgs=[];
+    if(d.n_fresh<d.questions.length)msgs.push(`本套 ${d.questions.length} 题中 ${d.n_fresh} 题是你没做过的`);
+    const nType=Object.keys(d.type_mix||{}).length;
+    if(nType&&(d.type_relaxed||nType*3<d.questions.length))
+      msgs.push(`本篇可出的题型有限，这套只覆盖 ${nType} 种`);
+    if(msgs.length)toast(msgs.join('；'));
+  }catch(e){ toast('组卷失败，请重试'); }
+  finally{ dcBusy=false; unlock(); }
 }
 function dcQuit(){ dcQuiz=null; dcLoad(); }
 
@@ -1285,7 +1383,7 @@ function dcSyncFab(){
   const f=$('#dcFab'); if(!f)return;
   const q=dcQuiz.qs[dcQuiz.i];
   const free=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked||dcQuiz.checked;
-  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文（记为参考）');
+  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文＝看答案');
 }
 async function dcToggleFuri(){
   if(!dcQuiz.furi){
@@ -1311,9 +1409,27 @@ function dcPeek(){
   dcRender(true);
   dcOpenReader(true);
   dcSyncFab();
-  toast('本题记为「参考原文」，不计入闭卷成绩');
+  toast('看了原文＝看了答案：本题只算练习，不计入闭卷分');
 }
 /* ---------- 题目区 ---------- */
+/* v23.1 挖空样式统一：服务端各题型标记不一（＿＿ / （＿） / （①）），前端一律
+   渲染成课本挖空练习同款的金色空框；多空题的 ①② 编号保留在框内。 */
+const DC_OL=['ア','イ','ウ','エ','オ','カ'];
+function dcBlankHTML(ctx){
+  return esc(ctx)
+    .replace(/（①）/g,'<span class="dc-blank">①</span>')
+    .replace(/（②）/g,'<span class="dc-blank">②</span>')
+    .replace(/（＿+）/g,'<span class="dc-blank">？</span>')
+    .replace(/＿+/g,'<span class="dc-blank">？</span>');
+}
+function dcFillBlanks(parts,ok){
+  /* 判分后把正解填进空框：答对＝绿，答错＝红（还是填正解，一眼看到该填什么） */
+  document.querySelectorAll('#dcQcol .dc-blank').forEach((b,i)=>{
+    const t=parts&&parts[i];
+    if(t==null)return;
+    b.textContent=t; b.classList.add(ok?'ok':'ng');
+  });
+}
 function dcRender(keepPick){
   const q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
   if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
@@ -1331,22 +1447,22 @@ function dcRender(keepPick){
       <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${dcQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
-    <div style="margin-top:14px;font-size:16px"><b>${esc(q.prompt).replace(/\n/g,'<br>')}</b></div>
-    <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap;word-break:break-word">${esc(q.context)}</div>
-    <div class="row" style="margin-top:10px;gap:8px">
-      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文':'🔒 看原文（本题记为参考，不计入闭卷分）'}</button>
-      <span class="muted" style="font-size:12.5px">${open?'扫读题：对着原文找答案就是本题要练的能力':'闭卷题：先凭上下文作答，作答后可随意回看'}</span>
+    <div class="dc-prompt">${dcBlankHTML(q.prompt).replace(/\n/g,'<br>')}</div>
+    <div class="jp dc-ctx">${dcBlankHTML(q.context)}</div>
+    <div class="row" style="margin-top:12px;gap:8px">
+      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文（开卷·照常计分）':'🔒 看原文＝看答案 · 本题不计闭卷分'}</button>
+      <span class="muted" style="font-size:12.5px">${open?'开卷·扫读题：这道题练的就是对着原文快速定位，计分照常':'闭卷题：先凭上下文作答；原文里就有答案，看了就只算练习'}</span>
     </div>
     <div class="sb-area" id="dcOpts" style="margin-top:14px">
       ${q.answer_format==='input'
-        ? `<input id="dcInput" style="width:100%;font-size:18px;padding:10px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
+        ? `<input id="dcInput" style="width:100%;font-size:20px;padding:12px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
            <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案在服务器上，判完才回传</div>`
-        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px;white-space:normal;word-break:break-word" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+        : q.options.map((o,k)=>`<button class="dc-opt${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" onclick="dcPick(${k})"><i class="ol">${DC_OL[k]||k+1}</i><span>${esc(o)}</span></button>`).join('')}
     </div>
     <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${(q.answer_format==='input'||dcQuiz.picked!=null)?'':'disabled'}>检查</button></div>
     <div id="dcExp"></div></div>`;
   const note=$('#dcReadNote');
-  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题':'闭卷题');
+  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题·照常计分':'闭卷题·看原文＝看答案');
   const rc=$('#dcRcol');
   if(rc){
     if(dcMobile()){ rc.classList.toggle('open',!!dcQuiz.readerOpen); rc.style.display='flex'; }
@@ -1363,7 +1479,7 @@ function dcRender(keepPick){
 function dcPick(k){
   if(dcQuiz.checked)return;
   dcQuiz.picked=k;
-  document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>b.classList.toggle('sel',i===k));
+  document.querySelectorAll('#dcOpts .dc-opt').forEach((b,i)=>b.classList.toggle('sel',i===k));
   $('#dcCheckBtn').disabled=false;
 }
 async function dcCheck(){
@@ -1384,10 +1500,11 @@ async function dcCheck(){
   const ok=!!r.correct, peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
   dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
   dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
+  dcFillBlanks(r.sub_answers&&r.sub_answers.length?r.sub_answers:[r.answer],ok);
   if(q.answer_format==='input'){
     const el=$('#dcInput'); if(el){el.disabled=true;el.style.borderColor=ok?'var(--accent2)':'var(--accent)';}
   }else{
-    document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
+    document.querySelectorAll('#dcOpts .dc-opt').forEach((b,i)=>{
       b.classList.remove('sel');
       if(q.options[i]===r.answer)b.classList.add('ok');
       else if(i===dcQuiz.picked)b.classList.add('ng');
@@ -1395,9 +1512,9 @@ async function dcCheck(){
   }
   $('#dcExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b>
-      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（参考原文作答，不计入闭卷成绩）</span>':''}</div>
-    <div style="margin-top:8px;font-size:15px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
-    <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(r.explain||'')}</div>
+      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（看过原文＝看过答案，本题只算练习，不计入闭卷分）</span>':''}</div>
+    <div style="margin-top:8px;font-size:16px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
+    <div class="muted" style="margin-top:6px;font-size:13.5px;line-height:1.8">${esc(r.explain||'')}</div>
     <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
       <b>判定依据（${DC_OBJ[r.objectivity]||r.objectivity}）</b>
       <ul style="margin:4px 0 0 18px">${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
@@ -1421,11 +1538,11 @@ async function dcFinish(){
   $('#dcQuizView').innerHTML=`<div class="card quiz-wrap">
     <div class="quiz-top"><button class="btn" onclick="dcQuit()">‹ 返回篇章列表</button><b>📖 篇章精读完成</b></div>
     <div style="margin-top:14px;font-size:24px;text-align:center">闭卷得分 <b style="color:var(--accent2);font-size:34px">${dcQuiz.ok}</b> / ${cn}${cn?`（${pct}%）`:''}
-      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题参考了原文（开卷/精读），单独统计不计入闭卷分`:''}</div></div>
+      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题看了原文（＝看答案，只算练习不计闭卷分）`:''}</div></div>
     <div class="row" style="justify-content:center;gap:6px;margin-top:10px;flex-wrap:wrap">
       ${Object.keys(by).map(t=>`<span class="tag">${DC_TYPE[t]||t} ${by[t][0]}/${by[t][1]}</span>`).join('')}</div>
     <div class="quiz-nav" style="justify-content:center">
-      <button class="btn primary" onclick="dcStart(${dcQuiz.pid},${n})">再来一组</button>
+      <button class="btn primary" onclick="dcStart(${dcQuiz.pid},${n},undefined,undefined,undefined,event)">再来一组</button>
       <button class="btn" onclick="dcQuit()">返回</button></div></div>`;
 }
 

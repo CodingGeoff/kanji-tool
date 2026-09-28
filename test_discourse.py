@@ -649,6 +649,7 @@ def main4():
     need = ['.dc-split', '.dc-rcol', '.dc-reader', '.dc-fab', '@media(max-width:1060px)',
             'dcShell(', 'dcReaderHTML(', 'dcOpenReader(', 'dcCloseReader(', 'dcFabTap(',
             'dcToggleFuri(', 'dcFontSize(', 'dcJump(', 'dcSyncFab(',
+            'dcBlankHTML(', 'dc-blank', 'dc-opt',
             "api('/api/discourse/grade'", 'secure:true', 'dcS${bodyN}']
     for k in need:
         check(k in html, f'前端缺少 {k}')
@@ -661,9 +662,10 @@ def main4():
     appsrc = open(os.path.join(HERE, 'app.py'), encoding='utf-8').read()
     for route in ('/api/discourse/preview', '/api/discourse/grade',
                   '/api/discourse/passages/<int:pid>/furigana',
-                  '/api/discourse/passages/<int:pid>/capacity'):
+                  '/api/discourse/passages/<int:pid>/capacity',
+                  '/api/discourse/passages/capacities'):
         check(route in appsrc, f'后端缺少路由 {route}')
-    print('  前端 16 项 / 后端 4 路由 / 反作弊契约 通过')
+    print('  前端 16 项 / 后端 5 路由 / 反作弊契约 通过')
 
     print('\n[24] 长文性能：冷启动一次、之后命中缓存')
     big = SAMPLES.get('nhk_ai_datacenter') or SAMPLES['nhk_yoheki']
@@ -675,6 +677,36 @@ def main4():
     check(cold < 20, f'长文冷启动过慢：{cold:.1f}s')
     check(warm < cold / 2 + 0.05, f'缓存没生效：冷 {cold:.2f}s / 热 {warm:.2f}s')
     print(f'  {len(big)} 字：冷 {cold:.2f}s → 热 {warm:.2f}s，capacity {cap:.2f}s')
+
+    print('\n[25] v23 性能：语料倒排 + 题量静态缓存')
+    # 倒排索引的计数必须与 SQL LIKE 扫描逐条一致（不一致会冤枉好答案）
+    idx = D._corpus_index()
+    check(idx is not None, '语料倒排索引没有建起来')
+    if idx:
+        texts, postings = idx
+        with sqlite3.connect(db.DB_PATH) as cc:
+            for s in ('データを', '政権が', 'クマは', 'ます。', 'まず、',
+                      '存在しない文字列xyzq'):
+                sql_n = cc.execute(
+                    "SELECT COUNT(*) FROM sentences WHERE text LIKE ? ESCAPE '\\'",
+                    ('%' + s + '%',)).fetchone()[0]
+                check(D.corpus_count(s) == sql_n, f'倒排计数与 SQL 不一致：{s!r}')
+        print('  倒排计数 ≡ SQL LIKE（逐条核对一致）')
+    # capacity 的静态部分命中缓存后应是毫秒级（列表页反复打开不再重算）
+    t3 = time.time(); D.capacity(pid2); cap2 = time.time() - t3
+    check(cap2 < 0.5, f'capacity 静态缓存没生效：{cap2:.2f}s')
+    # 做完题 done/fresh 必须立刻变（静态缓存不能把曝光账目也缓存住）
+    q3 = D.make_quiz(pid2, count=4, seed=5, mode='choice')
+    c_before = D.capacity(pid2)
+    for q in q3['questions']:
+        D.log_item(pid2, q, True)
+    c_after = D.capacity(pid2)
+    check(c_after['done'] >= c_before['done'] + 3,
+          f'做完题 done 没有增加：{c_before["done"]} → {c_after["done"]}')
+    # quiz 响应自带原文行：前端不用再发第二个请求
+    check(q3.get('rows') and all('text' in r and 'kind' in r for r in q3['rows']),
+          'quiz 响应缺少原文 rows（前端要靠它渲染阅读面板）')
+    print(f'  capacity 二次 {cap2*1000:.0f}ms · 曝光账目实时 · rows 随卷下发')
 
     print('\n' + '=' * 56)
     if FAILS:
