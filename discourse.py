@@ -1259,12 +1259,17 @@ def _starts_with_cue(s):
 
 
 def g_insert(P, rng):
-    """句子还原插入：被抽走的句子必须带「向前指」的线索，且线索只在唯一位置成立。"""
+    """句子还原插入：被抽走的句子必须带「向前指」的线索，且线索只在唯一位置成立。
+    一个段落块里凡满足条件的句子都各出一道（旧实现只取第一道就 break），
+    段落线索多时题量随之增加；每块封顶 3 道，避免同段刷屏。"""
     out = []
     for idxs in P.units():
         if len(idxs) < 4:
             continue
+        made = 0
         for pos, i in enumerate(idxs):
+            if made >= 3:
+                break
             if pos == 0:
                 continue
             cue = _starts_with_cue(P.sents[i])
@@ -1279,7 +1284,6 @@ def g_insert(P, rng):
             if any(key in P.cwords[k] for k in others if k != idxs[pos - 1]):
                 continue
             rest = [P.sents[k] for k in idxs if k != i]
-            slots = ['①'] + []
             body = []
             for n, txt in enumerate(rest):
                 body.append(f'（{n+1}）')
@@ -1307,7 +1311,7 @@ def g_insert(P, rng):
                     sent_idx=i)
             if _valid(q):
                 out.append(q)
-            break
+                made += 1
     return out
 
 
@@ -1353,42 +1357,148 @@ def _order_ok(seq, P):
 def g_order(P, rng):
     """语序重排：只有当「原顺序是唯一满足全部规则的排列」时才出题（暴力验证）。"""
     from itertools import permutations
+    from math import factorial
     out = []
+    seen_spans = set()
     for idxs in P.units():
-        for a in range(0, len(idxs) - 2):
-            grp = idxs[a:a + 3]
-            if len(grp) < 3:
-                continue
-            good = [p for p in permutations(grp) if _order_ok(list(p), P)]
-            if good != [tuple(grp)]:
-                continue
-            labels = ['A', 'B', 'C']
-            shuffled = list(grp)
-            rng.shuffle(shuffled)
-            mapping = {labels[k]: shuffled[k] for k in range(3)}
-            rev = {v: k for k, v in mapping.items()}
-            answer = ''.join(rev[x] for x in grp)
-            opts = set([answer])
-            for p in permutations(labels):
-                if len(opts) >= 4:
-                    break
-                opts.add(''.join(p))
-            ctx = '\n'.join(f'{labels[k]}. {P.sents[mapping[labels[k]]]}' for k in range(3))
-            q = _mk('order',
-                    title='语序重排',
-                    prompt='A〜C を正しい順序に並べ替えよ',
-                    context=ctx,
-                    options=sorted(opts), answer=answer,
-                    objectivity='rule',
-                    evidence=['答案＝原文顺序',
-                              '已对全部 6 种排列逐一做规则校验（R1 首句不得以承接词/指示语开头；'
-                              'R2 まず→次に→その後→最後に 的序列标记必须递增；'
-                              'R3 指示语开头的句子必须紧跟共享实词的句子；'
-                              'R4 无线索句必须与前文共享实词），只有原顺序一种通过，故答案唯一'],
-                    explain='按接续词与指示语的承接方向、以及实词复现链可唯一还原。',
-                    sent_idx=grp[0])
-            if _valid(q):
-                out.append(q)
+        # 3 句窗口先扫，再扫 4 句窗口：4 句排列 24 种、要求原顺序仍唯一通过更难，
+        # 能出的都是逻辑很紧的段落，正好补充难题题量。同一跨度不重复出。
+        for size in (3, 4):
+            for a in range(0, len(idxs) - size + 1):
+                grp = idxs[a:a + size]
+                if len(grp) < size:
+                    continue
+                if (grp[0], grp[-1]) in seen_spans:
+                    continue
+                good = [p for p in permutations(grp) if _order_ok(list(p), P)]
+                if good != [tuple(grp)]:
+                    continue
+                labels = ['A', 'B', 'C', 'D'][:size]
+                shuffled = list(grp)
+                rng.shuffle(shuffled)
+                mapping = {labels[k]: shuffled[k] for k in range(size)}
+                rev = {v: k for k, v in mapping.items()}
+                answer = ''.join(rev[x] for x in grp)
+                opts = set([answer])
+                _allperms = [''.join(p) for p in permutations(labels)]
+                rng.shuffle(_allperms)
+                for p in _allperms:
+                    if len(opts) >= 4:
+                        break
+                    opts.add(p)
+                ctx = '\n'.join(f'{labels[k]}. {P.sents[mapping[labels[k]]]}' for k in range(size))
+                q = _mk('order',
+                        title='语序重排',
+                        prompt=f'{labels[0]}〜{labels[-1]} を正しい順序に並べ替えよ',
+                        context=ctx,
+                        options=sorted(opts), answer=answer,
+                        objectivity='rule',
+                        evidence=['答案＝原文顺序',
+                                  f'已对全部 {factorial(size)} 种排列逐一做规则校验（R1 首句不得以承接词/指示语开头；'
+                                  'R2 まず→次に→その後→最後に 的序列标记必须递增；'
+                                  'R3 指示语开头的句子必须紧跟共享实词的句子；'
+                                  'R4 无线索句必须与前文共享实词），只有原顺序一种通过，故答案唯一'],
+                        explain='按接续词与指示语的承接方向、以及实词复现链可唯一还原。',
+                        sent_idx=grp[0])
+                if _valid(q):
+                    out.append(q)
+                    seen_spans.add((grp[0], grp[-1]))
+    return out
+
+
+def _para_order_ok(seq, blocks, P):
+    """一个段落排列是否满足全部硬规则（与句子级 _order_ok 同构，只是把
+    「句」换成「段」：段首句提供接续词/指示语线索，整段实词并集参与衔接链）。
+      R1 首段段首不得以承接型接续词或指示语开头；序列标记只允许最小的打头；
+      R2 带序列标记（まず/次に/その後/最後に）的段落必须按标记顺序排列；
+      R3 以指示语开头的段落，必须紧跟在一个与它共享实词的段落之后；
+      R4 既无接续词也无指示语的非首段，必须与前文某段共享实词。"""
+    def head(b):
+        return P.sents[blocks[b][0]]
+
+    def cw(b):
+        return {w for i in blocks[b] for w in P.cwords[i]}
+
+    cue0 = _starts_with_cue(head(seq[0]))
+    ranks = [_SEQ_RANK[c] for c in (_starts_with_cue(head(b)) for b in seq) if c in _SEQ_RANK]
+    if cue0:
+        if cue0 in _DEIXIS:
+            return False
+        if cue0 not in _SEQ_RANK:
+            return False
+        if ranks and _SEQ_RANK[cue0] != min(ranks):
+            return False
+    seen = []
+    for n, b in enumerate(seq):
+        cue = _starts_with_cue(head(b))
+        if n and cue in _DEIXIS:
+            if not (cw(b) & cw(seq[n - 1])):
+                return False
+        elif n and not cue:
+            earlier = set().union(*(cw(seq[m]) for m in range(n)))
+            if not (cw(b) & earlier):
+                return False
+        seen.append(cue)
+    rk = [_SEQ_RANK[c] for c in seen if c in _SEQ_RANK]
+    if rk != sorted(rk):
+        return False
+    return True
+
+
+def g_paragraph_order(P, rng):
+    """段落排序：把连续 3 个段落打乱，要求还原。只有当「原顺序是唯一满足
+    全部段落级规则的排列」且窗口内确有显式篇章线索（段首序列标记/指示语/接续词）
+    时才出题——纯靠实词猜测的排序不出，保证答案机器可唯一复核。"""
+    from itertools import permutations
+    from math import factorial
+    blocks = [b for b in P.paras() if b]     # 每个元素＝该段的正文句下标列表
+    out = []
+    if len(blocks) < 3:
+        return out
+    size = 3
+    for a in range(0, len(blocks) - size + 1):
+        grp = list(range(a, a + size))
+        # 至少要有一个「锚」：非首段的段首带接续词/指示语/序列标记，否则不出
+        anchors = [_starts_with_cue(P.sents[blocks[g][0]]) for g in grp[1:]]
+        if not any(anchors):
+            continue
+        good = [p for p in permutations(grp) if _para_order_ok(list(p), blocks, P)]
+        if good != [tuple(grp)]:
+            continue
+        labels = ['A', 'B', 'C'][:size]
+        shuffled = list(grp)
+        rng.shuffle(shuffled)
+        mapping = {labels[k]: shuffled[k] for k in range(size)}
+        rev = {v: k for k, v in mapping.items()}
+        answer = ''.join(rev[x] for x in grp)
+        opts = set([answer])
+        _allperms = [''.join(p) for p in permutations(labels)]
+        rng.shuffle(_allperms)
+        for p in _allperms:
+            if len(opts) >= 4:
+                break
+            opts.add(p)
+
+        def _snip(b):
+            s = P.sents[blocks[b][0]]
+            s = s[:60] + ('…' if len(s) > 60 else '')
+            return s + ('…' if len(blocks[b]) > 1 else '')
+
+        ctx = '\n'.join(f'{labels[k]}. {_snip(mapping[labels[k]])}' for k in range(size))
+        q = _mk('paragraph_order',
+                title='段落排序',
+                prompt=f'次の段落 {labels[0]}〜{labels[-1]} を正しい順序に並べ替えよ',
+                context=ctx,
+                options=sorted(opts), answer=answer,
+                objectivity='rule',
+                evidence=['答案＝原文段落顺序',
+                          f'已对全部 {factorial(size)} 种段落排列逐一做规则校验（首段不得以承接词/'
+                          '指示语开头；まず→次に→その後→最後に 序列递增；指示语开头的段落必须紧跟'
+                          '共享实词的段落；无线索段必须与前文段落共享实词），只有原顺序一种通过，故答案唯一'],
+                explain='段首的接续词/指示语指向前一段，配合段间实词复现链，可唯一还原段落顺序。',
+                sent_idx=blocks[grp[0]][0])
+        if _valid(q):
+            out.append(q)
     return out
 
 
@@ -2211,6 +2321,9 @@ def g_heading(P, rng):
     blocks = defaultdict(list)
     for i, pa in enumerate(P.para_of):
         blocks[pa].append(i)
+    # 篇章标题默认取自首个小标题（import_passage 里 title=(head or body)[:40]），
+    # 而标题会一直显示在答题页顶栏——若拿它当答案就是当场泄题，这里整体排除。
+    title_norm = (getattr(P, 'title', '') or '').strip()
     heads = []
     for h in P.headings:
         hw = [w for w in content_words(tag(h['text'])) if len(w) >= 2]
@@ -2219,6 +2332,10 @@ def g_heading(P, rng):
         own = [i for i, pa in enumerate(P.para_of) if h['para'] <= pa < nxt]
         if len(h['text']) < 6:
             continue                     # 「アメリカ」这类栏目标签不是小标题
+        ht = h['text'].strip()
+        if title_norm and len(title_norm) >= 4 and (
+                ht == title_norm or ht.startswith(title_norm)):
+            continue                     # 这个小标题就是篇章标题，顶栏已显示＝泄题，不能当答案
         if own and hw:
             heads.append({'text': h['text'], 'own': own, 'words': hw})
     if len(heads) < 3:
@@ -2268,6 +2385,7 @@ GENERATORS = {
     'pairing': g_pairing,
     'chronology': g_chronology,
     'heading': g_heading,
+    'paragraph_order': g_paragraph_order,
 }
 
 TYPE_LABEL = {
@@ -2278,6 +2396,7 @@ TYPE_LABEL = {
     'transitivity': '自他动词×文体', 'compound_particle': '复合助词',
     'compare': '数值比较', 'pairing': '数值项目对应',
     'chronology': '时间先后', 'heading': '小标题匹配', 'multi': '多空还原',
+    'paragraph_order': '段落排序',
 }
 
 # 难度：easy＝局部一眼可定位；medium＝需要跨句；hard＝需要跨段整合或语法辨析
@@ -2288,7 +2407,7 @@ DIFFICULTY = {
     'chronology': 'medium', 'heading': 'medium',
     'polite_tense': 'hard', 'insert': 'hard', 'order': 'hard',
     'transitivity': 'hard', 'compound_particle': 'hard', 'compare': 'hard',
-    'multi': 'hard',
+    'multi': 'hard', 'paragraph_order': 'hard',
 }
 
 # 是否「开卷题」：扫读/检索类题目本来就该对着原文做（练的是定位速度），

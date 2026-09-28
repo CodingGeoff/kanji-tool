@@ -244,13 +244,18 @@ class MultiIndex:
 
     # ---------- 数据快照与构建 ----------
     def _sig(self):
-        """数据签名：任一通道数据增删改 → 变化 → 重建。"""
+        """数据签名：任一通道数据增删改 → 变化 → 重建。
+
+        v24：句子侧用 (COUNT, MAX(id)) 取代旧的 (COUNT, MAX(id), MAX(created_at))。
+        created_at 与自增 id 同向单调（插入即两者齐增、从不回改），对变更检测而言
+        与 MAX(id) 完全冗余；而 created_at 无索引，MAX(created_at) 是一次全表扫描
+        （万级语料下约 6~7ms，且每次检索都跑）。去掉后签名检测能力不变，_sig 从
+        ~10ms 降到亚毫秒——省的是「每一次检索」的固定开销。"""
         with db.get_conn() as c:
-            a = c.execute('SELECT COUNT(*) n, COALESCE(MAX(id),0) m, '
-                          'COALESCE(MAX(created_at),0) t FROM sentences').fetchone()
+            a = c.execute('SELECT COUNT(*) n, COALESCE(MAX(id),0) m FROM sentences').fetchone()
             b = c.execute('SELECT COUNT(*) n, COALESCE(MAX(updated_at),0) t FROM songs').fetchone()
             k = c.execute('SELECT COUNT(*) n, COALESCE(MAX(updated_at),0) t FROM books').fetchone()
-        return (f"{a['n']}:{a['m']}:{a['t']}", f"{b['n']}:{b['t']}", f"{k['n']}:{k['t']}")
+        return (f"{a['n']}:{a['m']}", f"{b['n']}:{b['t']}", f"{k['n']}:{k['t']}")
 
     def ensure(self):
         """索引就绪保障：签名变化（或首次）→ 同步重建（本地数据量，毫秒~秒级）。"""
@@ -732,3 +737,23 @@ def warmup():
         MULTI.ensure()
     except Exception:
         pass
+
+
+def warmup_async(delay=0.0):
+    """后台预热：把首次建索引的 3~4 秒成本在启动后台付掉，首个用户检索不再干等。
+
+    - delay：先睡一会儿，让启动期的数据补种（内置篇章等）把写入落库，避免刚建好
+      索引又因数据签名变化立刻重建。
+    - 就绪后仍以 ensure() 的数据签名校验为唯一真源：数据一变即自动重建，
+      故「预热」与「检索结果始终对应最新数据」不冲突（预热只是提前把成本付掉）。
+    - 顺带预热 RagIndex（/api/rag/similar 用），同样只在后台付一次。
+    """
+    def _run():
+        try:
+            if delay:
+                time.sleep(delay)
+            MULTI.ensure()
+            INDEX.ensure()
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
