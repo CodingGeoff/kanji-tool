@@ -649,6 +649,7 @@ def main4():
     need = ['.dc-split', '.dc-rcol', '.dc-reader', '.dc-fab', '@media(max-width:1060px)',
             'dcShell(', 'dcReaderHTML(', 'dcOpenReader(', 'dcCloseReader(', 'dcFabTap(',
             'dcToggleFuri(', 'dcFontSize(', 'dcJump(', 'dcSyncFab(',
+            'dcBlankHTML(', 'dc-blank', 'dc-opt',
             "api('/api/discourse/grade'", 'secure:true', 'dcS${bodyN}']
     for k in need:
         check(k in html, f'前端缺少 {k}')

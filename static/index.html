@@ -245,7 +245,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
 }
 @media(max-width:560px){
   .dc-reader{line-height:2.2}
-  #dcQuizView .sb-tile{font-size:15.5px}
+  /* v23.1 选项已改用 .dc-opt（见文末新增样式） */
 }
 
 .psy-section{margin-top:14px}
@@ -921,10 +921,43 @@ async function showAbout(){
 }
 @media(max-width:560px){
   .dc-reader{line-height:2.2}
-  #dcQuizView .sb-tile{font-size:15.5px}
+  /* v23.1 选项已改用 .dc-opt（见文末新增样式） */
 }
 
 .psy-section{margin-top:14px}
+
+/* ===== v23.1 篇章精读题面：课本同款挖空 + 统一放大字号 ===== */
+.dc-prompt{font-size:19px;font-weight:700;line-height:1.8;margin-top:16px;overflow-wrap:anywhere}
+.dc-ctx{margin-top:12px;font-size:19px;line-height:2.4;white-space:pre-wrap;word-break:break-word}
+.dc-blank{display:inline-flex;align-items:center;justify-content:center;
+  min-width:2.9em;height:1.72em;margin:0 6px;padding:0 12px;vertical-align:baseline;
+  background:#fdf6e8;border:2.5px solid var(--gold);border-radius:12px;
+  color:#a08c5a;font-size:.9em;font-weight:700;white-space:nowrap;
+  transform:translateY(-3px);transition:.2s}
+.dc-blank.ok{background:#e7f2ec;border-color:var(--accent2);color:var(--accent2)}
+.dc-blank.ng{background:#fbe9ea;border-color:var(--accent);color:var(--accent)}
+.dc-blank ruby rt{font-size:.5em}
+.dc-opt{display:flex;align-items:center;gap:12px;width:100%;text-align:left;margin:8px 0;
+  padding:12px 14px;font-size:17.5px;line-height:1.6;border:2px solid var(--line);border-radius:14px;
+  background:#fff;cursor:pointer;transition:.15s;white-space:normal;word-break:break-word;font-family:inherit}
+.dc-opt:hover:not(:disabled){border-color:var(--accent);color:var(--accent);
+  box-shadow:0 3px 14px rgba(0,0,0,.08);transform:translateY(-1px)}
+.dc-opt .ol{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  min-width:28px;height:28px;border-radius:50%;background:#f2efe7;color:var(--sub);
+  font-size:14px;font-weight:700;font-style:normal}
+.dc-opt.sel{border-color:var(--gold);background:#fdf6e8}
+.dc-opt.sel .ol{background:var(--gold);color:#fff}
+.dc-opt.ok{border-color:var(--accent2);background:#e7f2ec}
+.dc-opt.ok .ol{background:var(--accent2);color:#fff}
+.dc-opt.ng{border-color:var(--accent);background:#fbe9ea}
+.dc-opt.ng .ol{background:var(--accent);color:#fff}
+#dcQuizView #dcInput{font-size:20px;padding:12px}
+@media(max-width:560px){
+  .dc-prompt{font-size:18px}
+  .dc-ctx{font-size:18px;line-height:2.3}
+  .dc-opt{font-size:16px;padding:10px 12px}
+  .dc-blank{min-width:2.5em;margin:0 4px}
+}
 
 </style>
 
@@ -1350,7 +1383,7 @@ function dcSyncFab(){
   const f=$('#dcFab'); if(!f)return;
   const q=dcQuiz.qs[dcQuiz.i];
   const free=dcQuiz.study||q.text_policy==='open'||dcQuiz.peeked||dcQuiz.checked;
-  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文（记为参考）');
+  f.textContent=dcQuiz.readerOpen?'✕ 收起原文':(free?'📄 原文':'🔒 看原文＝看答案');
 }
 async function dcToggleFuri(){
   if(!dcQuiz.furi){
@@ -1376,9 +1409,27 @@ function dcPeek(){
   dcRender(true);
   dcOpenReader(true);
   dcSyncFab();
-  toast('本题记为「参考原文」，不计入闭卷成绩');
+  toast('看了原文＝看了答案：本题只算练习，不计入闭卷分');
 }
 /* ---------- 题目区 ---------- */
+/* v23.1 挖空样式统一：服务端各题型标记不一（＿＿ / （＿） / （①）），前端一律
+   渲染成课本挖空练习同款的金色空框；多空题的 ①② 编号保留在框内。 */
+const DC_OL=['ア','イ','ウ','エ','オ','カ'];
+function dcBlankHTML(ctx){
+  return esc(ctx)
+    .replace(/（①）/g,'<span class="dc-blank">①</span>')
+    .replace(/（②）/g,'<span class="dc-blank">②</span>')
+    .replace(/（＿+）/g,'<span class="dc-blank">？</span>')
+    .replace(/＿+/g,'<span class="dc-blank">？</span>');
+}
+function dcFillBlanks(parts,ok){
+  /* 判分后把正解填进空框：答对＝绿，答错＝红（还是填正解，一眼看到该填什么） */
+  document.querySelectorAll('#dcQcol .dc-blank').forEach((b,i)=>{
+    const t=parts&&parts[i];
+    if(t==null)return;
+    b.textContent=t; b.classList.add(ok?'ok':'ng');
+  });
+}
 function dcRender(keepPick){
   const q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
   if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
@@ -1396,22 +1447,22 @@ function dcRender(keepPick){
       <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${dcQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*dcQuiz.i/n)}%"></i></div>
-    <div style="margin-top:14px;font-size:16px"><b>${esc(q.prompt).replace(/\n/g,'<br>')}</b></div>
-    <div class="jp" style="margin-top:10px;font-size:18px;line-height:2.1;white-space:pre-wrap;word-break:break-word">${esc(q.context)}</div>
-    <div class="row" style="margin-top:10px;gap:8px">
-      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文':'🔒 看原文（本题记为参考，不计入闭卷分）'}</button>
-      <span class="muted" style="font-size:12.5px">${open?'扫读题：对着原文找答案就是本题要练的能力':'闭卷题：先凭上下文作答，作答后可随意回看'}</span>
+    <div class="dc-prompt">${dcBlankHTML(q.prompt).replace(/\n/g,'<br>')}</div>
+    <div class="jp dc-ctx">${dcBlankHTML(q.context)}</div>
+    <div class="row" style="margin-top:12px;gap:8px">
+      <button class="btn" onclick="dcOpenReader()">${open?'📄 打开原文（开卷·照常计分）':'🔒 看原文＝看答案 · 本题不计闭卷分'}</button>
+      <span class="muted" style="font-size:12.5px">${open?'开卷·扫读题：这道题练的就是对着原文快速定位，计分照常':'闭卷题：先凭上下文作答；原文里就有答案，看了就只算练习'}</span>
     </div>
     <div class="sb-area" id="dcOpts" style="margin-top:14px">
       ${q.answer_format==='input'
-        ? `<input id="dcInput" style="width:100%;font-size:18px;padding:10px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
+        ? `<input id="dcInput" style="width:100%;font-size:20px;padding:12px" placeholder="输入原文里的那个词（${esc(q.hint||'')}）" onkeydown="if(event.key==='Enter')dcCheck()">
            <div class="muted" style="font-size:12.5px;margin-top:4px">填空模式：没有选项可蒙，答案在服务器上，判完才回传</div>`
-        : q.options.map((o,k)=>`<button class="sb-tile${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" style="display:block;width:100%;text-align:left;margin:6px 0;font-size:16px;white-space:normal;word-break:break-word" onclick="dcPick(${k})">${esc(o)}</button>`).join('')}
+        : q.options.map((o,k)=>`<button class="dc-opt${dcQuiz.picked===k?' sel':''}" id="dcOpt${k}" onclick="dcPick(${k})"><i class="ol">${DC_OL[k]||k+1}</i><span>${esc(o)}</span></button>`).join('')}
     </div>
     <div class="quiz-nav"><button class="btn primary" id="dcCheckBtn" onclick="dcCheck()" ${(q.answer_format==='input'||dcQuiz.picked!=null)?'':'disabled'}>检查</button></div>
     <div id="dcExp"></div></div>`;
   const note=$('#dcReadNote');
-  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题':'闭卷题');
+  if(note)note.textContent=dcQuiz.study?'精读模式·不计分':(open?'开卷题·照常计分':'闭卷题·看原文＝看答案');
   const rc=$('#dcRcol');
   if(rc){
     if(dcMobile()){ rc.classList.toggle('open',!!dcQuiz.readerOpen); rc.style.display='flex'; }
@@ -1428,7 +1479,7 @@ function dcRender(keepPick){
 function dcPick(k){
   if(dcQuiz.checked)return;
   dcQuiz.picked=k;
-  document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>b.classList.toggle('sel',i===k));
+  document.querySelectorAll('#dcOpts .dc-opt').forEach((b,i)=>b.classList.toggle('sel',i===k));
   $('#dcCheckBtn').disabled=false;
 }
 async function dcCheck(){
@@ -1449,10 +1500,11 @@ async function dcCheck(){
   const ok=!!r.correct, peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
   dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
   dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
+  dcFillBlanks(r.sub_answers&&r.sub_answers.length?r.sub_answers:[r.answer],ok);
   if(q.answer_format==='input'){
     const el=$('#dcInput'); if(el){el.disabled=true;el.style.borderColor=ok?'var(--accent2)':'var(--accent)';}
   }else{
-    document.querySelectorAll('#dcOpts .sb-tile').forEach((b,i)=>{
+    document.querySelectorAll('#dcOpts .dc-opt').forEach((b,i)=>{
       b.classList.remove('sel');
       if(q.options[i]===r.answer)b.classList.add('ok');
       else if(i===dcQuiz.picked)b.classList.add('ng');
@@ -1460,9 +1512,9 @@ async function dcCheck(){
   }
   $('#dcExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 正解':'❌ 再看一遍原文'}</b>
-      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（参考原文作答，不计入闭卷成绩）</span>':''}</div>
-    <div style="margin-top:8px;font-size:15px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
-    <div class="muted" style="margin-top:6px;font-size:13px;line-height:1.8">${esc(r.explain||'')}</div>
+      ${peeked?'<span class="muted" style="font-size:12.5px;margin-left:8px">（看过原文＝看过答案，本题只算练习，不计入闭卷分）</span>':''}</div>
+    <div style="margin-top:8px;font-size:16px">正解：<b>${esc(r.answer)}</b>${q.answer_format==='input'?`　你写的：<span class="muted">${esc(resp)}</span>`:''}</div>
+    <div class="muted" style="margin-top:6px;font-size:13.5px;line-height:1.8">${esc(r.explain||'')}</div>
     <div class="muted" style="margin-top:8px;font-size:12.5px;line-height:1.8">
       <b>判定依据（${DC_OBJ[r.objectivity]||r.objectivity}）</b>
       <ul style="margin:4px 0 0 18px">${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>
@@ -1486,7 +1538,7 @@ async function dcFinish(){
   $('#dcQuizView').innerHTML=`<div class="card quiz-wrap">
     <div class="quiz-top"><button class="btn" onclick="dcQuit()">‹ 返回篇章列表</button><b>📖 篇章精读完成</b></div>
     <div style="margin-top:14px;font-size:24px;text-align:center">闭卷得分 <b style="color:var(--accent2);font-size:34px">${dcQuiz.ok}</b> / ${cn}${cn?`（${pct}%）`:''}
-      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题参考了原文（开卷/精读），单独统计不计入闭卷分`:''}</div></div>
+      <div class="muted" style="font-size:13px;margin-top:4px">共 ${n} 题${n-cn?` · 其中 ${n-cn} 题看了原文（＝看答案，只算练习不计闭卷分）`:''}</div></div>
     <div class="row" style="justify-content:center;gap:6px;margin-top:10px;flex-wrap:wrap">
       ${Object.keys(by).map(t=>`<span class="tag">${DC_TYPE[t]||t} ${by[t][0]}/${by[t][1]}</span>`).join('')}</div>
     <div class="quiz-nav" style="justify-content:center">

@@ -2587,7 +2587,9 @@ def grade(quiz_id, qid, response):
         else:
             ok = str(response).strip() == q['answer']
     log_item(box['pid'], q, ok)
+    # sub_answers：多空题的两个正解（判分后回传，前端把它们分别填回 ①② 空框）
     return {'ok': True, 'correct': bool(ok), 'answer': q['answer'],
+            'sub_answers': q.get('sub_answers') or None,
             'evidence': q['evidence'], 'explain': q.get('explain', ''),
             'objectivity': q['objectivity']}
 
