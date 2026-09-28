@@ -36,6 +36,19 @@ def check(cond, msg):
     return False
 
 
+def insert_rebuild(q):
+    """插入题校验：不假设标号是「原文里第几个空位」（v26 起标号只在被选中的
+    ≤4 个空位间重新编号为①②③④，与选项一一对应，不再是全部空位的原始序号）。
+    直接数「答案标号所在行」之前有多少条非标号行（＝纯句子行），
+    该计数就是插回原句应处的下标——与标号具体取值无关，天然适配任意编号方案。"""
+    lines = q['context'].split('\n')
+    body = [x for x in lines if not x.startswith('（')]
+    marker_idx = lines.index(q['answer'])
+    slot = sum(1 for x in lines[:marker_idx] if not x.startswith('（'))
+    sent = q['prompt'].split('「', 1)[1].rsplit('」', 1)[0]
+    return ''.join(body[:slot] + [sent] + body[slot:])
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 tmp = tempfile.mkdtemp()
 tdb = os.path.join(tmp, 'kanji.db')
@@ -165,14 +178,15 @@ def main():
     print('\n[4] 句子插入 / 语序重排 的位置正确性')
     ins = [q for q in allq if q['qtype'] == 'insert']
     for q in ins:
-        sent = q['prompt'].split('「', 1)[1].rsplit('」', 1)[0]
-        body = [x for x in q['context'].split('\n') if not x.startswith('（')]
-        slot = int(q['answer'].strip('（）'))
-        rebuilt = body[:slot - 1] + [sent] + body[slot - 1:]
-        P = D.load(q.get('_pid', pid))
-        joined = ''.join(rebuilt)
+        joined = insert_rebuild(q)
         ok = joined in D.load(pid).joined() or joined in D.load(pid2).joined()
         check(ok, f'[insert] 按答案位置插回去，得不到原文顺序：{joined[:60]}')
+        # 标号与选项必须一一对应，题面里出现的标号不能比选项还多（也不能有选项在题面里找不到对应标号）
+        marks_in_ctx = set(x.strip('（）') for x in q['context'].split('\n') if x.startswith('（'))
+        marks_in_opts = set(o.strip('（）') for o in q['options'])
+        check(marks_in_ctx == marks_in_opts,
+              f'[insert] 题面标号 {marks_in_ctx} 与选项标号 {marks_in_opts} 不一致')
+        check(len(q['options']) <= 4, '[insert] 选项数不应超过 4 个')
     orders = [q for q in allq if q['qtype'] == 'order']
     for q in orders:
         lab = {}
@@ -322,10 +336,7 @@ def objectivity_audit(P, q, label=''):
             if o != q['answer']:
                 check(o not in full, f'{tag} 错误项竟在原文中')
     if t == 'insert':
-        sent = q['prompt'].split('「', 1)[1].rsplit('」', 1)[0]
-        body = [x for x in q['context'].split('\n') if not x.startswith('（')]
-        slot = int(q['answer'].strip('（）'))
-        joined = ''.join(body[:slot - 1] + [sent] + body[slot - 1:])
+        joined = insert_rebuild(q)
         check(joined in full, f'{tag} 按答案插回去得不到原文顺序')
     if t == 'order':
         lab = {}

@@ -78,6 +78,148 @@ def _connect(path, readonly=False):
     return c
 
 
+# ---------------------------------------------------------------------------
+# v25：分片只读连接缓存 + 可丢弃的 bigram 倒排索引。
+#
+# 背景：federated_search._shard_candidates 此前对每个分片、每次查询都重新
+# open() 一个连接，并对 `text LIKE '%term%'` 做全表扫描（无法用 B-tree，前导
+# 通配符）。分片数一多（真实语料按 48 MiB 一片轮转，可能几十上百片），单次检索
+# 就是 N_片 × N_候选词 次全表扫描，正是「精排/召回阶段耗时 20+ 秒，个别情况下
+# 超过反向代理或应用超时导致连接被切断（浏览器侧表现为 JSON.parse 报
+# "Unexpected end of JSON input"）」的根因。
+#
+# 修复思路（不违反分片不可变、不常驻内存两条既有约束）：
+# - 只读连接按文件路径 + mtime 缓存复用，省掉重复 open/close 的系统调用开销；
+# - 为每个分片惰性构建一份「派生、可随时丢弃、不放进 Git」的字符 bigram 倒排
+#   索引 sidecar（`<shard 目录>/idx/<分片文件名>.idx.db`），把候选检索从全表
+#   扫描降为索引查找；索引本身不常驻内存，仍是磁盘上的 SQLite 文件，由操作系统
+#   页缓存按需换入换出；
+# - sidecar 内容随源分片的 (size, mtime_ns) 变化自动判定过期重建；分片本身只读
+#   不会被修改，因此正常情况下只需构建一次；
+# - 任何环境下索引缺失/损坏/构建失败都静默回退到原始全表扫描，绝不因为加速层
+#   出问题而让检索整体失败。
+# ---------------------------------------------------------------------------
+_RO_CACHE = {}          # str(path) -> (mtime_ns, size, sqlite3.Connection)
+_IDX_SUBDIR = 'idx'
+
+
+def ro_conn(path):
+    """打开（或复用缓存的）分片只读连接；分片内容一旦改变（文件被替换）自动重开。"""
+    path = Path(path)
+    key = str(path)
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    hit = _RO_CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    if hit:
+        try:
+            hit[2].close()
+        except sqlite3.Error:
+            pass
+    try:
+        conn = _connect(path, True)
+    except sqlite3.Error:
+        _RO_CACHE.pop(key, None)
+        return None
+    _RO_CACHE[key] = (st.st_mtime_ns, st.st_size, conn)
+    return conn
+
+
+def _idx_path(shard_path):
+    shard_path = Path(shard_path)
+    d = shard_path.parent / _IDX_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d / (shard_path.name + '.idx.db')
+
+
+def _text_grams(text):
+    s = str(text or '')
+    if len(s) < 2:
+        return set()
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def ensure_shard_index(shard_path, force=False):
+    """确保分片的 bigram 倒排索引最新；返回索引 sqlite 文件路径，构建/校验失败返回 None
+    （调用方应回退为对原分片的全表扫描，不应把索引缺失当成错误）。"""
+    shard_path = Path(shard_path)
+    try:
+        src_stat = shard_path.stat()
+    except OSError:
+        return None
+    idx_path = _idx_path(shard_path)
+    if not force and idx_path.exists():
+        try:
+            with sqlite3.connect(f'file:{idx_path}?mode=ro', uri=True) as ic:
+                meta = dict(ic.execute('SELECT k,v FROM meta').fetchall())
+            if (meta.get('src_size') == str(src_stat.st_size)
+                    and meta.get('src_mtime') == str(src_stat.st_mtime_ns)):
+                return idx_path
+        except sqlite3.Error:
+            pass    # 索引缺失/损坏 → 下面重建
+    tmp = idx_path.with_suffix('.tmp')
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        with _connect(shard_path, True) as sc:
+            src_rows = sc.execute('SELECT rowid AS rid, uid, text FROM sentences').fetchall()
+        ic = sqlite3.connect(tmp)
+        try:
+            ic.execute('PRAGMA journal_mode=DELETE')
+            ic.execute('CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)')
+            ic.execute('CREATE TABLE grams(gram TEXT NOT NULL, rid INTEGER NOT NULL)')
+            ic.execute('CREATE TABLE docs(rid INTEGER PRIMARY KEY, uid TEXT NOT NULL)')
+
+            def _gen():
+                for r in src_rows:
+                    for g in _text_grams(r['text']):
+                        yield (g, r['rid'])
+            ic.executemany('INSERT INTO grams(gram,rid) VALUES(?,?)', _gen())
+            ic.executemany('INSERT INTO docs(rid,uid) VALUES(?,?)',
+                            ((r['rid'], r['uid']) for r in src_rows))
+            ic.execute('CREATE INDEX idx_grams_gram ON grams(gram)')
+            ic.execute('INSERT INTO meta VALUES(?,?)', ('src_size', str(src_stat.st_size)))
+            ic.execute('INSERT INTO meta VALUES(?,?)', ('src_mtime', str(src_stat.st_mtime_ns)))
+            ic.execute('INSERT INTO meta VALUES(?,?)', ('rows', str(len(src_rows))))
+            ic.commit()
+        finally:
+            ic.close()
+        os.replace(tmp, idx_path)
+        return idx_path
+    except (sqlite3.Error, OSError):
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def index_candidate_uids(shard_path, terms, cap):
+    """用 bigram 倒排索引查候选 uid 集合；索引不存在/查询失败返回 None（调用方回退扫描）。
+    只查已存在的索引，不在这里同步构建（构建交给后台预热或显式调用，避免首次查询卡顿）。"""
+    idx_path = _idx_path(Path(shard_path))
+    if not idx_path.exists():
+        return None
+    terms = [t for t in dict.fromkeys(terms) if len(t) == 2]
+    if not terms:
+        return None
+    try:
+        with sqlite3.connect(f'file:{idx_path}?mode=ro', uri=True) as ic:
+            uids = set()
+            ph = ','.join('?' * len(terms))
+            for row in ic.execute(
+                    f'SELECT DISTINCT d.uid FROM grams g JOIN docs d ON d.rid=g.rid '
+                    f'WHERE g.gram IN ({ph}) LIMIT ?', terms + [cap]):
+                uids.add(row[0])
+            return uids
+    except sqlite3.Error:
+        return None
+
+
 def init_dirs(root=None):
     global ROOT,SHARD_DIR,STAGING_DIR
     if root:
