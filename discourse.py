@@ -1831,10 +1831,14 @@ def g_compare(P, rng):
         for mode, idx, word in (('max', 0, '最も大きい'), ('min', -1, '最も小さい'),
                                 ('2nd', 1, '2番目に大きい')):
             ans = arr[idx][1]
-            opts = [x[1] for x in arr[:4]]
-            if ans not in opts:
-                opts = opts[:3] + [ans]
-            opts = list(dict.fromkeys(opts))
+            # 选项要围着答案取邻居：问「最小」却给三个最大值，既不像题，
+            # 也会让下面那行「排序」证据和答案对不上（曾经就是这个 bug）。
+            picked = arr[-4:] if mode == 'min' else arr[:4]
+            if all(x[1] != ans for x in picked):
+                picked = picked[:3] + [arr[idx]]
+            picked = list(dict.fromkeys(picked))
+            picked.sort(key=lambda x: -x[0])
+            opts = list(dict.fromkeys(x[1] for x in picked))
             if len(opts) < 4 or ans not in opts:
                 continue
             q = _mk('compare',
@@ -1844,7 +1848,11 @@ def g_compare(P, rng):
                     options=opts[:4], answer=ans,
                     objectivity='rule',
                     evidence=['四个选项都是本文原样出现的数值',
-                              '排序：' + ' > '.join(f'{x[1]}' for x in arr[:4]),
+                              # 排序必须覆盖「这四个选项」且含答案，否则依据无法复核
+                              '四个选项按大小排序：'
+                              + ' > '.join(f'{x[1]}' for x in picked[:4]),
+                              f'本文中「{u}」共出现 {len(arr)} 个不同数值，'
+                              f'其中{word}的是 {ans}',
                               f'规则：数值大小由算术比较唯一确定（{word}＝{ans}）'],
                     explain='扫读全篇把同一单位的数值都找出来再比较——长文报道最常考的信息整合。',
                     sent_idx=arr[idx][2])

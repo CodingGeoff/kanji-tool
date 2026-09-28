@@ -170,6 +170,10 @@ pairing 同句干扰项、`69.9％` 被切成 `9％`、`そのうえ` 被当成�
 | `GET` | `/api/discourse/stats?days=14` | 分题型正确率 |
 | `POST` | `/api/discourse/seed` | `{force?}` → 载入仓库自带的内置篇章（`samples/*.txt`，幂等） |
 
+> 这 8 篇内置报道实际能出什么题、题库有多大、每题的判定依据长什么样，
+> 见 **[QUIZ_SAMPLES.md](QUIZ_SAMPLES.md)**（18 种题型各一道真题 + 320 道抽样审计结果），
+> 回归测试 `python3 test_discourse_evidence.py`。
+
 ```bash
 curl -X POST localhost:5000/api/discourse/passages \
   -H 'Content-Type: application/json' \
