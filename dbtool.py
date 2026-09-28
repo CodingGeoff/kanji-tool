@@ -18,11 +18,13 @@
     python dbtool.py merge                   合并成「最新最全」→ 写回 kanji.db
     python dbtool.py pull                    安全拉取：备份 → 清掉本地库改动 → pull → 合并回填
     python dbtool.py publish -m "说明"        checkpoint + 提交 kanji.db + 推送（Render 自动重部署）
+    python dbtool.py export-passages         篇章导成 samples/*.txt，提交后随代码上云（云端永久可见）
     python dbtool.py setup                   一次性配置：WAL 边车移出版本控制 + 注册合并驱动
     python dbtool.py merge-driver %O %A %B   git 合并驱动（由 git 自动调用）
 
 详细原理与标准流程见 DATABASE.md。
 """
+import json
 import os
 import shutil
 import sqlite3
@@ -50,6 +52,15 @@ TMP_DIR = os.path.join(BACKUP_DIR, 'tmp')
 
 # 表格分类（合并策略不同，见 _merge_table）
 LINKED_TABLES = ('kanji_index', 'fav_sentences', 'book_sentences')
+# 「父表 → 自然键列」：这些表的 id 只是行号，两份库里同一个 id 多半是**不同**的东西。
+# 合并时一律丢弃源库 id 重新分配，并把 旧id→新id 记进 temp._pmap 供子表改挂。
+PARENT_TABLES = {'passages': 'text'}
+# 「子表 → (父表, 外键列)」：外键必须跟着父表的新 id 走，否则句子会挂到别人的文章下面。
+CHILD_FK = {
+    'passage_sents': ('passages', 'passage_id'),
+    'passage_results': ('passages', 'passage_id'),
+    'passage_item_log': ('passages', 'passage_id'),
+}
 # 没有自然唯一键、只能按行 id 认的表：按 id 认，避免同一首歌/同一本书被复制成两份
 IDENTITY_OVERRIDE = {
     'songs': ['id'],
@@ -441,6 +452,62 @@ def _merge_linked(conn, alias, table, report):
     return n
 
 
+def _merge_parent(conn, alias, table, keycol, report):
+    """父表（目前是 passages）：按自然键去重，**丢弃源库 id** 让本库重新分配。
+
+    两份库里 passages.id=1 各是一篇完全不同的文章 —— 保 id 直搬只会让
+    `INSERT OR IGNORE` 把其中一篇静默吃掉，子表还会挂到另一篇名下。
+    这里改成「按内容认篇章」，并把 旧id→新id 写进 temp._pmap 给子表改挂。
+    """
+    tcols = columns(conn, 'main', table)
+    scols = columns(conn, alias, table)
+    cols = [c for c in scols if c in tcols and c != 'id']
+    if keycol not in cols:
+        return _insert_missing(conn, alias, table, report)
+    cl = ','.join('"%s"' % c for c in cols)
+    sel = ','.join('s."%s"' % c for c in cols)
+    cur = conn.execute('INSERT INTO main."%s" (%s) SELECT %s FROM %s."%s" s '
+                       'WHERE NOT EXISTS (SELECT 1 FROM main."%s" m '
+                       'WHERE m."%s" IS s."%s")'
+                       % (table, cl, sel, alias, table, table, keycol, keycol))
+    n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    conn.execute('INSERT OR REPLACE INTO temp._pmap(tbl, old_id, new_id) '
+                 'SELECT ?, s.id, m.id FROM %s."%s" s JOIN main."%s" m '
+                 'ON m."%s" IS s."%s"' % (alias, table, table, keycol, keycol),
+                 (table,))
+    report.bump(table, n)
+    return n
+
+
+def _merge_child(conn, alias, table, parent, fk, report):
+    """子表（passage_sents / passage_results / passage_item_log）：
+
+    外键经 temp._pmap 换成本库的新 id；父篇章没能入库的行整条放弃（宁可丢一行日志，
+    也不让一篇文章的句子挂到另一篇上）。行 id 一律重新分配，去重按「除 id 外全部列」，
+    所以反复合并不会产生重复。
+    """
+    tcols = columns(conn, 'main', table)
+    scols = columns(conn, alias, table)
+    cols = [c for c in scols if c in tcols and c != 'id']
+    if fk not in cols:
+        return _insert_missing(conn, alias, table, report)
+
+    def expr(c):
+        return 'mp.new_id' if c == fk else 's."%s"' % c
+
+    cl = ','.join('"%s"' % c for c in cols)
+    sel = ','.join(expr(c) for c in cols)
+    cond = ' AND '.join('m."%s" IS %s' % (c, expr(c)) for c in cols)
+    cur = conn.execute(
+        'INSERT INTO main."%s" (%s) SELECT %s FROM %s."%s" s '
+        'JOIN temp._pmap mp ON mp.tbl = ? AND mp.old_id = s."%s" '
+        'WHERE NOT EXISTS (SELECT 1 FROM main."%s" m WHERE %s)'
+        % (table, cl, sel, alias, table, fk, table, cond), (parent,))
+    n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    report.bump(table, n)
+    return n
+
+
 def _merge_progress(conn, alias, table, score):
     """进度表（srs / book_progress）：同一对象取「进度更靠前」的一行，绝不倒退。"""
     key = [c for c in PROGRESS_KEYS.get(table, [])
@@ -514,6 +581,11 @@ def _merge_table(conn, alias, table, report):
         added, up = _merge_progress(conn, alias, table, PROGRESS_SCORE[table])
         report.bump(table, added)
         report.bump_up(table, up)
+    elif table in PARENT_TABLES:
+        _merge_parent(conn, alias, table, PARENT_TABLES[table], report)
+    elif table in CHILD_FK:
+        parent, fk = CHILD_FK[table]
+        _merge_child(conn, alias, table, parent, fk, report)
     elif 'sentence_id' in columns(conn, alias, table):
         _merge_linked(conn, alias, table, report)
     else:
@@ -525,13 +597,20 @@ def _merge_table(conn, alias, table, report):
 
 
 def _merge_source(conn, alias, report, exclude):
-    """把 ATTACH 进来的一个源库整体并入主库；句子先合，关联表后合（依赖 id 映射）。"""
+    """把 ATTACH 进来的一个源库整体并入主库；句子先合，关联表后合（依赖 id 映射）。
+
+    父表（passages）必须排在子表（passage_sents…）前面：子表要用父表刚建立的
+    旧id→新id 映射。映射按源库清空重建 —— 上一个源库的行号对这个源库没有意义。
+    """
     tables = [t for t in table_names(conn, alias) if t not in exclude]
+    conn.execute('DELETE FROM temp._pmap')
     order = []
     if 'sentences' in tables:
         order.append('sentences')
     order += [t for t in tables
               if t not in order and 'sentence_id' in columns(conn, alias, t)]
+    order += [t for t in tables if t not in order and t in PARENT_TABLES]
+    order += [t for t in tables if t not in order and t in CHILD_FK]
     order += [t for t in tables if t not in order]
     main_tables = set(table_names(conn, 'main'))
     for t in order:
@@ -558,7 +637,7 @@ def _purge(conn, report):
 
 
 KEY_TABLES = ('sentences', 'kanji_index', 'songs', 'srs', 'history', 'settings',
-              'books', 'book_lessons', 'book_plan')
+              'books', 'book_lessons', 'book_plan', 'passages', 'passage_sents')
 
 
 def merge_db(primary, sources, out, blocklist=(), exclude=(), purge=False):
@@ -586,6 +665,9 @@ def merge_db(primary, sources, out, blocklist=(), exclude=(), purge=False):
         conn.execute('PRAGMA journal_mode=WAL').fetchone()
         conn.execute('CREATE TEMP TABLE _blk(text TEXT PRIMARY KEY)')
         conn.execute('CREATE TEMP TABLE _idmap(old_id INTEGER PRIMARY KEY, new_id INTEGER)')
+        # 父表（passages）的 旧id→新id：按源库重建，子表靠它改挂
+        conn.execute('CREATE TEMP TABLE _pmap(tbl TEXT, old_id INTEGER, new_id INTEGER,'
+                     ' PRIMARY KEY(tbl, old_id))')
         blk = sorted(set(blocklist))
         if blk:
             conn.executemany('INSERT OR IGNORE INTO _blk(text) VALUES (?)',
@@ -724,6 +806,19 @@ def cmd_status(root=None):
             _line('与远端', '落后 %s 个提交 / 领先 %s 个提交' % (behind, ahead))
         _line('kanji.db', '与 HEAD 有差异（有未提交的进度）' if db_dirty_vs_head(root)
               else '与 HEAD 一致')
+        # 「云端会看到什么」= 仓库里那一份 kanji.db。把差额直接摊开，
+        # 省得你以为录进去了、其实只在本机。
+        gap = head_gap(root)
+        if gap is None:
+            _line('云端（仓库版）', '读不到 HEAD 里的 kanji.db')
+        elif gap:
+            _line('云端还看不到', '，'.join('%s %+d' % (t, d) for t, d, _, _ in gap))
+            say('      → 运行 python dbtool.py publish -m "更新数据库" 才会上云')
+            if any(t == 'passages' for t, _, _, _ in gap):
+                say('      → 篇章还可以 python dbtool.py export-passages '
+                    '导成文本，随代码上云且不怕云端重启')
+        else:
+            _line('云端（仓库版）', '数据量与本地一致（已经都上云了）')
         sidecars = git_text(root, 'ls-files', '*.db-wal', '*.db-shm').splitlines()
         _line('被跟踪的边车文件', ', '.join(sidecars) if sidecars
               else '无（正确，pull 不会再报 would be overwritten）')
@@ -736,6 +831,29 @@ def cmd_status(root=None):
             say('      ' + line)
     hr('=')
     return 0
+
+
+def head_gap(root=None, tables=None):
+    """本地库比仓库版（= 云端将要看到的那一份）多出/少掉多少行。
+
+    返回 [(表名, 差额, 本地行数, 仓库行数)]，只列有差异的表；读不到 HEAD 时返回 None。
+    """
+    root = root or ROOT
+    path = os.path.join(TMP_DIR, 'head_status.db')
+    if git_blob_to_file(root, 'HEAD:' + DB_NAME, path) is None:
+        return None
+    local, head = table_counts(DB), table_counts(path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    names = tables or (KEY_TABLES + tuple(t for t in local if t not in KEY_TABLES))
+    out = []
+    for t in names:
+        a, b = local.get(t, 0), head.get(t, 0)
+        if a != b:
+            out.append((t, a - b, a, b))
+    return out
 
 
 def _read_text(path):
@@ -913,9 +1031,79 @@ def cmd_pull(root=None, depth=2, purge=False, keep=10):
 # ---------------------------------------------------------------- 命令：publish / setup / merge-driver
 def db_summary():
     c = table_counts(DB)
-    return ('语料 %d 句 / 复习 %d 字 / 歌曲 %d 首 / 课本 %d 本'
+    return ('语料 %d 句 / 复习 %d 字 / 歌曲 %d 首 / 课本 %d 本 / 篇章 %d 篇'
             % (c.get('sentences', 0), c.get('srs', 0), c.get('songs', 0),
-               c.get('books', 0)))
+               c.get('books', 0), c.get('passages', 0)))
+
+
+# ---------------------------------------------------------------- 命令：export-passages
+SAMPLES_DIR = os.path.join(ROOT, 'samples')
+
+
+def _passage_filename(pid, title, text):
+    """文件名只用 ASCII：篇章标题基本是日文，直接当文件名在各平台都不安全。
+    用内容指纹保证同一篇反复导出得到同一个文件（不会每次都多出一份）。"""
+    import hashlib
+    return 'my_%s.txt' % hashlib.sha1(text.strip().encode('utf-8')).hexdigest()[:10]
+
+
+def cmd_export_passages(root=None, outdir=None, include_builtin=False):
+    """把库里的篇章导出成 samples/*.txt（+ 同名 .meta.json 保存标题/出处）。
+
+    为什么要有这个命令：篇章是运行时录入的，而云端磁盘是临时的。
+    导成文本提交后，它们就随**代码**上云，启动时由 discourse.ensure_seeded()
+    自动补种 —— 几 KB 的纯文本，可 diff、可回滚，比每次推 35MB 的二进制库省心。
+    """
+    root = root or ROOT
+    outdir = outdir or SAMPLES_DIR
+    hr('=')
+    say('导出篇章 → %s（提交后随代码上云，云端启动自动补种）' % outdir)
+    if not os.path.exists(DB):
+        say('  ! 找不到 kanji.db')
+        return 1
+    conn = connect(DB, readonly=True)
+    try:
+        if 'passages' not in table_names(conn):
+            say('  库里还没有 passages 表（还没录入过篇章）')
+            return 0
+        rows = conn.execute('SELECT id,title,source,level,note,text FROM passages'
+                            ' ORDER BY id').fetchall()
+    finally:
+        conn.close()
+    os.makedirs(outdir, exist_ok=True)
+    written = skipped = 0
+    for r in rows:
+        note = r['note'] or ''
+        if not include_builtin and note.startswith('内置篇章 ·'):
+            skipped += 1               # 本来就来自 samples/，不用再导一遍
+            continue
+        text = (r['text'] or '').strip()
+        if not text:
+            continue
+        name = _passage_filename(r['id'], r['title'], text)
+        path = os.path.join(outdir, name)
+        old = None
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                old = f.read().strip()
+        if old == text:
+            skipped += 1
+            continue
+        with open(path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(text + '\n')
+        meta = {'title': r['title'] or '', 'source': r['source'] or '',
+                'level': r['level'] or ''}
+        with open(path[:-4] + '.meta.json', 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+        written += 1
+        say('  + %s  《%s》' % (name, (r['title'] or '')[:24]))
+    say('  新增/更新 %d 篇，跳过 %d 篇（内容未变或本来就是内置篇章）' % (written, skipped))
+    if written:
+        say('  接下来：git add samples && git commit -m "篇章" && git push')
+        say('  推送后云端重新部署即可看到，且不随重启丢失。')
+    hr('=')
+    return 0
 
 
 def cmd_publish(root=None, message=None, push=True, dry_run=False):
@@ -932,6 +1120,10 @@ def cmd_publish(root=None, message=None, push=True, dry_run=False):
     _line('checkpoint + integrity', ok)
     summary = db_summary()
     _line('当前数据量', summary)
+    n_pass = table_counts(DB).get('passages', 0)
+    if n_pass:
+        _line('篇章', '%d 篇随这次提交上云；想让它们不受云端重启影响，'
+                      '再跑一次 export-passages' % n_pass)
     p = git(root, 'add', '--', DB_NAME)
     if p.returncode != 0:
         say('  ! git add 失败：' + p.stderr.decode('utf-8', 'replace').strip())
@@ -1050,8 +1242,10 @@ def cmd_merge_driver(root, base, ours, theirs):
 def set_root(root):
     """把模块级路径切到另一个项目根（测试用：可指向临时目录）。"""
     global ROOT, DB, BACKUP_DIR, LOCAL_BAK, STASH_BAK, REMOTE_BAK, SNAPSHOTS, TMP_DIR
+    global SAMPLES_DIR
     ROOT = os.path.abspath(root)
     DB = os.path.join(ROOT, DB_NAME)
+    SAMPLES_DIR = os.path.join(ROOT, 'samples')
     BACKUP_DIR = os.path.join(ROOT, '_dbbackup')
     LOCAL_BAK = os.path.join(BACKUP_DIR, 'local', DB_NAME)
     STASH_BAK = os.path.join(BACKUP_DIR, 'stash', DB_NAME)
@@ -1151,6 +1345,11 @@ def build_parser():
     spub.add_argument('-m', '--message', default=None, help='提交说明')
     spub.add_argument('--no-push', action='store_true', help='只提交不推送')
     spub.add_argument('--dry-run', action='store_true', help='只打印将要执行的 git 命令')
+    sx = sub.add_parser('export-passages',
+                        help='把篇章导成 samples/*.txt（提交后随代码上云，云端永久可见）')
+    sx.add_argument('--dir', default=None, help='输出目录（默认 samples/）')
+    sx.add_argument('--include-builtin', action='store_true',
+                    help='连本来就来自 samples/ 的内置篇章也重新导出')
     sub.add_parser('setup', help='一次性配置：边车移出版本控制 + 注册合并驱动')
     sub.add_parser('verify', help='校验：完整性 / 孤儿索引 / 与备份对比')
     sd = sub.add_parser('merge-driver', help='git 合并驱动（由 git 自动调用，人不用手敲）')
@@ -1174,6 +1373,9 @@ def main(argv=None):
         if args.cmd == 'publish':
             return cmd_publish(message=args.message, push=not args.no_push,
                                dry_run=args.dry_run)
+        if args.cmd == 'export-passages':
+            return cmd_export_passages(outdir=args.dir,
+                                       include_builtin=args.include_builtin)
         if args.cmd == 'setup':
             return cmd_setup()
         if args.cmd == 'verify':

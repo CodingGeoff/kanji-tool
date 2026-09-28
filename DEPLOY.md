@@ -108,8 +108,16 @@ Render 挂载 Disk（Settings → Disks，Mount Path 填 `/data`）后，加一�
 
 篇章是运行时录入的，本来最容易被临时磁盘吃掉。现在 `samples/*.txt` 里的文章
 是**内置篇章**：每次启动自动幂等补齐，不依赖数据库文件里有没有它们。
-想让自己的文章也随部署上线，把 `.txt` 放进 `samples/` 提交即可；
-不想要这个行为就设 `KANJI_SEED_PASSAGES=0`。详见 [`DISCOURSE.md`](DISCOURSE.md) §4.1。
+
+本地录入的文章要送上云，一条命令：
+
+```bash
+python dbtool.py export-passages      # 篇章 → samples/my_xxx.txt + .meta.json
+git add samples && git commit -m "新增篇章" && git push
+```
+
+推送后 Render 自动重部署，「我的篇章」里就有了，且**重启不丢**。
+不想要这个行为就设 `KANJI_SEED_PASSAGES=0`。详见 [`DISCOURSE.md`](DISCOURSE.md) §4.1 / §4.2。
 
 ---
 

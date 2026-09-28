@@ -16,13 +16,24 @@
 | 提交数据库前**一定要 checkpoint** | WAL 模式下最新写入还在 `-wal` 里，只提交 `kanji.db` 会把旧数据推上云 |
 
 ```bash
-python dbtool.py status    # 现在什么情况？
-python dbtool.py save      # 备份本地库（快照 + 只增不减的并集备份）
-python dbtool.py pull      # 安全拉取：先护住数据，再拉远端，再并回本地
-python dbtool.py publish   # 提交 + 推送 kanji.db → Render 自动重新部署
-python dbtool.py verify    # 校验：完整性 / 孤儿索引 / 是否比备份少数据
-python dbtool.py setup     # 一次性配置（换电脑/换克隆时再跑一次）
+python dbtool.py status           # 现在什么情况？（含「云端还看不到哪些数据」）
+python dbtool.py save             # 备份本地库（快照 + 只增不减的并集备份）
+python dbtool.py pull             # 安全拉取：先护住数据，再拉远端，再并回本地
+python dbtool.py publish          # 提交 + 推送 kanji.db → Render 自动重新部署
+python dbtool.py export-passages  # 篇章导成 samples/*.txt → 随代码上云，不怕云端重启
+python dbtool.py verify           # 校验：完整性 / 孤儿索引 / 是否比备份少数据
+python dbtool.py setup            # 一次性配置（换电脑/换克隆时再跑一次）
 ```
+
+### 本地的东西怎么让云端永久看得到？两条通道
+
+| 你想让云端看到 | 用哪条通道 | 为什么 |
+|---|---|---|
+| 语料 / 复习进度 / 课本 / 歌曲 | `python dbtool.py publish` | 这些是「攒出来」的数据，只能整份 `kanji.db` 上云；云端每次部署都从仓库版重新开始，所以仓库版=云端出厂数据 |
+| 篇章（我的文章） | `python dbtool.py export-passages` + 提交 `samples/` | 导成几 KB 纯文本随**代码**走：可 diff、可回滚，云端每次启动自动补种。`publish` 也能带上它们，但重启后要靠数据库里那份，文本这条更稳 |
+
+`python dbtool.py status` 的 `[3] Git` 里会直接列出「云端还看不到」的差额，
+例如 `sentences +214，passages +3` —— 看到这行就说明还没上云，照上表跑一条命令即可。
 
 ---
 
@@ -180,8 +191,15 @@ kanji.db          与 HEAD 一致 / 与 HEAD 有差异（有未提交的进度�
 | `book_plan`（学习计划） | 补进缺失的日程行；`done` 打勾状态用 OR 合并（勾过的不变回未勾） |
 | `history` | 按 `(ts, type, detail)` 去重，同一条事件只留一份 |
 | `settings` | 同名以本库为准；本库为空值时用源库补（云端写过的 v17 学习者模型能带回来） |
+| `passages`（篇章） | 按**正文**取并集，**丢弃源库 id** 重新分配，并记录 `旧id→新id` |
+| `passage_sents` / `passage_results` / `passage_item_log` | `passage_id` 跟着上面的映射改挂；父篇章没能入库的行整条放弃 |
 | `songs` / `books` / `book_lessons` / 其它 | 按自然唯一键（没有唯一键就用行 id）补缺，避免同一首歌/同一本书被复制成两份 |
 | 主库没有的表 | 按源库 DDL 自动建表再补数据（将来版本新增表也不会丢） |
+
+> ⚠️ 篇章为什么不能「按 id 认行」：两份库里 `passages.id=1` 各是一篇完全不同的文章。
+> 保 id 直搬时 `INSERT OR IGNORE` 会把其中一篇**静默吃掉**，而它的 `passage_sents`
+> 仍会插进来、挂到另一篇名下 —— 练习里就会看到「甲文章的题、乙文章的原文」。
+> 现在按正文认篇章 + 外键改挂，两个方向合并都验证过（`test_dbtool_passages.py`）。
 
 两张额外保险：
 
@@ -241,12 +259,25 @@ GitHub push → Render 拉取仓库 → pip install -r requirements.txt → guni
 
 本地开发不设这个变量，一切照旧（`dbtool.py` 仍然只认仓库根目录那一份）。
 
-### 6.2 篇章为什么不靠数据库上云
+### 6.2 篇章：导成文本，随代码上云
 
-「我的篇章」是运行时录入的，仓库里的 `kanji.db` 里长期根本没有 `passages` 表
-（这正是「本地 8 篇、线上 0 篇」的原因）。与其要求每次录完文章都 `publish` 一次
-35 MB 的二进制库，不如让内容随代码走：`samples/*.txt` 会在每次启动幂等补种成篇章
-（详见 `DISCOURSE.md` §4.1）。数据库依旧只承载语料/进度这类“攒出来”的数据。
+「我的篇章」是运行时录入的，仓库里的 `kanji.db` 长期根本没有 `passages` 表
+（这正是「本地 8 篇、线上 0 篇」的原因）。与其每录一篇就推一次 35 MB 的二进制库，
+不如让内容随代码走：
+
+```bash
+python dbtool.py export-passages        # 库里的篇章 → samples/my_xxxx.txt (+ .meta.json)
+git add samples && git commit -m "新增篇章" && git push
+```
+
+* 文件名取正文指纹，**反复导出不会生成重复文件**；正文没变就跳过。
+* `.meta.json` 保存标题 / 出处 / 等级，云端补种时原样还原（不靠猜首行）。
+* 本来就来自 `samples/` 的内置篇章不会被重复导出（`--include-builtin` 可强制）。
+* 云端每次启动由 `discourse.ensure_seeded()` 幂等补齐，**重启也不会丢**，
+  并自动并入语料库（组句 / 听力 / 挖空的「📰 我的篇章」题源同步有货）。
+
+语料 / 进度这类“攒出来”的数据仍然走 `publish`（整份 `kanji.db`）——
+两条通道的分工见本文 §0。
 
 ---
 

@@ -89,6 +89,14 @@ python3 app.py        # 打开 http://localhost:5000
 阅读体验：开卷题在桌面是「题目 + 原文」双栏，手机是底部抽屉；原文按小标题/图注/
 正文结构化渲染，支持 ふりがな 开关与字号调节，答完可一键跳到原文出处并高亮。
 
+把本地录入的篇章送上云（永久可见、不怕云端重启）：
+```bash
+python dbtool.py export-passages          # 篇章 → samples/*.txt + .meta.json
+git add samples && git commit -m "新增篇章" && git push
+```
+语料 / 复习进度仍走 `python dbtool.py publish`（整份 kanji.db）；
+`python dbtool.py status` 会列出「云端还看不到」的差额。
+
 内置篇章：`samples/` 里随仓库走的 8 篇 NHK 报道会在每次启动时**幂等补齐**到「我的篇章」，
 所以正式环境（临时磁盘、重新部署即清空）打开也一定有货；自己删掉的不会自己长回来，
 手工录过同一篇也不会变成两份。把自己的 `.txt` 放进 `samples/` 提交即可一起上线，

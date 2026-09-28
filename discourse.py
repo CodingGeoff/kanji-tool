@@ -449,6 +449,19 @@ def _seed_source(fname):
     return ''
 
 
+def _seed_meta(path):
+    """可选的同名 .meta.json：{"title","source","level"}。
+    `dbtool.py export-passages` 导出自己的篇章时会写它，
+    这样标题/出处能原样带到云端，而不是只能从正文首行猜。"""
+    mpath = path[:-4] + '.meta.json' if path.lower().endswith('.txt') else path + '.meta.json'
+    try:
+        with open(mpath, encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def seed_files(dirpath=None):
     d = dirpath or SEED_DIR
     if not os.path.isdir(d):
@@ -508,8 +521,11 @@ def seed_builtin(dirpath=None, force=False, to_corpus=True):
             state[name] = fp
             skipped.append({'file': name, 'reason': '库中已有同样正文'})
             continue
+        meta = _seed_meta(path)
         try:
-            r = import_passage('', text, source=_seed_source(name),
+            r = import_passage(str(meta.get('title') or ''), text,
+                               source=str(meta.get('source') or _seed_source(name)),
+                               level=str(meta.get('level') or ''),
                                note='内置篇章 · %s' % name, to_corpus=to_corpus)
         except Exception as e:
             skipped.append({'file': name, 'reason': '解析失败：%s' % e})

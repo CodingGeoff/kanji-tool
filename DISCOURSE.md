@@ -406,9 +406,23 @@ passage_results(id, ts, passage_id, qtype, ok)         -- 分题型正确率
 | 并入语料库 | 默认 `to_corpus=True`，组句 / 听力 / 挖空的 **📰 我的篇章** 题源同时有货 |
 | 关掉它 | 环境变量 `KANJI_SEED_PASSAGES=0` |
 
-想让**自己**的文章也随部署上线：把 `.txt` 丢进 `samples/` 提交即可（一篇一个文件，
-空行分段）。想让运行时录入的篇章也不丢，挂持久盘并设 `KANJI_DB=/data/kanji.db`
-（见 `DEPLOY.md`）。
+### 4.2 把**自己**录入的篇章送上云（永久可见）
+
+本地在网页里录完文章后，一条命令把它们导成文本，提交即上线：
+
+```bash
+python dbtool.py export-passages     # → samples/my_<指纹>.txt + 同名 .meta.json
+git add samples && git commit -m "新增篇章" && git push
+```
+
+* `.meta.json` 里存标题 / 出处 / 等级，云端补种时原样还原；
+* 文件名取正文指纹 —— 反复导出不会堆出重复文件，正文没变就跳过；
+* 云端重新部署 / 重启后由补种逻辑自动还原，**不随临时磁盘消失**；
+* `python dbtool.py status` 会直接告诉你「云端还看不到 passages +3」这种差额。
+
+也可以手写：把 `.txt` 丢进 `samples/` 提交即可（一篇一个文件，空行分段），
+想指定标题/出处就配一个同名 `.meta.json`。
+想让运行时录入的篇章也不丢，挂持久盘并设 `KANJI_DB=/data/kanji.db`（见 `DEPLOY.md`）。
 
 切句规则：句末标点 `。！？!?` 切分，**引号 `「」『』（）` 内的句点不切**
 （`彼は「今日は雨です。明日は晴れです。」と言った。` → 1 句）。
