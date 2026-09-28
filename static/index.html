@@ -3198,7 +3198,7 @@ async function lsCheck(){
   });
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
   const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
-  const meaningNote=q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 译文混淆并非机器篡改：三项均来自其他真实日译句对，并按日文侧语法点、肯否极性、时态、疑问类型及译文长度选取结构硬负例；过于接近、可能同义的译文已排除。</div>`:'';
+  const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
   const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。</div>`:'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
@@ -3240,7 +3240,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性，四项按 2×2 组合；多分句优先考「ので／のに」等逻辑反转，四条候选完整句全部通过语法门禁。中英译文选项：不自动篡改译文，而从其他真实句对中按日文语法点、肯否极性、时态、疑问类型和译文长度检索结构硬负例，并排除过近、可能同义的译文。分词/活用库只能辅助形态处理，不能保证任意自动反义句符合语境，因此所有生成路径均采用可审计的保守门禁。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.7">日文选项：双空最小对立同时考分句接续或词汇/格关系与句尾极性。中英译文高级模式：先从扩大后的真实译文池检索共享高信息关键词/短语的同主题句，再匹配人称、肯否、疑问类型、长度及日文结构；仅关键动作、对象、时间或数量不同。高级题凑不齐三个相近且唯一错误的真实译文时直接放弃，不再以无关句补足。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
@@ -3251,6 +3251,10 @@ async function lsCfgOpen(){
         <option value="mixed" ${c.scope==='mixed'?'selected':''}>课本＋语料混合</option>
         <option value="lyric" ${c.scope==='lyric'?'selected':''}>🎵 KTV歌词（discriminate 为主）</option></select>
         <div class="muted" style="font-size:12px;margin-top:4px">规则与组句练习一致：未勾选具体课本时自动用书架里全部启用中的课本，绝不会悄悄换成语料库。</div></div>
+      <span class="muted">译文选项难度</span><div><select id="lscMeaningDifficulty">
+        <option value="advanced" ${c.meaning_difficulty!=='standard'?'selected':''}>高级：同主题关键词硬负例</option>
+        <option value="standard" ${c.meaning_difficulty==='standard'?'selected':''}>标准：结构与长度相近</option></select>
+        <div class="muted" style="font-size:12px;margin-top:4px">高级模式宁缺毋滥：四项共享实质词汇，不能只靠话题差异排除。</div></div>
       <span class="muted">语速（听力难度轴）</span><select id="lscRate">
         <option value="slower" ${c.rate==='slower'?'selected':''}>更慢（入门）</option>
         <option value="slow" ${c.rate==='slow'?'selected':''}>慢速</option>
@@ -3265,6 +3269,7 @@ async function lsCfgOpen(){
 }
 async function lsCfgSave(){
   const body={enabled:$('#lscOn').checked,level:$('#lscLevel').value,scope:$('#lscScope').value,
+    meaning_difficulty:$('#lscMeaningDifficulty').value,
     rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
     types:{meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0},
     max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};

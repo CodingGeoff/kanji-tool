@@ -54,9 +54,12 @@ random.seed(20260926)
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
 check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
-      and cfg['types'].get('cloze') == 45, f'默认配置含高难度双空题：{cfg}')
-cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999, 'bogus_key': 'x'})
-check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20,
+      and cfg['types'].get('cloze') == 45 and cfg['meaning_difficulty'] == 'advanced',
+      f'默认配置含高级译文硬负例和高难度双空题：{cfg}')
+cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999,
+                              'meaning_difficulty': 'bogus', 'bogus_key': 'x'})
+check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20
+      and cfg2['meaning_difficulty'] == 'advanced',
       f'保存并做边界修正（count 上限 20）：{cfg2}')
 check('bogus_key' not in cfg2, '非白名单键不写入')
 ls.save_listening_cfg({'scope': 'corpus', 'rate': 'normal', 'count': 6})
@@ -94,12 +97,41 @@ for q in meaning_qs:
     check(len(langs) == 1, f'4 个选项语言必须一致（否则靠文字系统就能蒙对）：{q["options"]} → {langs}')
     check(all(o in attested_translations for o in q['options']),
           f'中英选项全部来自数据库真实译文，不机械篡改：{q["options"]}')
-    check(q.get('distractor_source') == 'attested_translation_structural_hard_negative'
+    check(q.get('distractor_source') == 'attested_translation_lexical_hard_negative'
+          and q.get('meaning_difficulty') == 'advanced'
           and len(q.get('distractor_audit') or []) == 3,
-          '译文干扰项必须标记为结构硬负例并携带三项审计证据')
+          '高级译文干扰项必须标记为词汇硬负例并携带三项审计证据')
     for audit in q.get('distractor_audit') or []:
-        check(set(audit) == {'grammar_overlap', 'same_polarity', 'same_tense', 'same_question_type'},
-              f'硬负例审计维度完整：{audit}')
+        check(audit.get('lexical_overlap', 0) >= 0.18 and bool(audit.get('shared_terms')),
+              f'每个高级干扰项必须与答案共享可审计的高信息词：{audit}')
+        check({'grammar_overlap', 'same_polarity', 'same_tense', 'same_question_type',
+               'same_translation_shape'} <= set(audit), f'硬负例审计维度完整：{audit}')
+
+# 中英文最小语义对立：必须优先同话题、只改变地点/人物/时间，而不是无关句。
+for controlled, unrelated in [
+    ([
+        {'text': '私は昨日メアリーと電車で東京へ行った。', 'translation': 'I went to Tokyo by train with Mary yesterday.'},
+        {'text': '私は昨日メアリーと電車で大阪へ行った。', 'translation': 'I went to Osaka by train with Mary yesterday.'},
+        {'text': '私は昨日トムと電車で東京へ行った。', 'translation': 'I went to Tokyo by train with Tom yesterday.'},
+        {'text': '私は今朝メアリーと飛行機で東京へ行った。', 'translation': 'I went to Tokyo by plane with Mary this morning.'},
+        {'text': '猫が窓辺で眠っている。', 'translation': 'The cat is sleeping beside the window.'},
+    ], 'The cat is sleeping beside the window.'),
+    ([
+        {'text': '彼は今日電車で東京へ行った。', 'translation': '他今天坐火车去了东京。'},
+        {'text': '彼は今日電車で大阪へ行った。', 'translation': '他今天坐火车去了大阪。'},
+        {'text': '彼は昨日飛行機で東京へ行った。', 'translation': '他昨天坐飞机去了东京。'},
+        {'text': '彼女は今日電車で東京を離れた。', 'translation': '她今天坐火车离开了东京。'},
+        {'text': '猫は窓辺で寝ている。', 'translation': '猫在窗边睡觉。'},
+    ], '猫在窗边睡觉。'),
+]:
+    hard = ls._build_meaning_q(controlled[0], controlled, 'advanced',
+                               ls._meaning_search_context(controlled))
+    check(hard is not None and len(hard['options']) == 4,
+          f'高级模式可构造四项中英最小语义对立：{hard}')
+    if hard:
+        check(unrelated not in hard['options'], f'高级模式不得混入无关话题：{hard["options"]}')
+        check(all(len(a['shared_terms']) >= 2 for a in hard['distractor_audit']),
+              f'长句干扰项至少共享两个信息锚点：{hard["distractor_audit"]}')
 
 print('== 3. discriminate 题：完整实证句 + 互不相同 + 禁止机械换词 ==')
 db.add_sentence('彼女は毎日図書館で本を読んでいる。', '她每天在图书馆看书。', 'unit_test', None, [], [])

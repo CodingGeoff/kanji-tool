@@ -40,9 +40,11 @@
 import json
 import random
 import re
+from collections import Counter
 from datetime import date
 from difflib import SequenceMatcher
 from functools import lru_cache
+from math import log
 
 import db
 import furigana
@@ -60,6 +62,8 @@ DEFAULT_CFG = {
     'count': 6,
     # 双空最小对立占最高比重，避免只听见一个简单词就能排除。
     'types': {'meaning': 30, 'discriminate': 25, 'cloze': 45},
+    # advanced 要求译文共享高信息词/短语且句式相近；凑不齐三项就不出该题。
+    'meaning_difficulty': 'advanced',   # standard | advanced
     'rate': 'normal',            # slow | slower | normal | fast —— 听力特有难度轴
                                   # （与 /api/tts 的 RATES 命名完全一致，前端直接透传）
     'max_plays': 3,              # 每题最多重播次数，0=不限
@@ -97,6 +101,8 @@ def _sanitize_cfg(cfg):
         cfg['scope'] = 'corpus'
     if cfg.get('rate') not in _RATES:
         cfg['rate'] = 'normal'
+    if cfg.get('meaning_difficulty') not in ('standard', 'advanced'):
+        cfg['meaning_difficulty'] = 'advanced'
     try:
         cfg['count'] = max(1, min(int(cfg.get('count', 6)), 20))
     except Exception:
@@ -174,6 +180,63 @@ def _tr_lang(t):
     return 'other'
 
 
+_EN_STOP = frozenset('''a an the is are was were be been being to of in on at for from
+with and or but that this these those it its i you he she we they me him her us them my
+your his our their do does did have has had will would can could may might should as so
+very just really also there here then than not no yes up down over out about into through
+after before during under again further once off only own same such too don don't didn
+isn aren't wasn weren't won't can't couldn shouldn't wouldn't'''.split())
+_ZH_STOP = frozenset('的一了是在和也都就很有我你他她它們们这這那個个嗎吗呢啊吧被把給给')
+
+
+@lru_cache(maxsize=16384)
+def _translation_terms(text):
+    """译文检索词。英文去功能词并轻量归一；中文同时保留信息字和二字短语。"""
+    if _tr_lang(text) == 'zh':
+        chunks = re.findall(r'[\u4e00-\u9fff]+', text)
+        terms = set()
+        for chunk in chunks:
+            terms.update('b:' + chunk[i:i + 2] for i in range(len(chunk) - 1)
+                         if chunk[i] not in _ZH_STOP and chunk[i + 1] not in _ZH_STOP)
+            terms.update('c:' + ch for ch in chunk if ch not in _ZH_STOP)
+        return frozenset(terms)
+    words = re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
+    terms = set()
+    for word in words:
+        word = word.replace("'s", '')
+        if word in _EN_STOP or len(word) < 3:
+            continue
+        # 保守使用完整表面词；自制英文词干器会把 tired 误切成 tir，反而降质。
+        terms.add('w:' + word)
+    return frozenset(terms)
+
+
+def _translation_shape(text):
+    low = text.lower()
+    if _tr_lang(text) == 'zh':
+        people = tuple(x for x in ('我', '你', '他', '她', '我们', '你们', '他们') if x in text)
+        negative = bool(re.search(r'[不沒没未無无別别]', text))
+    else:
+        people = tuple(x for x in ('i', 'you', 'he', 'she', 'we', 'they')
+                       if re.search(rf'\b{x}\b', low))
+        negative = bool(re.search(r"\b(?:not|no|never|neither|nor|cannot|can't|won't|didn't|isn't|aren't|wasn't|weren't)\b", low))
+    return {
+        'people': people,
+        'negative': negative,
+        'question': text.rstrip().endswith(('?', '？', '吗', '嗎')),
+        'numbered': bool(re.search(r'\d|[一二三四五六七八九十百千万兩两]', text)),
+    }
+
+
+def _meaning_search_context(rows):
+    """预建译文词频；IDF 避免把 good/all/的/是等高频词误当作高混淆。"""
+    df = Counter()
+    for row in rows:
+        tr = (row.get('translation') or '').strip() if isinstance(row, dict) else str(row).strip()
+        df.update(_translation_terms(tr))
+    return {'rows': rows, 'df': df, 'n': max(1, len(rows))}
+
+
 @lru_cache(maxsize=4096)
 def _meaning_signature(text):
     """为译文难干扰检索提取日文侧结构签名，不生成或改写译文。"""
@@ -201,12 +264,12 @@ def _jaccard(a, b):
     return len(a & b) / len(u) if u else 0.0
 
 
-def _build_meaning_q(row, translation_rows):
-    """听后选义：答案和干扰均为库中真实译文。
+def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=None):
+    """听后选义：高级模式只接受“共享信息锚点”的真实译文硬负例。
 
-    不机械篡改中英文（自动改否定很容易破坏指代、时态和语用），而是从真实
-    句对中检索“结构硬负例”：优先选择日文侧语法、极性、时态、疑问类型相近，
-    且译文语言与长度相近但并非近似复述的三项。
+    standard 保留结构/长度匹配；advanced 先用 IDF 加权的中英文实词和短语
+    找同主题候选，再比较日文语法、极性、时态和译文句式。高级题若凑不齐
+    三个真正相近的选项便返回 None，主流程会改出其它题型，绝不拿无关句凑数。
     """
     text = (row.get('text') or '').strip()
     tr = (row.get('translation') or '').strip()
@@ -214,7 +277,16 @@ def _build_meaning_q(row, translation_rows):
         return None
     lang = _tr_lang(tr)
     sig = _meaning_signature(text)
-    ranked, seen = [], set()
+    shape = _translation_shape(tr)
+    ctx = search_ctx or _meaning_search_context(translation_rows)
+    df, corpus_n = ctx['df'], ctx['n']
+    target_terms = _translation_terms(tr)
+
+    def weight(term):
+        return log((corpus_n + 1) / (df.get(term, 0) + 1)) + 1.0
+
+    target_weight = sum(weight(x) for x in target_terms) or 1.0
+    pre_ranked, seen = [], set()
     for candidate in translation_rows:
         if isinstance(candidate, str):
             other_tr, other_text = candidate.strip(), ''
@@ -224,36 +296,73 @@ def _build_meaning_q(row, translation_rows):
         if (not other_tr or other_tr == tr or other_tr in seen
                 or _tr_lang(other_tr) != lang or other_text == text):
             continue
-        # 太相近的译文可能只是同义转述，无法保证唯一答案；太长/太短又可秒排。
+        # 近似复述有多答案风险；长度悬殊则无需听音即可排除。
         tr_sim = SequenceMatcher(None, tr, other_tr, autojunk=False).ratio()
-        if tr_sim > 0.84:
+        # 高级模式需要“一两个关键词不同”的最小语义对立，不能沿用标准模式
+        # 过严的字面相似过滤；但近乎逐字相同仍可能是同义答案，必须排除。
+        if tr_sim > (0.96 if difficulty == 'advanced' else 0.84):
             continue
         length_sim = 1.0 - min(1.0, abs(len(other_tr) - len(tr)) / max(len(tr), 1))
-        if length_sim < 0.35:
+        if length_sim < (0.48 if difficulty == 'advanced' else 0.35):
             continue
+        terms = _translation_terms(other_tr)
+        shared = target_terms & terms
+        shared_weight = sum(weight(x) for x in shared)
+        other_weight = sum(weight(x) for x in terms) or 1.0
+        target_coverage = shared_weight / target_weight
+        candidate_coverage = shared_weight / other_weight
+        lexical_overlap = 0.7 * target_coverage + 0.3 * candidate_coverage
+        # 高级模式必须有高信息词/二字短语重合；长句至少共享两个实质锚点，
+        # 防止仅凭一个普通词（如 time / said）把完全不同的话题拉进选项。
+        # 小课本中词频样本很少，IDF 天然偏低；仍要求多个共享词，但不误杀。
+        idf_floor = 1.0 if corpus_n < 100 else 2.0
+        strong_shared = [x for x in shared if weight(x) >= idf_floor]
+        if difficulty == 'advanced' and (
+                lexical_overlap < 0.18 or not strong_shared
+                or (len(target_terms) >= 4 and len(strong_shared) < 2)):
+            continue
+        oshape = _translation_shape(other_tr)
+        shape_score = (
+            0.10 * (shape['question'] == oshape['question'])
+            + 0.07 * (shape['negative'] == oshape['negative'])
+            + 0.06 * (shape['people'] == oshape['people'])
+            + 0.03 * (shape['numbered'] == oshape['numbered'])
+        )
+        # 先按译文字面锚点缩到小池，避免对全库每句运行日文形态分析。
+        cheap_score = 0.62 * lexical_overlap + 0.12 * length_sim + shape_score
+        seen.add(other_tr)
+        pre_ranked.append((cheap_score, other_tr, other_text, length_sim,
+                           lexical_overlap, strong_shared, oshape))
+
+    if len(pre_ranked) < 3:
+        return None
+    pre_ranked.sort(key=lambda x: (-x[0], x[1]))
+    ranked = []
+    for cheap, other_tr, other_text, length_sim, lexical_overlap, shared, oshape in pre_ranked[:16]:
         osig = _meaning_signature(other_text) if other_text else {
             'grammar': frozenset(), 'content': frozenset(),
             'negative': False, 'past': False, 'question': False}
-        score = (
-            0.34 * _jaccard(sig['grammar'], osig['grammar'])
-            + 0.18 * _jaccard(sig['content'], osig['content'])
-            + 0.18 * length_sim
-            + 0.10 * (sig['negative'] == osig['negative'])
-            + 0.08 * (sig['past'] == osig['past'])
-            + 0.08 * (sig['question'] == osig['question'])
-            + 0.04 * SequenceMatcher(None, text, other_text, autojunk=False).ratio()
+        structure_score = (
+            0.10 * _jaccard(sig['grammar'], osig['grammar'])
+            + 0.06 * _jaccard(sig['content'], osig['content'])
+            + 0.04 * (sig['negative'] == osig['negative'])
+            + 0.03 * (sig['past'] == osig['past'])
+            + 0.03 * (sig['question'] == osig['question'])
         )
-        seen.add(other_tr)
+        score = cheap + structure_score
         ranked.append((score, other_tr, {
+            'lexical_overlap': round(lexical_overlap, 3),
+            'shared_terms': [x[2:] for x in sorted(shared, key=lambda y: (-weight(y), y))[:5]],
+            'same_translation_shape': shape == oshape,
             'grammar_overlap': round(_jaccard(sig['grammar'], osig['grammar']), 3),
             'same_polarity': sig['negative'] == osig['negative'],
             'same_tense': sig['past'] == osig['past'],
             'same_question_type': sig['question'] == osig['question'],
         }))
-    if len(ranked) < 3:
-        return None
     ranked.sort(key=lambda x: (-x[0], x[1]))
     chosen = ranked[:3]
+    if len(chosen) < 3:
+        return None
     distractors = [x[1] for x in chosen]
     opts = [tr] + distractors
     random.shuffle(opts)
@@ -264,9 +373,11 @@ def _build_meaning_q(row, translation_rows):
     return {'qtype': 'meaning', 'text': text, 'options': opts, 'answer': tr,
             'sid': row.get('sid'), 'source': row.get('source'),
             'origin': _origin(row), 'tokens': tokens,
-            'distractor_source': 'attested_translation_structural_hard_negative',
+            'meaning_difficulty': difficulty,
+            'distractor_source': ('attested_translation_lexical_hard_negative'
+                                  if difficulty == 'advanced'
+                                  else 'attested_translation_structural_hard_negative'),
             'distractor_audit': [x[2] for x in chosen]}
-
 
 # ================================================================
 # 题型 2：听音辨句（不需要译文；所有选项都是完整的真实语料句）
@@ -496,6 +607,31 @@ def _origin(row):
 # ================================================================
 # 出题主流程
 # ================================================================
+def _expanded_translation_pool(scope, ids, rows):
+    """高级选义需要足够大的同主题检索池；目标题仍严格来自已解析的 scope。"""
+    pool = list(rows)
+    try:
+        if scope in ('corpus', 'mixed'):
+            with db.get_conn() as c:
+                pool += [dict(r) for r in c.execute(
+                    "SELECT id sid, text, translation, source FROM sentences "
+                    "WHERE translation IS NOT NULL AND trim(translation)<>'' LIMIT 20000"
+                ).fetchall()]
+        elif scope == 'book' and ids:
+            pool += textbook.fetch_book_sentence_rows(ids, 5000)
+    except Exception:
+        pass
+    out, seen = [], set()
+    for row in pool:
+        tr = (row.get('translation') or '').strip()
+        key = ((row.get('text') or '').strip(), tr)
+        if not tr or key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def make_quiz(book_ids=None, count=None, level=None, scope=None):
     cfg = listening_cfg()
     if not cfg.get('enabled', True):
@@ -525,9 +661,14 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
         targets[k] += 1
 
     translation_pool = [r for r in rows if (r.get('translation') or '').strip()]
+    meaning_difficulty = cfg.get('meaning_difficulty', 'advanced')
+    if meaning_difficulty == 'advanced':
+        translation_pool = _expanded_translation_pool(scope, ids, translation_pool)
+    meaning_ctx = _meaning_search_context(translation_pool)
     sentence_pool = rows
     builders = {
-        'meaning': lambda row: _build_meaning_q(row, translation_pool),
+        'meaning': lambda row: _build_meaning_q(
+            row, translation_pool, meaning_difficulty, meaning_ctx),
         'discriminate': lambda row: _build_discriminate_q(row, sentence_pool),
         'cloze': _build_cloze_q,
     }
@@ -577,6 +718,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     return {'ok': True, 'level': level, 'scope': scope, 'book_ids': ids,
             'scope_auto_all': resolved['auto_all'], 'scope_note': resolved['note'],
             'rate': rate, 'max_plays': cfg['max_plays'],
+            'meaning_difficulty': meaning_difficulty,
             'count': len(questions), 'questions': questions,
             'level_relaxed': relax_note, 'short': len(questions) < count}
 
