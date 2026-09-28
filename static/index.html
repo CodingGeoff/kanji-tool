@@ -3193,13 +3193,10 @@ function lsRender(){
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
   const hint={contrast:'四个选项的实词完全相同，只有语法关系不同（谁对谁做／做没做／什么时候／因为还是虽然）——必须听懂整句才能选对',meaning:'听录音，选出正确的中文/英文释义',discriminate:'听录音，选出与录音完全一致的那句话',cloze:'同时听清分句接续或词汇/格关系，以及句尾极性，选出两个空的正确组合'}[q.qtype]||'听录音后作答';
-  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
-  const zoneTip=(q.contrast_zones||[]).length?`；要听清<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
-  const axisTip=q.qtype==='contrast'&&(q.contrast_axis_labels||[]).length?`<div class="muted" style="font-size:12.5px;margin-top:4px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`:'';
+
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   v.innerHTML=`<div class="card quiz-wrap">${top}
     <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
-    ${axisTip}
     ${clozePrompt}
     <div style="margin-top:12px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
@@ -3247,7 +3244,7 @@ async function lsCheck(){
   const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
   const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
   const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。<br>注意这一题型天然偏易：四条句子各有独有词汇，听清一个词就能排除其余三条。想要真正逼自己听懂整句，请把「译文最小对立」的占比调高。</div>`:'';
-  const twistNote=q.qtype==='contrast'?lsContrastNote(q):'';
+  const twistNote=q.qtype==='contrast'?(lsAxisTip(q)+lsContrastNote(q)):'';
   document.getElementById('lsQuizExp').innerHTML=`<div class="quiz-exp">
     <div style="font-size:19px"><b style="color:${ok?'var(--accent2)':'var(--accent)'}">${ok?'✅ 听对了':'❌ 再听听看'}</b></div>
     <div class="jp" data-raw="${esc(q.text)}" style="margin-top:10px;font-size:22px">${full} ${spkBtn(q.text)}</div>
@@ -3267,6 +3264,12 @@ function lsDiffHTML(answer,option){
   while(j<answer.length-i&&j<option.length-i&&answer[answer.length-1-j]===option[option.length-1-j])j++;
   const mid=option.slice(i,option.length-j);
   return esc(option.slice(0,i))+(mid?`<b style="color:var(--accent)">${esc(mid)}</b>`:'')+esc(option.slice(option.length-j));
+}
+function lsAxisTip(q){
+  if(q.qtype!=='contrast'||!(q.contrast_axis_labels||[]).length)return '';
+  const zoneName={head:'句首（人称）',mid:'句中（数量·方位·对象·具体词）',tail:'句尾（否定·时制·情态）'};
+  const zoneTip=(q.contrast_zones||[]).length?`；考点位置：<b>${q.contrast_zones.map(z=>zoneName[z]||z).join(' + ')}</b>`:'';
+  return `<div class="muted" style="font-size:12.5px;margin-top:6px">本题考点：${q.contrast_axis_labels.map(x=>`<b>${esc(x)}</b>`).join(' × ')}${q.contrast_structure==='matrix_2x2'?'（两个考点各自 2:2 平分，缺一不可）':'（同一处的四个互斥取值）'}${zoneTip}</div>`;
 }
 function lsContrastNote(q){
   const rows=(q.distractor_audit||[]).map(a=>{
