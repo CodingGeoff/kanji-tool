@@ -2211,6 +2211,9 @@ def g_heading(P, rng):
     blocks = defaultdict(list)
     for i, pa in enumerate(P.para_of):
         blocks[pa].append(i)
+    # 篇章标题默认取自首个小标题（import_passage 里 title=(head or body)[:40]），
+    # 而标题会一直显示在答题页顶栏——若拿它当答案就是当场泄题，这里整体排除。
+    title_norm = (getattr(P, 'title', '') or '').strip()
     heads = []
     for h in P.headings:
         hw = [w for w in content_words(tag(h['text'])) if len(w) >= 2]
@@ -2219,6 +2222,10 @@ def g_heading(P, rng):
         own = [i for i, pa in enumerate(P.para_of) if h['para'] <= pa < nxt]
         if len(h['text']) < 6:
             continue                     # 「アメリカ」这类栏目标签不是小标题
+        ht = h['text'].strip()
+        if title_norm and len(title_norm) >= 4 and (
+                ht == title_norm or ht.startswith(title_norm)):
+            continue                     # 这个小标题就是篇章标题，顶栏已显示＝泄题，不能当答案
         if own and hw:
             heads.append({'text': h['text'], 'own': own, 'words': hw})
     if len(heads) < 3:

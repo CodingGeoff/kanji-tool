@@ -1334,15 +1334,23 @@ function dcFontSize(delta){
 function dcReaderHTML(){
   const rows=dcQuiz.rows||[];
   const furi=dcQuiz.furiOn&&dcQuiz.furi?Object.fromEntries(dcQuiz.furi.map(r=>[r.idx,r.tokens])):null;
+  /* 小标题匹配题：原文里的每个小标题就是本题选项，作答阶段把它们一律遮成占位块，
+     否则打开原文＝直接对号入座。判分后（checked）恢复真身，方便回看订正。 */
+  const q=dcQuiz.qs&&dcQuiz.qs[dcQuiz.i];
+  const maskHead=!!q&&q.qtype==='heading'&&!dcQuiz.checked&&!dcQuiz.study;
   let html='',bodyN=0;
   for(const r of rows){
     const tk=furi&&furi[r.idx];
     const txt=tk?rubyHTML(tk):esc(r.text);
-    if(r.kind==='heading'){html+=`<h4>${txt}</h4>`;}
+    if(r.kind==='heading'){html+=`<h4>${maskHead?'▢▢▢▢（小見出し）':txt}</h4>`;}
     else if(r.kind==='caption'){html+=`<div class="cap">${txt}</div>`;}
     else{html+=`<p><span class="dc-s" id="dcS${bodyN}">${txt}</span></p>`;bodyN++;}
   }
   return html||'<div class="muted">（没有正文）</div>';
+}
+function dcRenderReader(){
+  const el=$('#dcReader'); if(!el)return;
+  const top=el.scrollTop; el.innerHTML=dcReaderHTML(); el.scrollTop=top;
 }
 function dcShell(){
   const fs=parseInt(localStorage.getItem('dcFont')||'16',10);
@@ -1432,13 +1440,20 @@ function dcFillBlanks(parts,ok){
 }
 function dcRender(keepPick){
   const q=dcQuiz.qs[dcQuiz.i],n=dcQuiz.qs.length;
-  if(!keepPick){dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;}
   const DIFF={easy:'易',medium:'中',hard:'难'};
   const open=dcQuiz.study||q.text_policy==='open';
+  if(!keepPick){
+    dcQuiz.picked=null;dcQuiz.checked=false;dcQuiz.peeked=false;
+    /* 闭卷题切到新题时强制收起原文：否则上一题（扫读题/偷看后）开着的原文会一直挂着，
+       在下一道闭卷题上照样看得到答案，还绕过了「看原文＝不计分」。想再看必须重新点开，
+       重新点开会重新计入偷看。开卷·扫读题本就该对着原文做，保持展开。 */
+    if(!open)dcQuiz.readerOpen=false;
+  }
+  const headMask=q.qtype==='heading'&&!dcQuiz.checked&&!dcQuiz.study;   // 标题＝首个小标题，闭卷阶段别显示在顶栏
   $('#dcQcol').innerHTML=`<div class="card quiz-wrap" style="max-width:none">
     <div class="quiz-top">
       <button class="btn" onclick="dcQuit()">‹ 退出</button>
-      <span class="quiz-prog">📖 ${esc(dcQuiz.title)} ${dcQuiz.i+1} / ${n}</span>
+      <span class="quiz-prog">📖 ${headMask?'篇章精读':esc(dcQuiz.title)} ${dcQuiz.i+1} / ${n}</span>
       <span class="sb-badges"><span class="tag">${esc(q.type_label||q.qtype)}</span>
         <span class="tag">难度 ${DIFF[q.difficulty]||q.difficulty}</span>
         <span class="tag">${q.answer_format==='input'?'填空':'选择'}</span>
@@ -1473,6 +1488,7 @@ function dcRender(keepPick){
     }
   }
   dcSyncFab();
+  dcRenderReader();   // 原文面板按当前题重渲染（小标题匹配题要遮盖小标题）
   if(q.answer_format==='input'&&!keepPick){const el=$('#dcInput');if(el)el.focus();}
   if(!keepPick)window.scrollTo(0,0);
 }
@@ -1499,6 +1515,7 @@ async function dcCheck(){
   if(!r.ok){ toast(r.message||'这套题已过期，请重新开始'); return; }
   const ok=!!r.correct, peeked=dcQuiz.study||(dcQuiz.peeked&&q.text_policy!=='open');
   dcQuiz.checked=true; if(ok&&!peeked)dcQuiz.ok++;
+  dcRenderReader();   // 判分后原文面板恢复真身（小标题不再遮盖），方便回看订正
   dcQuiz.ans.push({qtype:q.qtype,ok,peeked});
   dcFillBlanks(r.sub_answers&&r.sub_answers.length?r.sub_answers:[r.answer],ok);
   if(q.answer_format==='input'){
