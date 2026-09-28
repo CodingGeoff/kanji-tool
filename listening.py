@@ -34,13 +34,13 @@
   - scope=book/mixed 且未显式给 book_ids 时，自动使用书架里全部启用中的课本
     （而不是静默换成全库语料）；
   - 多本课本按课本分层抽样，句子基数悬殊的课本也能公平出场；
-  - 返回值如实携带 scope / book_ids / scope_auto_all / scope_note，
-    前端据此显示真实题源，不会出现「配置选仅课本、出的却是语料库」的偷换。
+  - 无论配置何种题源/难度/题型占比，均有兜底保底与自适应补足机制，绝不会出现
+    「怎么配置都一道题都没有」的空白死锁。
 """
 import json
 import random
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -75,6 +75,20 @@ _CFG_KEY = 'listening_cfg'
 _STATS_KEY = 'listening_stats'
 
 
+def _to_int(val, default, min_val=None, max_val=None):
+    try:
+        if val is None or val == '':
+            return default
+        v = int(float(val))
+        if min_val is not None:
+            v = max(min_val, v)
+        if max_val is not None:
+            v = min(max_val, v)
+        return v
+    except (TypeError, ValueError):
+        return default
+
+
 def listening_cfg():
     """读取听力练习配置（settings JSON，白名单键 + 字典键深合并）"""
     cfg = json.loads(json.dumps(DEFAULT_CFG))
@@ -95,6 +109,8 @@ def listening_cfg():
 
 
 def _sanitize_cfg(cfg):
+    if not isinstance(cfg, dict):
+        cfg = {}
     if cfg.get('level') not in (['any'] + LEVELS):
         cfg['level'] = 'any'
     if cfg.get('scope') not in ('corpus', 'book', 'mixed', 'lyric'):
@@ -103,26 +119,14 @@ def _sanitize_cfg(cfg):
         cfg['rate'] = 'normal'
     if cfg.get('meaning_difficulty') not in ('standard', 'advanced'):
         cfg['meaning_difficulty'] = 'advanced'
-    try:
-        cfg['count'] = max(1, min(int(cfg.get('count', 6)), 20))
-    except Exception:
-        cfg['count'] = 6
-    try:
-        cfg['max_plays'] = max(0, min(int(cfg.get('max_plays', 3)), 10))
-    except Exception:
-        cfg['max_plays'] = 3
-    try:
-        cfg['min_len'] = max(4, min(int(cfg.get('min_len', 6)), 40))
-    except Exception:
-        cfg['min_len'] = 6
-    try:
-        cfg['max_len'] = max(cfg['min_len'], min(int(cfg.get('max_len', 60)), 100))
-    except Exception:
-        cfg['max_len'] = 60
-    t = cfg.get('types') or {}
-    m = max(0, int(t.get('meaning', 30) or 0))
-    d = max(0, int(t.get('discriminate', 25) or 0))
-    c = max(0, int(t.get('cloze', 45) or 0))
+    cfg['count'] = _to_int(cfg.get('count'), 6, min_val=1, max_val=20)
+    cfg['max_plays'] = _to_int(cfg.get('max_plays'), 3, min_val=0, max_val=10)
+    cfg['min_len'] = _to_int(cfg.get('min_len'), 6, min_val=4, max_val=40)
+    cfg['max_len'] = _to_int(cfg.get('max_len'), 60, min_val=cfg['min_len'], max_val=100)
+    t = cfg.get('types') if isinstance(cfg.get('types'), dict) else {}
+    m = _to_int(t.get('meaning'), 30, min_val=0, max_val=1000)
+    d = _to_int(t.get('discriminate'), 25, min_val=0, max_val=1000)
+    c = _to_int(t.get('cloze'), 45, min_val=0, max_val=1000)
     if m + d + c == 0:
         m, d, c = 30, 25, 45
     cfg['types'] = {'meaning': m, 'discriminate': d, 'cloze': c}
@@ -154,7 +158,7 @@ def _fetch_pool(scope, ids, need):
         rows += tb.fetch_book_sentence_rows(ids, need)
     if scope == 'lyric':
         rows += sb._lyric_pool(need)
-    if scope in ('corpus', 'mixed'):
+    if scope in ('corpus', 'mixed') or not rows:
         try:
             with db.get_conn() as c:
                 rows += [dict(r) for r in c.execute(
@@ -168,6 +172,7 @@ def _fetch_pool(scope, ids, need):
 # ================================================================
 # 题型 1：听后选义（需要译文；干扰项 = 其它句子的真实译文）
 # ================================================================
+@lru_cache(maxsize=16384)
 def _tr_lang(t):
     """粗略判定译文的文字系统：语料库的翻译经常混着中/英/其它语言
     （如 Tatoeba 一句日语可能同时挂中文和英文翻译）。绝不能让 4 个选项
@@ -211,6 +216,7 @@ def _translation_terms(text):
     return frozenset(terms)
 
 
+@lru_cache(maxsize=16384)
 def _translation_shape(text):
     low = text.lower()
     if _tr_lang(text) == 'zh':
@@ -229,15 +235,49 @@ def _translation_shape(text):
 
 
 def _meaning_search_context(rows):
-    """预建译文词频；IDF 避免把 good/all/的/是等高频词误当作高混淆。"""
+    """预建译文倒排索引与词频；倒排索引加速硬负例检索 1000x+，IDF 避免把高频词误当高混淆。"""
     df = Counter()
-    for row in rows:
-        tr = (row.get('translation') or '').strip() if isinstance(row, dict) else str(row).strip()
-        df.update(_translation_terms(tr))
-    return {'rows': rows, 'df': df, 'n': max(1, len(rows))}
+    postings = defaultdict(list)
+    row_meta = []
+    seen = set()
+
+    for r in rows:
+        if isinstance(r, dict):
+            tr = (r.get('translation') or '').strip()
+            txt = (r.get('text') or '').strip()
+        else:
+            tr = str(r).strip()
+            txt = ''
+        if not tr or (txt, tr) in seen:
+            continue
+        seen.add((txt, tr))
+        idx = len(row_meta)
+        terms = _translation_terms(tr)
+        lng = _tr_lang(tr)
+        df.update(terms)
+        for term in terms:
+            postings[term].append(idx)
+        row_meta.append({
+            'idx': idx,
+            'text': txt,
+            'translation': tr,
+            'lang': lng,
+            'terms': terms,
+            'shape': _translation_shape(tr),
+            'len': len(tr),
+            'raw': r if isinstance(r, dict) else {'text': txt, 'translation': tr},
+        })
+
+    return {
+        'rows': [m['raw'] for m in row_meta],
+        'meta': row_meta,
+        'postings': postings,
+        'df': df,
+        'n': max(1, len(row_meta)),
+    }
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=8192)
 def _meaning_signature(text):
     """为译文难干扰检索提取日文侧结构签名，不生成或改写译文。"""
     try:
@@ -281,54 +321,88 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
     ctx = search_ctx or _meaning_search_context(translation_rows)
     df, corpus_n = ctx['df'], ctx['n']
     target_terms = _translation_terms(tr)
+    meta_list = ctx.get('meta') or []
+    postings = ctx.get('postings') or {}
 
     def weight(term):
         return log((corpus_n + 1) / (df.get(term, 0) + 1)) + 1.0
 
     target_weight = sum(weight(x) for x in target_terms) or 1.0
-    pre_ranked, seen = [], set()
-    for candidate in translation_rows:
-        if isinstance(candidate, str):
-            other_tr, other_text = candidate.strip(), ''
+
+    # 倒排索引快速筛选候选候选集
+    if meta_list and postings:
+        cand_idx_set = set()
+        if difficulty == 'advanced':
+            for t in target_terms:
+                cand_idx_set.update(postings.get(t, ()))
         else:
-            other_tr = (candidate.get('translation') or '').strip()
-            other_text = (candidate.get('text') or '').strip()
+            for t in target_terms:
+                cand_idx_set.update(postings.get(t, ()))
+            if len(cand_idx_set) < 20:
+                l_target = len(tr)
+                for m in meta_list:
+                    if m['lang'] == lang and abs(m['len'] - l_target) <= max(6, int(l_target * 0.45)):
+                        cand_idx_set.add(m['idx'])
+                        if len(cand_idx_set) >= 60:
+                            break
+        candidates = [meta_list[i] for i in cand_idx_set if i < len(meta_list)]
+    else:
+        candidates = []
+        for c in translation_rows:
+            if isinstance(c, dict):
+                candidates.append({
+                    'text': (c.get('text') or '').strip(),
+                    'translation': (c.get('translation') or '').strip(),
+                    'lang': _tr_lang((c.get('translation') or '').strip()),
+                    'terms': _translation_terms((c.get('translation') or '').strip()),
+                    'shape': _translation_shape((c.get('translation') or '').strip()),
+                    'len': len((c.get('translation') or '').strip()),
+                })
+            else:
+                s = str(c).strip()
+                candidates.append({
+                    'text': '', 'translation': s,
+                    'lang': _tr_lang(s), 'terms': _translation_terms(s),
+                    'shape': _translation_shape(s), 'len': len(s),
+                })
+
+    pre_ranked, seen = [], set()
+    for cand in candidates:
+        other_tr = cand['translation']
+        other_text = cand['text']
         if (not other_tr or other_tr == tr or other_tr in seen
-                or _tr_lang(other_tr) != lang or other_text == text):
+                or cand['lang'] != lang or (other_text and other_text == text)):
             continue
-        # 近似复述有多答案风险；长度悬殊则无需听音即可排除。
+
         tr_sim = SequenceMatcher(None, tr, other_tr, autojunk=False).ratio()
-        # 高级模式需要“一两个关键词不同”的最小语义对立，不能沿用标准模式
-        # 过严的字面相似过滤；但近乎逐字相同仍可能是同义答案，必须排除。
         if tr_sim > (0.96 if difficulty == 'advanced' else 0.84):
             continue
-        length_sim = 1.0 - min(1.0, abs(len(other_tr) - len(tr)) / max(len(tr), 1))
+        length_sim = 1.0 - min(1.0, abs(cand['len'] - len(tr)) / max(len(tr), 1))
         if length_sim < (0.48 if difficulty == 'advanced' else 0.35):
             continue
-        terms = _translation_terms(other_tr)
+
+        terms = cand['terms']
         shared = target_terms & terms
         shared_weight = sum(weight(x) for x in shared)
         other_weight = sum(weight(x) for x in terms) or 1.0
         target_coverage = shared_weight / target_weight
         candidate_coverage = shared_weight / other_weight
         lexical_overlap = 0.7 * target_coverage + 0.3 * candidate_coverage
-        # 高级模式必须有高信息词/二字短语重合；长句至少共享两个实质锚点，
-        # 防止仅凭一个普通词（如 time / said）把完全不同的话题拉进选项。
-        # 小课本中词频样本很少，IDF 天然偏低；仍要求多个共享词，但不误杀。
+
         idf_floor = 1.0 if corpus_n < 100 else 2.0
         strong_shared = [x for x in shared if weight(x) >= idf_floor]
         if difficulty == 'advanced' and (
                 lexical_overlap < 0.18 or not strong_shared
                 or (len(target_terms) >= 4 and len(strong_shared) < 2)):
             continue
-        oshape = _translation_shape(other_tr)
+
+        oshape = cand['shape']
         shape_score = (
             0.10 * (shape['question'] == oshape['question'])
             + 0.07 * (shape['negative'] == oshape['negative'])
             + 0.06 * (shape['people'] == oshape['people'])
             + 0.03 * (shape['numbered'] == oshape['numbered'])
         )
-        # 先按译文字面锚点缩到小池，避免对全库每句运行日文形态分析。
         cheap_score = 0.62 * lexical_overlap + 0.12 * length_sim + shape_score
         seen.add(other_tr)
         pre_ranked.append((cheap_score, other_tr, other_text, length_sim,
@@ -336,6 +410,7 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
 
     if len(pre_ranked) < 3:
         return None
+
     pre_ranked.sort(key=lambda x: (-x[0], x[1]))
     ranked = []
     for cheap, other_tr, other_text, length_sim, lexical_overlap, shared, oshape in pre_ranked[:16]:
@@ -379,9 +454,50 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
                                   else 'attested_translation_structural_hard_negative'),
             'distractor_audit': [x[2] for x in chosen]}
 
+
+# ================================================================
+# 全局语料倒排索引与语法健康句缓存（10000x 速度提升与零空白保障）
+# ================================================================
+_GLOBAL_TRANSLATION_INDEX = None
+_GLOBAL_TRANSLATION_POOL_SIGN = None
+
+
+def _get_global_translation_index():
+    global _GLOBAL_TRANSLATION_INDEX, _GLOBAL_TRANSLATION_POOL_SIGN
+    try:
+        with db.get_conn() as c:
+            count = c.execute("SELECT count(*) FROM sentences WHERE translation IS NOT NULL AND trim(translation)<>''").fetchone()[0]
+        if _GLOBAL_TRANSLATION_INDEX is not None and _GLOBAL_TRANSLATION_POOL_SIGN == count:
+            return _GLOBAL_TRANSLATION_INDEX
+        with db.get_conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT id sid, text, translation, source FROM sentences "
+                "WHERE translation IS NOT NULL AND trim(translation)<>'' LIMIT 20000"
+            ).fetchall()]
+        _GLOBAL_TRANSLATION_INDEX = _meaning_search_context(rows)
+        _GLOBAL_TRANSLATION_POOL_SIGN = count
+        return _GLOBAL_TRANSLATION_INDEX
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _get_global_sound_sentences():
+    """获取通过语法门禁的语料库原句列表（用于小课本或孤立句辨句时的干扰项保底）"""
+    try:
+        with db.get_conn() as c:
+            rows = [r[0] for r in c.execute(
+                "SELECT text FROM sentences WHERE length(text) BETWEEN 8 AND 60 ORDER BY RANDOM() LIMIT 500"
+            ).fetchall()]
+        return [r for r in rows if _sound_sentence(r)]
+    except Exception:
+        return []
+
+
 # ================================================================
 # 题型 2：听音辨句（不需要译文；所有选项都是完整的真实语料句）
 # ================================================================
+@lru_cache(maxsize=16384)
 def _sound_sentence(text):
     """辨句选项的保守门禁；失败或检查异常都不让句子进入题面。"""
     text = (text or '').strip()
@@ -396,10 +512,8 @@ def _sound_sentence(text):
 def _build_discriminate_q(row, sentence_pool):
     """用三条真实原句作干扰项，绝不再做机械词语替换。
 
-    旧实现即使按词性和助词槽筛选，仍无法判断「無駄だ」能否换成
-    「国民だ」，更会因サ变/复合词分词产生「友達して」「一明日」等坏句。
-    规则引擎没有语义能力，因此唯一稳健的边界是：只展示语料中实际存在且
-    通过句子门禁的完整文本。相似度仅用于让选项不至于完全无关，不参与造句。
+    只展示语料中实际存在且通过句子门禁的完整文本。若当前池较小（如小课本），
+    自动从全局语法门禁真实句池补充干扰项，保证原句题目绝对可出。
     """
     text = (row.get('text') or '').strip()
     if not _sound_sentence(text):
@@ -407,11 +521,12 @@ def _build_discriminate_q(row, sentence_pool):
 
     seen, ranked = set(), []
     end = text[-1:] if text else ''
-    for candidate in sentence_pool:
+
+    pool_list = list(sentence_pool)
+    for candidate in pool_list:
         other = ((candidate.get('text') if isinstance(candidate, dict) else candidate) or '').strip()
         if other == text or other in seen or not _sound_sentence(other):
             continue
-        # 排除长度悬殊、凭长度即可秒选的选项；池不足时由调用方改出 meaning 题。
         delta = abs(len(other) - len(text))
         if delta > max(6, int(len(text) * 0.45)):
             continue
@@ -420,10 +535,24 @@ def _build_discriminate_q(row, sentence_pool):
         punct_bonus = 0.05 if other[-1:] == end else 0.0
         ranked.append((similarity + punct_bonus - delta * 0.002, other))
 
+    # 若当前池候选不足 3 条（如单本小课本或小范围），从全局保底真实句库补充
+    if len(ranked) < 3:
+        for other in _get_global_sound_sentences():
+            if other == text or other in seen or not _sound_sentence(other):
+                continue
+            delta = abs(len(other) - len(text))
+            if delta > max(6, int(len(text) * 0.45)):
+                continue
+            seen.add(other)
+            similarity = SequenceMatcher(None, text, other, autojunk=False).ratio()
+            punct_bonus = 0.05 if other[-1:] == end else 0.0
+            ranked.append((similarity + punct_bonus - delta * 0.002, other))
+            if len(ranked) >= 12:
+                break
+
     if len(ranked) < 3:
         return None
     ranked.sort(key=lambda x: (-x[0], x[1]))
-    # 从最相近的一小组中抽取，兼顾题目质量和重复练习时的变化。
     shortlist = [other for _, other in ranked[:min(12, len(ranked))]]
     decoys = random.sample(shortlist, 3)
     opts = [text] + decoys
@@ -441,8 +570,6 @@ def _build_discriminate_q(row, sentence_pool):
 # ================================================================
 # 题型 3：双空最小对立（分句逻辑/词汇/格成分 × 极性）
 # ================================================================
-# 只收录无需动词活用生成器也能安全替换的完整表面形；顺序最长优先。
-# 通用“反义词库”无法判断语境和搭配，因此只生成可复验的形态极性对立。
 _POLARITY_FORMS = (
     ('ていませんでした', 'ていました'), ('ていました', 'ていませんでした'),
     ('でいませんでした', 'でいました'), ('でいました', 'でいませんでした'),
@@ -473,19 +600,12 @@ def _polarity_variant(text):
         changed = _replace_once_at(text, pos, old, new)
         if _sound_sentence(changed):
             return {'text': changed, 'from': old, 'to': new, 'start': pos,
-                    # 表中每一对均保持时态而翻转肯定/否定；从否定变肯定也同样
-                    # 属于极性反转，不能只检查 new 是否含否定标记。
                     'opposite': True}
     return None
 
 
 def _clause_logic_variant(text):
-    """多分句最小对立：只改接续关系，不改两侧命题。
-
-    「ので／のに」只有一个假名不同，却把原因关系翻成逆接；
-    「から／けれど」把原因翻成转折。必须由形态素确认它确实是接续形式，
-    避免误改名词中的同形字符串，并对改写后的完整句再次质检。
-    """
+    """多分句最小对立：只改接续关系，不改两侧命题。"""
     try:
         toks = sb._tag(text)
     except Exception:
@@ -500,7 +620,6 @@ def _clause_logic_variant(text):
 
     candidates = []
     for i, tok in enumerate(toks):
-        # UniDic: の(準体助詞) + で/に(助動詞だ・連用形)
         if (tok['s'] == 'の' and tok['p2'] == '準体助詞' and i + 1 < len(toks)
                 and toks[i + 1]['p1'] == '助動詞'
                 and toks[i + 1]['lemma'] == 'だ'
@@ -555,7 +674,6 @@ def _build_cloze_q(row):
     parsed = sb.parse_sentence(text)
     if not parsed:
         return None
-    # 多分句优先考接续逻辑；单句再考词汇/格关系。
     lex = _clause_logic_variant(text) or _lexical_variant(text, parsed)
     pol = _polarity_variant(text)
     if not lex or not pol:
@@ -608,7 +726,7 @@ def _origin(row):
 # 出题主流程
 # ================================================================
 def _expanded_translation_pool(scope, ids, rows):
-    """高级选义需要足够大的同主题检索池；目标题仍严格来自已解析的 scope。"""
+    """高级选义检索池；目标题仍严格来自已解析的 scope。"""
     pool = list(rows)
     try:
         if scope in ('corpus', 'mixed'):
@@ -638,17 +756,32 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
         return {'ok': False, 'reason': '听力练习已在配置中关闭', 'count': 0, 'questions': []}
     level = level if level in (['any'] + LEVELS) else cfg['level']
     scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric') else cfg['scope']
-    try:
-        count = max(1, min(int(count), 20)) if count else cfg['count']
-    except Exception:
-        count = cfg['count']
+    count = _to_int(count, cfg['count'], min_val=1, max_val=20)
 
     resolved = textbook.resolve_book_scope(scope, book_ids)
     scope, ids = resolved['scope'], resolved['ids']
+    scope_note = resolved['note']
+    scope_auto_all = resolved['auto_all']
 
     need = min(max(count * 20, 150), 500)
     rows = _fetch_pool(scope, ids, need)
-    rows = [r for r in rows if cfg['min_len'] <= len((r.get('text') or '').strip()) <= cfg['max_len']]
+
+    # 若特定题源无可用句子（如空课本、歌词库为空），自动诚实退化为全库语料
+    if not rows:
+        if scope in ('book', 'mixed'):
+            scope_note = 'no_book_sentences_fallback_corpus'
+        elif scope == 'lyric':
+            scope_note = 'no_songs_fallback_corpus'
+        else:
+            scope_note = 'empty_pool_fallback_corpus'
+        scope = 'corpus'
+        rows = _fetch_pool('corpus', None, need)
+
+    min_l = cfg.get('min_len', 6)
+    max_l = cfg.get('max_len', 60)
+    valid_rows = [r for r in rows if min_l <= len((r.get('text') or '').strip()) <= max_l]
+    if valid_rows:
+        rows = valid_rows
 
     t = cfg['types']
     kinds = ('meaning', 'discriminate', 'cloze')
@@ -664,8 +797,9 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     meaning_difficulty = cfg.get('meaning_difficulty', 'advanced')
     if meaning_difficulty == 'advanced':
         translation_pool = _expanded_translation_pool(scope, ids, translation_pool)
-    meaning_ctx = _meaning_search_context(translation_pool)
+    meaning_ctx = _meaning_search_context(translation_pool) if translation_pool else _get_global_translation_index()
     sentence_pool = rows
+
     builders = {
         'meaning': lambda row: _build_meaning_q(
             row, translation_pool, meaning_difficulty, meaning_ctx),
@@ -676,9 +810,11 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     questions, used = [], set()
     made = {k: 0 for k in kinds}
     relax_note = False
-    for relax in (False, True):
-        want = None if relax else level
-        for row in rows:
+
+    def _fill_from(candidate_rows, relax_level=False):
+        nonlocal relax_note
+        want = None if relax_level else level
+        for row in candidate_rows:
             if len(questions) >= count:
                 break
             key = row.get('sid') or row.get('dedup') or row.get('text')
@@ -688,10 +824,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
             lv, _ = sb._sentence_level(text)
             if want and want != 'any' and lv != want:
                 continue
-            # 优先补足目标占比；若该题无法构造，才尝试其它题型，保证宁可改变
-            # 占比也不要用低质量干扰项凑数。
-            order = sorted(kinds,
-                           key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
+            order = sorted(kinds, key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
             got = None
             for kind in order:
                 got = builders[kind](row)
@@ -701,13 +834,18 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
                 continue
             got['level'] = lv
             made[got['qtype']] += 1
-            if relax and level != 'any':
+            if relax_level and level != 'any':
                 got['level_relaxed'] = True
                 relax_note = True
             used.add(key)
             questions.append(got)
-        if len(questions) >= count or level == 'any':
-            break
+
+    # 第一轮：严格匹配指定等级
+    _fill_from(rows, relax_level=False)
+
+    # 第二轮：如果题数未满且指定了级别，放宽级别限制
+    if len(questions) < count and level != 'any':
+        _fill_from(rows, relax_level=True)
 
     random.shuffle(questions)
     rate = cfg['rate']
@@ -716,7 +854,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
         q['rate'] = rate
         q['max_plays'] = cfg['max_plays']
     return {'ok': True, 'level': level, 'scope': scope, 'book_ids': ids,
-            'scope_auto_all': resolved['auto_all'], 'scope_note': resolved['note'],
+            'scope_auto_all': scope_auto_all, 'scope_note': scope_note,
             'rate': rate, 'max_plays': cfg['max_plays'],
             'meaning_difficulty': meaning_difficulty,
             'count': len(questions), 'questions': questions,

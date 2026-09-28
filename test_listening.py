@@ -263,6 +263,69 @@ check(r['ok'] and r['asked'] == 2 and r['correct'] == 1, f'计分 {r}')
 st = ls.listening_stats(7)
 check(st and st[-1]['asked'] == 2 and st[-1]['correct'] == 1, f'统计落库 {st}')
 
+print('== 8. 全配置组合出题健壮性：无死锁、无空白 ==')
+# 各种边界异常配置清洗验证
+cfg_corrupt = ls.save_listening_cfg({
+    'level': 'INVALID_LV', 'scope': 'BOGUS_SCOPE', 'rate': 'TURBO',
+    'count': -5, 'max_plays': 999, 'meaning_difficulty': 'RANDOM',
+    'types': {'meaning': -10, 'discriminate': 'invalid', 'cloze': None}
+})
+check(cfg_corrupt['level'] == 'any' and cfg_corrupt['scope'] == 'corpus'
+      and cfg_corrupt['count'] == 1 and cfg_corrupt['max_plays'] == 10
+      and cfg_corrupt['types']['meaning'] == 0,
+      f'异常配置深度清洗与边界安全：{cfg_corrupt}')
+
+# 遍历所有 scope、level、题型组合，确保均能稳定出题
+for scope in ('corpus', 'mixed', 'lyric'):
+    for level in ('any', 'N5', 'N4', 'N3', 'N2', 'N1'):
+        for types in [
+            {'meaning': 30, 'discriminate': 25, 'cloze': 45},
+            {'meaning': 100, 'discriminate': 0, 'cloze': 0},
+            {'meaning': 0, 'discriminate': 100, 'cloze': 0},
+            {'meaning': 0, 'discriminate': 0, 'cloze': 100},
+        ]:
+            ls.save_listening_cfg({'scope': scope, 'level': level, 'types': types, 'enabled': True})
+            q_res = ls.make_quiz(count=4)
+            check(q_res['ok'] and len(q_res['questions']) > 0,
+                  f'配置 scope={scope} level={level} types={types} 出题成功（实得 {len(q_res["questions"])} 题）')
+
+# 单句微型课本出题测试：即使课本只有 1 句且无译文，辨句也能借保底句生成完整选项
+b_tiny = textbook.import_book({'title': '微型测试课本', 'author': '', 'level': '',
+                               'lessons': [{'title': 'L1', 'sentences': ['私は学生です。']}]})
+tiny_res = ls.make_quiz(book_ids=[b_tiny['id']], scope='book', count=1)
+check(tiny_res['ok'] and len(tiny_res['questions']) == 1,
+      f'单句课本成功生成辨句题目：{tiny_res}')
+if tiny_res['questions']:
+    tq = tiny_res['questions'][0]
+    check(tq['qtype'] == 'discriminate' and len(tq['options']) == 4 and tq['answer'] == '私は学生です。',
+          f'单句课本选项完整且答案正确：{tq}')
+
+print('== 9. API 接口全链路测试 ==')
+import app
+app.app.config['TESTING'] = True
+client = app.app.test_client()
+
+r_cfg_get = client.get('/api/listening/cfg')
+check(r_cfg_get.status_code == 200 and r_cfg_get.json.get('ok') is True,
+      f'/api/listening/cfg GET 成功：{r_cfg_get.json}')
+
+r_cfg_set = client.post('/api/listening/cfg', json={'scope': 'corpus', 'count': 5, 'rate': 'fast'})
+check(r_cfg_set.status_code == 200 and r_cfg_set.json.get('cfg', {}).get('rate') == 'fast',
+      f'/api/listening/cfg POST 成功：{r_cfg_set.json}')
+
+r_quiz = client.post('/api/listening/quiz', json={'count': 3})
+check(r_quiz.status_code == 200 and r_quiz.json.get('ok') is True
+      and len(r_quiz.json.get('questions', [])) == 3,
+      f'/api/listening/quiz 出题接口成功：{len(r_quiz.json.get("questions", []))} 题')
+
+r_ans = client.post('/api/listening/answer', json={'results': [{'qtype': 'cloze', 'level': 'N5', 'ok': True}]})
+check(r_ans.status_code == 200 and r_ans.json.get('ok') is True,
+      f'/api/listening/answer 提交结果成功：{r_ans.json}')
+
+r_stats = client.get('/api/listening/stats')
+check(r_stats.status_code == 200 and len(r_stats.json.get('stats', [])) > 0,
+      f'/api/listening/stats 统计接口成功：{r_stats.json}')
+
 print()
 if FAILS:
     print(f'===== 听力练习测试: {len(FAILS)} 项失败 =====')

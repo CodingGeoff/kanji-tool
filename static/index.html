@@ -520,6 +520,7 @@ body.ktv-song.showhdr header{display:flex;position:static}
         <span style="flex:1"></span>
         <button class="btn mini" onclick="ktvStudy()" title="这首歌的汉字/词汇 vs 我的学习进度：覆盖率、生字生词优先级、一键加入学习">📚 学习档案</button>
         <button class="btn mini" onclick="ktvBuilder()" title="用本曲库歌词行出多邻国式组句题（歌词无译文，自动零干扰，纯考语序）">🧩 歌词组句</button>
+        <button class="btn mini" onclick="ktvListening()" title="用本曲库歌词行练习听音辨句">🎧 歌词听力</button>
         <button class="btn mini" onclick="ktvFont(-2)" title="缩小字号">A－</button>
         <button class="btn mini" onclick="ktvFont(2)" title="放大字号">A＋</button>
         <label class="advtog"><input type="checkbox" id="ktvRubyTog" checked onchange="ktvRender()"><span>注音</span></label>
@@ -1871,6 +1872,11 @@ function ktvBuilder(){
   document.querySelector('#nav button[data-tab=books]').click();
   sbOpen({scope:'lyric'});
 }
+function ktvListening(){
+  ktvBack();
+  document.querySelector('#nav button[data-tab=books]').click();
+  lsOpen({scope:'lyric'});
+}
 function ktvBack(){ document.body.classList.remove('ktv-song','showhdr'); $('#ktvFab').classList.add('hidden'); $('#ktvBar').classList.remove('hidden'); $('#ktvSongView').classList.add('hidden'); $('#ktvListWrap').classList.remove('hidden'); ktvSearch($('#ktvQ').value); }
 async function ktvStep(dir){
   if(!ktvCur||!ktvCur._ids||!ktvCur._ids.length) return;
@@ -2235,6 +2241,7 @@ function bkRenderPlan(p){
         <span class="muted">新学进度 ${p.done_new}/${p.total_new}（${pct}%）</span>
         ${(!bkCfg||bkCfg.cloze_enabled!==false)?`<button class="btn mini" onclick="bkQuizOpen()" title="按配置的难度从本书/全库句子挖空考察语法">📝 挖空练习</button>`:''}
         <button class="btn mini" onclick="sbOpen()" title="多邻国式组句练习（词块排序，多种正确语序均判对）">🧩 组句练习</button>
+        <button class="btn mini" onclick="lsOpen()" title="听后选义/听音辨句/双空最小对立：听录音再作答">🎧 听力练习</button>
       </div>
     </div>
     <div class="progressbar"><i style="width:${pct}%"></i></div>
@@ -3109,28 +3116,47 @@ async function lsPlay(text,rate){
     }
   }
 }
-async function lsOpen(){
+async function lsOpen(opts){
   bkQuizShow();
   const v=$('#bkQuizView');
   v.innerHTML='<div class="card"><div class="muted">🎧 出题中（选材质检＋换词/换义干扰生成…）</div></div>';
   await lsCfgLoad();
-  const bIds=(window.bkCur&&bkCur.id)?[bkCur.id]:(window.bkSel&&bkSel.size?[...bkSel]:[]);
+  const bIds=(opts&&opts.book_ids)?opts.book_ids:((window.bkCur&&bkCur.id)?[bkCur.id]:(window.bkSel&&bkSel.size?[...bkSel]:[]));
   const body=bIds.length?{book_ids:bIds}:{};
+  if(opts&&opts.scope) body.scope=opts.scope;
+  if(opts&&opts.level) body.level=opts.level;
+  window._lsLastOpts=opts||null;
   let d;
   try{ d=await api('/api/listening/quiz',{method:'POST',body:JSON.stringify(body)}); }
   catch(e){ d={ok:false}; }
   if(!d.ok||!d.questions||!d.questions.length){
+    const reason = (d && d.reason) ? d.reason : '';
+    let msg = '暂时没有符合条件的听力题：已自动尝试放宽条件，可切换题源或在配置中开启听力。';
+    if(reason.includes('关闭')){
+      msg = '听力练习当前在配置中处于关闭状态，请点击下方「🎧 听力配置」开启。';
+    }else if(reason){
+      msg = reason;
+    }
     v.innerHTML=`<div class="card quiz-wrap">
       <div class="quiz-top"><button class="btn" onclick="bkQuizQuit()">‹ 返回书架</button><b>🎧 听力练习</b></div>
-      <div class="muted" style="margin-top:12px;line-height:1.8">${d&&d.reason?esc(d.reason):'暂时没有符合条件的听力题：听后选义需要译文，听音辨句需要足够多长度相近的真实句，双空最小对立需要句中同时存在可复验的词汇/格成分与极性形式。可切换题源或放宽难度。'}</div>
-      <div class="quiz-nav"><button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button></div>
+      <div class="muted" style="margin-top:12px;line-height:1.8">${esc(msg)}</div>
+      <div class="quiz-nav"><button class="btn primary" onclick="lsCfgOpen()">🎧 听力配置</button></div>
     </div>`;
     return;
   }
   if(d.scope_note==='no_books_fallback_corpus'){
     toast('⚠️ 书架里还没有课本，"仅课本" 已自动改用全库语料出题');
+  }else if(d.scope_note==='no_book_sentences_fallback_corpus'){
+    toast('⚠️ 所选课本暂无可出题的句子，已自动改用全库语料出题');
+  }else if(d.scope_note==='no_songs_fallback_corpus'){
+    toast('⚠️ 歌词库为空，已自动改用全库语料出题');
+  }else if(d.scope_note==='scope_supplemented_corpus'){
+    toast('⚠️ 当前题源句子不足，已补充全库语料凑齐题目');
   }else if(d.scope_auto_all&&(d.scope==='book'||d.scope==='mixed')){
     toast(`📖 未指定具体课本，已自动使用书架里全部 ${((d.book_ids)||[]).length} 本启用中的课本`);
+  }
+  if(d.level_relaxed){
+    toast('⚠️ 所选难度等级的句子不足，已放宽难度凑齐题目');
   }
   lsQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,scopeAutoAll:!!d.scope_auto_all,
          bookIds:d.book_ids||[],picked:null,checked:false};
@@ -3227,7 +3253,7 @@ async function lsFinish(){
     <div style="margin-top:14px;font-size:24px;text-align:center">得分 <b style="color:var(--accent2);font-size:34px">${lsQuiz.ok}</b> / ${n}（${pct}%）
       <div class="muted" style="font-size:13px;margin-top:4px">题源：${LS_SCOPE_LABEL[lsQuiz.scope]||lsQuiz.scope}${d&&d.ok?' · 已计入统计':''}</div></div>
     <div class="quiz-nav" style="justify-content:center">
-      <button class="btn primary" onclick="lsOpen()">再来一组</button>
+      <button class="btn primary" onclick="lsOpen(window._lsLastOpts)">再来一组</button>
       <button class="btn" onclick="lsCfgOpen()">🎧 听力配置</button>
       <button class="btn" onclick="bkQuizQuit()">返回书架</button>
     </div>
