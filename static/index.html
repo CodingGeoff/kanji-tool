@@ -1062,7 +1062,7 @@ function reveal(){
     <button class="btn green" onclick="answer('ok')">😀 认识</button>
     <button class="btn warn" onclick="answer('hard')">🤔 模糊</button>
     <button class="btn" style="border-color:var(--accent);color:var(--accent)" onclick="answer('ng')">😵 忘记</button>
-    ${it.sentence?'<button class="btn" onclick="copySentenceById(\'revSent\')" title="仅复制答案中的日文原句">⧉ 复制考察句</button>':''}`;
+    ${it.sentence?'<button class="btn" onclick="copySentenceById(\'revSent\')" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>':''}`;
 }
 let _answering=false;
 async function answer(r){
@@ -1895,19 +1895,32 @@ function copyFallback(txt,done){
   try{ document.execCommand('copy'); done(); }catch(e){ toast('复制失败，请长按手动复制'); }
   document.body.removeChild(ta);
 }
-/* 练习答案统一复制入口：只读取答案区 data-raw 中的原始日文，不会把注音、
-   译文、讲解或按钮文字混进剪贴板。所有题型复用同一实现和降级策略。 */
+/* 练习答案统一复制入口：只读取答案区 data-raw 中的规范答案原句，不会把
+   注音、译文、讲解或用户的错误排列混进剪贴板。复制前再走一次服务端完整句
+   语法门禁；门禁是保守工程质检，不冒充对自然语言正确性的数学证明。 */
+async function copyVerifiedAnswerSentence(text){
+  text=(text||'').trim();
+  if(!text){toast('当前答案没有可复制的完整句子');return;}
+  try{
+    const chk=await api('/api/grammar/check',{method:'POST',body:JSON.stringify({text,strict:false})});
+    if(!chk||chk.ok!==true){
+      toast('该原句未通过完整句语法质检，已停止复制');
+      return;
+    }
+  }catch(e){
+    toast('暂时无法完成语法质检，请稍后重试');
+    return;
+  }
+  copyText(text,'答案原句');
+}
 function copyAnswerSentence(btn){
   const root=btn&&btn.closest?btn.closest('.quiz-exp'):null;
   const el=root&&root.querySelector('.jp[data-raw]');
-  const text=el&&el.dataset?el.dataset.raw:'';
-  if(!text){toast('当前答案没有可复制的考察句');return;}
-  copyText(text,'考察句');
+  copyVerifiedAnswerSentence(el&&el.dataset?el.dataset.raw:'');
 }
 function copySentenceById(id){
-  const el=document.getElementById(id),text=el&&el.dataset?el.dataset.raw:'';
-  if(!text){toast('当前答案没有可复制的考察句');return;}
-  copyText(text,'考察句');
+  const el=document.getElementById(id);
+  copyVerifiedAnswerSentence(el&&el.dataset?el.dataset.raw:'');
 }
 function ktvEdit(){
   $('#ktvTitleIn').value=ktvCur.title;
@@ -2673,7 +2686,7 @@ function bkQuizPick(i){
       ${q.structure&&q.structure!=='—'?`<br><span class="muted">接续：${esc(q.structure)}</span>`:''}</div>
     <div class="quiz-nav">
       <button class="btn primary" onclick="bkQuizNext()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
-      <button class="btn" onclick="copyAnswerSentence(this)" title="仅复制答案中的日文原句">⧉ 复制考察句</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
       <button class="btn danger" onclick="bkQuizDrop()" title="句子有误/截断/答案不对：从题库中移除，以后不再出现">⚠ 题目有误，不再出</button>
     </div>
@@ -2741,7 +2754,7 @@ async function bkQuizFinish(){
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b>
           ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
-        <button class="btn mini" style="margin-top:4px" onclick="copyText(${jsArg(q.text)},'考察句')">⧉ 复制考察句</button>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`
           :`<div class="muted" style="font-size:13.5px;color:var(--gold)">（暂无翻译）<button class="btn mini" style="font-size:11px;padding:2px 8px;margin-left:6px" onclick="bkQuizTransOne(${q.sid},this)">🤖 翻译</button></div>`}
         <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
@@ -2910,7 +2923,7 @@ async function sbCheck(){
     ${(q.grammar||[]).length?`<div class="ex">${q.grammar.map(g=>`<span class="lv lv-${g.level}">${g.level}</span> <b>${esc(g.name||'')}</b>${g.structure&&g.structure!=='—'?`<span class="muted">（${esc(g.structure)}）</span>`:''}<br><span style="font-size:14px">${esc(g.explain||'')}</span>`).join('<br>')}</div>`:''}
     <div class="quiz-nav">
       <button class="btn primary" onclick="sbNext()">${sbQuiz.i+1>=sbQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
-      <button class="btn" onclick="copyAnswerSentence(this)" title="仅复制答案中的日文原句">⧉ 复制考察句</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>`:''}
     </div>
   </div>`;
@@ -2979,7 +2992,7 @@ async function sbFinish(){
       return `<div class="quiz-rev">
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span>${q.alt_count>1?`<span class="muted" style="font-size:12px">（${q.alt_count} 种合法语序）</span>`:''}${q.swap?'<span class="muted" style="font-size:12px">（语料变体题）</span>':''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
-        <button class="btn mini" style="margin-top:4px" onclick="copyText(${jsArg(q.text)},'考察句')">⧉ 复制考察句</button>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
       </div>`;}).join('')}
   </div>`;
@@ -3176,7 +3189,7 @@ async function lsCheck(){
     ${contrastNote}
     <div class="quiz-nav">
       <button class="btn primary" onclick="lsNext()">${lsQuiz.i+1>=lsQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
-      <button class="btn" onclick="copyAnswerSentence(this)" title="仅复制答案中的日文原句">⧉ 复制考察句</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       ${q.sid?`<button class="btn" onclick="favToggle(${q.sid},this)">☆收藏</button>`:''}
     </div>
   </div>`;
@@ -3920,7 +3933,7 @@ async function bkQuizPickPsy(i){
     <div class="psy-card" style="margin-top:8px"><h4>🤔 元认知提示</h4><div class="sub">${esc((function(){const prompts=["为什么这个答案是正确的？","这个语法点和之前学过的哪个相似？","下次怎么避免这个错误？","试着用自己的话解释这个语法"];return prompts[Math.floor(Math.random()*prompts.length)];})())}</div></div>
     <div class="quiz-nav">
       <button class="btn primary" onclick="bkQuizNextPsy()">${bkQuiz.i+1>=bkQuiz.qs.length?'查看成绩 ›':'下一题 ›'}</button>
-      <button class="btn" onclick="copyAnswerSentence(this)" title="仅复制答案中的日文原句">⧉ 复制考察句</button>
+      <button class="btn" onclick="copyAnswerSentence(this)" title="复制答案中显示的完整日文原句（不含注音、译文和讲解）">复制答案原句</button>
       <button class="btn" onclick="favToggle(${q.sid})">☆ 收藏此句</button>
       <button class="btn danger" onclick="bkQuizDrop()" title="题目有误">⚠ 题目有误，不再出</button>
     </div>
@@ -3963,7 +3976,7 @@ async function bkQuizFinishPsy(){
         <div>${a.ok?'✅':'❌'} <span class="lv lv-${q.level}">${q.level}</span> <b>${esc(q.name)}</b> <span class="bloom-badge bloom-${q.bloom||'apply'}">${bloomLabel(q.bloom||'apply')}</span> <span class="scaffold-tag">${q.scaffold||''}</span> ${q.mastery!=null?`<span class="muted">${(q.mastery*100).toFixed(0)}%掌握</span>`:''}
           ${!a.ok?`<span class="muted">你的选择：${esc(a.pick||'—')}</span>`:''}</div>
         <div class="quiz-rev qs jp" data-raw="${esc(q.text)}">${full} ${spkBtn(q.text)}</div>
-        <button class="btn mini" style="margin-top:4px" onclick="copyText(${jsArg(q.text)},'考察句')">⧉ 复制考察句</button>
+        <button class="btn mini" style="margin-top:4px" onclick="copyVerifiedAnswerSentence(${jsArg(q.text)})">复制答案原句</button>
         ${q.translation?`<div class="muted" style="font-size:13.5px">译：${esc(q.translation)}</div>`:''}
         <div class="muted" style="font-size:13.5px;margin-top:2px">${esc(q.explain)}</div>
       </div>`;
