@@ -50,9 +50,12 @@
   - 无论配置何种题源/难度/题型占比，均有兜底保底与自适应补足机制，绝不会出现
     「怎么配置都一道题都没有」的空白死锁。
 """
+import bisect
 import json
 import random
 import re
+import threading
+import time
 import traceback
 import unicodedata
 from collections import Counter, defaultdict
@@ -823,8 +826,8 @@ def _build_cloze_q(row):
 _KANJI_RE = re.compile(r'^[\u3400-\u9fff々〆ヶ]+$')
 _GLOBAL_WORD_BANK = None
 _GLOBAL_WORD_BANK_SIGN = None
-_GLOBAL_SUGGESTION_ROWS = None
-_GLOBAL_SUGGESTION_SIGN = None
+_GLOBAL_SUGGEST_KEYS = None
+_GLOBAL_SUGGEST_SIGN = None
 
 
 def _is_pure_kanji(value):
@@ -1168,23 +1171,70 @@ def _sentence_boundaries(text):
     return tuple(ends)
 
 
-def _get_global_suggestion_rows():
-    global _GLOBAL_SUGGESTION_ROWS, _GLOBAL_SUGGESTION_SIGN
+def _build_suggest_keys():
+    """一次性把全库分词结果切成「句首→每个词块边界」的前缀键（surface + reading 两套），
+    排序后供二分前缀检索。这是整句听写联想从 O(N) 降到 O(log N) 的关键；
+    首次构建约十几秒，通过 warmup_suggestions_async 后台预热，之后随数据签名重建。"""
+    global _GLOBAL_SUGGEST_KEYS, _GLOBAL_SUGGEST_SIGN
     try:
         with db.get_conn() as c:
             sign = (str(db.DB_PATH), *tuple(c.execute(
                 'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
-        if _GLOBAL_SUGGESTION_ROWS is not None and _GLOBAL_SUGGESTION_SIGN == sign:
-            return _GLOBAL_SUGGESTION_ROWS
+        if _GLOBAL_SUGGEST_KEYS is not None and _GLOBAL_SUGGEST_SIGN == sign:
+            return _GLOBAL_SUGGEST_KEYS
         with db.get_conn() as c:
             raw = [r[0] for r in c.execute(
                 'SELECT text FROM sentences WHERE length(text) BETWEEN 4 AND 120 '
                 'ORDER BY id DESC LIMIT 30000').fetchall()]
-        _GLOBAL_SUGGESTION_ROWS = tuple(dict(text=x, surface=_normalize_jp(x)) for x in raw if x)
-        _GLOBAL_SUGGESTION_SIGN = sign
-        return _GLOBAL_SUGGESTION_ROWS
+        keys = set()
+        for text in raw:
+            if not text:
+                continue
+            profile = _sentence_answer_profile(text)
+            surface = profile.get('surface') or ''
+            reading = profile.get('reading') or ''
+            parts = profile.get('parts') or []
+            if not surface:
+                continue
+            s_ends, r_ends, n, m = [], [], 0, 0
+            for part in parts:
+                s = part.get('surface') or ''
+                r = part.get('recommended') or ''
+                if s:
+                    n += len(s)
+                    s_ends.append(n)
+                if r:
+                    m += len(r)
+                    r_ends.append(m)
+            prev = 0
+            for end in s_ends:
+                keys.add((surface[:end], prev))
+                prev = end
+            prev = 0
+            for end in r_ends:
+                keys.add((reading[:end], prev))
+                prev = end
+        _GLOBAL_SUGGEST_KEYS = sorted(keys)
+        _GLOBAL_SUGGEST_SIGN = sign
+        return _GLOBAL_SUGGEST_KEYS
     except Exception:
         return ()
+
+
+def _get_global_suggest_keys():
+    return _GLOBAL_SUGGEST_KEYS if _GLOBAL_SUGGEST_KEYS is not None else _build_suggest_keys()
+
+
+def warmup_suggestions_async(delay=5.0):
+    """后台预热整句听写联想索引，避免首个联想请求干等十几秒。"""
+    def _warm():
+        try:
+            if delay:
+                time.sleep(delay)
+            _build_suggest_keys()
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 def sentence_suggestions(prefix, mode='beginner', limit=6):
@@ -1195,49 +1245,36 @@ def sentence_suggestions(prefix, mode='beginner', limit=6):
     if not clean:
         return []
     limit = max(1, min(int(limit or 6), 8))
+    keys = _get_global_suggest_keys()
+    if not keys:
+        return []
     got, seen = [], set()
-    for row in _get_global_suggestion_rows():
-        forms = [('surface', row['surface'])]
-        # 假名前缀也可查读音；只对匹配到的候选懒算 reading，避免渲染阻塞。
-        if re.fullmatch(r'[\u3040-\u309fー]+', clean):
-            forms.append(('reading', _sentence_reading(row['text'])))
-        for kind, form in forms:
-            if not form or not form.startswith(clean):
-                continue
-            ends = _sentence_boundaries(row['text'])
-            # reading 与 surface 的 token 长度可能不同，按 reading 的字符长度重算边界。
-            if kind == 'reading':
-                parts = (_sentence_answer_profile(row['text']).get('parts') or [])
-                ends, n = [], 0
-                for part in parts:
-                    n += len(part['recommended'])
-                    ends.append(n)
-            boundary = next((x for x in ends if x > len(clean)), None)
-            if boundary is None and len(clean) in ends:
-                idx = ends.index(len(clean))
-                boundary = ends[idx + 1] if idx + 1 < len(ends) else None
-            if boundary is None:
-                continue
-            if mode == 'intermediate' and len(clean) not in ends:
-                continue
-            # 初级：补全当前词；中级：补一个后续词/短语。上限保持“小块联想”。
-            end = min(boundary, len(clean) + 8)
-            value = form[:end]
-            if value == clean or value in seen:
-                continue
-            append = value[len(clean):]
-            if not append:
-                continue
-            partial_word = len(clean) not in ends
-            word_start = max((x for x in ends if x <= len(clean)), default=0)
-            label = form[word_start:end] if partial_word else append
-            key = (value, kind)
-            seen.add(value)
-            got.append({'value': value, 'append': append,
-                        'label': label, 'kind': 'word' if partial_word else 'collocation',
-                        'source': 'full_corpus'})
-            if len(got) >= limit:
-                return got
+    lo = bisect.bisect_left(keys, (clean, -1))
+    for key, word_start in keys[lo:]:
+        if not key.startswith(clean):
+            break
+        # 只处理「前缀正好落在该词块内（含起点）」的键，更短的键由它自己的词块项负责，
+        # 避免 clean 停在更早词块时被补成跨多个词块的长串。
+        if len(clean) < word_start or len(clean) >= len(key):
+            continue
+        partial_word = len(clean) > word_start
+        if mode == 'intermediate' and partial_word:
+            continue
+        # 初级：补全当前词；中级：补一个后续词/短语。上限保持“小块联想”。
+        end = min(len(key), len(clean) + 8)
+        value = key[:end]
+        if value == clean or value in seen:
+            continue
+        append = value[len(clean):]
+        if not append:
+            continue
+        label = key[word_start:end] if partial_word else append
+        seen.add(value)
+        got.append({'value': value, 'append': append,
+                    'label': label, 'kind': 'word' if partial_word else 'collocation',
+                    'source': 'full_corpus'})
+        if len(got) >= limit:
+            break
     return got
 
 

@@ -845,22 +845,15 @@ async function showAbout(){
 .sb-mode.adv{background:#fdf0e8;color:#c26a2d}
 .sb-swapnote{font-size:12.5px;color:#a08c5a;background:#fdf6e8;border-radius:8px;
   padding:5px 10px;margin-top:8px;display:inline-block}
-/* ---------- v24 听力听写：三种渲染明确区分，输入和联想保持低延迟 ---------- */
-.ls-dict-card{margin-top:14px;border-radius:18px;padding:18px;position:relative;overflow:hidden}
-.ls-dict-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent)}
-.ls-dict-card.hard{background:linear-gradient(145deg,#302a35,#4a3440);color:#fff;border-color:#5c4650;box-shadow:0 12px 30px rgba(56,35,45,.18)}
-.ls-dict-card.hard .muted{color:#eadde0}.ls-dict-card.hard textarea,.ls-dict-card.hard input{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.35)}
-.ls-dict-card.medium{background:linear-gradient(145deg,#fffaf0,#f7efda);border-color:#e6d29a}
-.ls-dict-card.beginner{background:linear-gradient(145deg,#f4fbf7,#e5f2eb);border-color:#b6d9c3}
+/* ---------- v24 听力听写：统一简洁卡片，输入和联想保持低延迟 ---------- */
+.ls-dict-card{margin-top:14px;border-radius:16px;padding:18px;position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line)}
+.ls-dict-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent)}
 .ls-dict-input{width:100%;font-size:22px;line-height:1.7;min-height:54px;resize:vertical;margin-top:10px}
 .ls-word-input{min-height:0;height:58px;text-align:center;font-size:27px;letter-spacing:.08em}
 .ls-dict-suggestions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;min-height:0}
-.ls-suggest{border:1px solid var(--gold);background:#fffdf4;border-radius:10px;padding:7px 12px;cursor:pointer;font-size:16px;color:#6d5a2c;transition:.12s}
+.ls-suggest{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:7px 12px;cursor:pointer;font-size:16px;color:var(--ink);transition:.12s}
 .ls-suggest:hover{transform:translateY(-1px);border-color:var(--accent);color:var(--accent);box-shadow:0 3px 10px rgba(0,0,0,.08)}
-.ls-dict-card.beginner .ls-suggest{border-color:#91bea1;background:#fff}
-.ls-dict-card.hard .ls-suggest{border-color:#bf8d9b;background:rgba(255,255,255,.12);color:#fff}
-.ls-correction{border-radius:10px;padding:9px 12px;margin-top:10px;background:#fdf0e8;color:#9e4e2b;line-height:1.7}
-.ls-correction.ok{background:#e7f2ec;color:#276446}
+.ls-correction{border-radius:10px;padding:9px 12px;margin-top:10px;background:var(--card);color:var(--ink);border:1px solid var(--line);line-height:1.7}
 .ls-options-confusion{border-left:4px solid var(--gold);padding-left:10px}
 .ls-arrange-card{margin-top:14px;border:1px solid #d7c5e8;border-radius:18px;padding:16px;background:linear-gradient(145deg,#fbf8ff,#f0e9fa)}
 .ls-arrange-card .ls-arrange-answer,.ls-arrange-card .ls-arrange-bank{min-height:66px;border:2px dashed #cbb5e0;border-radius:14px;padding:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
@@ -4058,34 +4051,30 @@ function lsRender(){
       <span style="flex:1"></span><span class="muted" style="font-size:12.5px">得分 ${lsQuiz.ok}</span>
     </div>
     <div class="progressbar" style="margin-top:10px"><i style="width:${Math.round(100*lsQuiz.i/n)}%"></i></div>`;
-  const hint={contrast:'四个选项的实词完全相同，只有语法关系不同——必须听懂整句才能选对',
-    meaning:'听录音，选出正确的中文/英文释义',
-    discriminate:'听录音，选出与录音完全一致的那句话',
-    cloze:'同时听清两个空的接续/词汇与句尾极性，选出正确组合',
-    word_dictation:'听一个日语词，把它完整写成纯汉字。不能写假名、罗马字或注音。',
-    kanji_choice:'听一个词，从高混淆度的汉字词选项中选出正确表记。',
-    sentence_dictation:'听完整句并把整句打出来。判定时忽略标点，汉字、假名或混合写法均可。',
-    sentence_arrange:'听完整句，再把下面打散的全部词块按原句顺序组回去；必须用完全部词块。'}[q.qtype]||'听录音后作答';
+  const hint={contrast:'听清整句，选出正确的那项',
+    meaning:'听录音，选出正确释义',
+    discriminate:'听录音，选出与录音一致的那句',
+    cloze:'听清两个空，选出正确组合',
+    word_dictation:'听一个词，写成纯汉字',
+    kanji_choice:'听一个词，选出正确表记',
+    sentence_dictation:'听完整句并打出来',
+    sentence_arrange:'听完整句，按原顺序组回全部词块'}[q.qtype]||'听录音后作答';
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   let task='';
   if(q.qtype==='sentence_arrange'){
-    task=`<div class="ls-arrange-card"><span class="ls-type-badge">听后组句 · 必须用完全部词块</span>
+    task=`<div class="ls-arrange-card"><span class="ls-type-badge">听后组句</span>
       <div id="lsArrangeAnswer" class="ls-arrange-answer jp"><span class="ph">播放后点击词块，按听到的顺序组成完整句子…</span></div>
       <div id="lsArrangeBank" class="ls-arrange-bank jp">
         ${q.tiles.map((t,k)=>`<button class="ls-arrange-tile" id="lsArrangeTile${k}" onclick="lsArrangeTileTap(${k})" disabled>${esc(t.s)}</button>`).join('')}
-      </div>
-      <div class="muted" style="margin-top:7px">只能使用每个词块一次；只拼出半句、漏词或顺序错误都不算完成。</div></div>`;
+      </div></div>`;
   }else if(q.qtype==='word_dictation'){
-    task=`<div class="ls-dict-card hard"><span class="ls-type-badge">纯汉字 · 无注音</span>
-      <input id="lsDictInput" class="ls-dict-input ls-word-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="听后输入汉字" oninput="lsDictationInput()">
-      <div class="muted" style="margin-top:7px">只接受原词的纯汉字表记；输入假名即使读音正确也不算本题答案。</div></div>`;
+    task=`<div class="ls-dict-card"><span class="ls-type-badge">纯汉字</span>
+      <input id="lsDictInput" class="ls-dict-input ls-word-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="听后输入汉字" oninput="lsDictationInput()"></div>`;
   }else if(q.qtype==='sentence_dictation'){
     const mode=q.dictation_mode||'advanced';
-    const modeLabel={advanced:'最高难度 · 无提示',intermediate:'中级 · 完整词后联想',beginner:'初级 · 部分词也联想'}[mode]||mode;
-    const cardClass=mode==='advanced'?'hard':mode==='intermediate'?'medium':'beginner';
-    task=`<div class="ls-dict-card ${cardClass}"><span class="ls-type-badge">${modeLabel}</span>
-      <textarea id="lsDictInput" class="ls-dict-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="听后输入完整日语句子（标点可省略）" oninput="lsDictationInput()"></textarea>
-      <div class="muted" style="margin-top:7px">${mode==='advanced'?'本题不显示联想，完整写出整句。':mode==='intermediate'?'打完一个完整词后，系统从全语料库给出下一小块搭配。':'哪怕只写出当前词的一部分，也会给完整词候选；词完成后继续给搭配。'}</div>
+    const modeLabel={advanced:'高级',intermediate:'中级',beginner:'初级'}[mode]||mode;
+    task=`<div class="ls-dict-card"><span class="ls-type-badge">${modeLabel}</span>
+      <textarea id="lsDictInput" class="ls-dict-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="听后输入完整日语句子" oninput="lsDictationInput()"></textarea>
       <div id="lsSuggestions" class="ls-dict-suggestions"></div></div>`;
   }
   const hasOptions=q.qtype==='contrast'||q.qtype==='meaning'||q.qtype==='discriminate'||q.qtype==='cloze'||q.qtype==='kanji_choice';
@@ -4094,7 +4083,7 @@ function lsRender(){
     </div>`:'';
   const answerTask=task||options;
   v.innerHTML=`<div class="card quiz-wrap">${top}
-    <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}</div>
+    <div style="margin-top:16px;font-size:16px"><b>${hint}</b>${q.max_plays?`<span class="muted" style="margin-left:8px;font-size:12.5px">（最多重播 ${q.max_plays} 次）</span>`:''}<a class="muted" style="margin-left:10px;font-size:12.5px;cursor:pointer" onclick="lsHelpOpen()">ⓘ 规则</a></div>
     ${clozePrompt}${answerTask}
     <div style="margin-top:14px;text-align:center">
       <button class="btn primary" id="lsPlayBtn" style="font-size:18px;padding:14px 28px" onclick="lsPlayTap()">▶️ 播放录音</button>
@@ -4104,6 +4093,18 @@ function lsRender(){
     <div class="quiz-nav"><button class="btn primary" id="lsCheckBtn" onclick="lsCheck()" disabled>检查</button></div>
     <div id="lsQuizExp"></div>
   </div>`;
+}
+function lsHelpOpen(){
+  bkModal(`
+    <div class="row" style="justify-content:space-between"><b>🎧 听力规则</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
+    <div style="margin-top:10px;line-height:1.9;font-size:13.5px;color:var(--ink)">
+      <b>听写完整句</b>（判定忽略标点，汉字/假名/混合写法均可）分三种模式：<br>
+      · <b>高级</b>：不显示联想，完整写出整句；<br>
+      · <b>中级</b>：打完一个完整词后，从全语料库给下一小块搭配；<br>
+      · <b>初级</b>：写出当前词的一部分也给完整词候选，词完成后继续给搭配。<br><br>
+      <b>听写纯汉字词</b>：只接受原词的纯汉字表记，写假名即使读音正确也不算答案。<br><br>
+      <b>听后组句</b>：必须用完全部词块，并按录音原顺序组回；只拼半句、漏词或顺序错误都不算完成。
+    </div>`);
 }
 function lsSetCheckState(){
   const b=$('#lsCheckBtn'),q=lsQuiz&&lsQuiz.qs[lsQuiz.i],input=$('#lsDictInput');
