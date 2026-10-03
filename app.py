@@ -1304,6 +1304,29 @@ def api_listening_answer():
     return jsonify(listening.record_results(d.get('results') or []))
 
 
+@app.route('/api/listening/grade', methods=['POST'])
+def api_listening_grade():
+    """听写题统一判卷：标点忽略、表记/推荐读音/已证实读音由后端判定。"""
+    d = request.json or {}
+    return jsonify(listening.grade_response(d.get('question') or {}, d.get('response') or ''))
+
+
+@app.route('/api/listening/arrange-check', methods=['POST'])
+def api_listening_arrange_check():
+    """听后组句判卷：必须使用全部词块并按完整合法语序排列。"""
+    d = request.json or {}
+    return jsonify(listening.grade_arrangement(d.get('question') or {}, d.get('order') or []))
+
+
+@app.route('/api/listening/suggestions', methods=['POST'])
+def api_listening_suggestions():
+    """整句听写的短联想；索引来自全语料库，前端负责 debounce。"""
+    d = request.json or {}
+    mode = d.get('mode') if d.get('mode') in ('advanced', 'intermediate', 'beginner') else 'beginner'
+    return jsonify({'ok': True, 'suggestions': listening.sentence_suggestions(
+        d.get('prefix') or '', mode, d.get('limit', 6))})
+
+
 @app.route('/api/listening/stats')
 def api_listening_stats():
     days = _num(request.args.get('days'), 14, 1, 90)

@@ -2,7 +2,7 @@
 """听力练习（listening.py）专项测试
 ================================================================
 覆盖：
-  1. 配置读写：白名单 + 边界修正
+  1. 配置读写：白名单 + 边界修正 + 新增三种听写/辨字题型默认权重
   2. meaning 题：4 选项语言一致（绝不出现"一眼认出哪个是中文"的伪劣题）、
      干扰项均为真实译文、答案在选项中
   3. discriminate 题：4 个选项均为真实语料完整句、互不相同，
@@ -65,9 +65,15 @@ random.seed(20260926)
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
 check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
-      and cfg['types'].get('contrast') == 40 and cfg['types'].get('cloze') == 30
-      and cfg['types'].get('discriminate') == 10 and cfg['meaning_difficulty'] == 'advanced',
-      f'默认配置以译文最小对立为主力、听音辨句占比最低：{cfg}')
+      and cfg['types'].get('contrast') == 15 and cfg['types'].get('cloze') == 5
+      and cfg['types'].get('discriminate') == 0
+      and cfg['types'].get('sentence_dictation') == 25
+      and cfg['types'].get('word_dictation') == 15
+      and cfg['types'].get('kanji_choice') == 15
+      and cfg['types'].get('sentence_arrange') == 20
+      and cfg.get('arrange_max_plays') == 2
+      and cfg['sentence_mode'] == 'mixed' and cfg['meaning_difficulty'] == 'advanced',
+      f'默认配置以听写/辨字为主力、听音辨句为0：{cfg}')
 cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999,
                               'meaning_difficulty': 'bogus', 'bogus_key': 'x'})
 check(cfg2['scope'] == 'book' and cfg2['rate'] == 'slow' and cfg2['count'] == 20
@@ -411,8 +417,9 @@ check(tiny_res['ok'] and len(tiny_res['questions']) == 1,
       f'单句课本成功生成辨句题目：{tiny_res}')
 if tiny_res['questions']:
     tq = tiny_res['questions'][0]
-    check(tq['qtype'] == 'discriminate' and len(tq['options']) == 4 and tq['answer'] == '私は学生です。',
-          f'单句课本选项完整且答案正确：{tq}')
+    tiny_ok = (tq['qtype'] == 'sentence_dictation' and tq['answer'] == '私は学生です。') \
+              or tq['qtype'] in ('word_dictation', 'kanji_choice')
+    check(tiny_ok, f'单句课本应优先生成新增听写/辨字题：{tq}')
 
 print('== 9. API 接口全链路测试 ==')
 import app
