@@ -189,7 +189,7 @@ Tatoeba、Wikimedia 官方 dump 和逐作品确认公版的青空文库作为批
 - `DATABASE.md` — 数据库与 Git 协作指南（备份/合并/发布/Render 数据流）
 - `dbtool.py` — 数据库工具：status / save / merge / pull / publish / verify / setup
 - `db.py` — 数据库层
-- `listening.py` — 🎧 听力练习出题引擎（译文最小对立 / 听后选义 / 听音辨句 / 双空最小对立）
+- `listening.py` — 🎧 听力练习出题引擎（7 种题型：选择、纯汉字词听写、听音选汉字、整句听写；详见 [LISTENING_DESIGN.md](LISTENING_DESIGN.md)）
 - `translation_contrast.py` — 译文语法改写引擎：把一条真实译文改写成四个只差语法关系的选项
 - `static/index.html` — 前端界面
 - `kanji.db` — 本地数据（**必须提交，Render 靠它拿初始数据**）

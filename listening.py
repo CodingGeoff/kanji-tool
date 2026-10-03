@@ -11,26 +11,27 @@
 语义理解的听力理解题（篇章、推论、话者意图）见 ai_item_writer.py ——
 那条路径显式经过 LLM 起草 + 人工复核，绝不假装规则引擎能替代理解。
 
-本模块提供四种自动题型：
+本模块提供七种自动题型（另有 AI 人工复核题草稿箱）：
 
-  1. contrast      译文最小对立（默认主力题型）：四个选项是**同一条译文**的
-                   语法改写，实词一个不变，只在「谁对谁做／做没做／已经做还是
-                   还没做／因为还是虽然／在上面还是在下面」这些语法关系上互相
-                   对立。只听见一个名词无法排除任何一项，必须听懂整句关系。
-                   改写由 translation_contrast.py 完成：每条改写规则都绑定
-                   日文侧的显式形态素/助词证据，凑不齐证据就不出题。
-  2. meaning       听后选义：从 4 个同语言的**真实**译文中选义（干扰项来自
-                   语料里其它句子的译文，共享高信息词时含金量很高，但可遇
-                   不可求）。
-  3. discriminate  听音辨句：从 4 条真实完整语料中辨认原句。注意这一题型
-                   天然偏易——四条日文原句各自带有独有词汇，只要听清其中
-                   一个词就能排除其余三条，因此默认占比最低。
-  4. cloze         双空最小对立：题面同时挖掉一个分句接续/词汇/格成分和一个
-                   时态・极性成分，四个选项是二者的 2×2 组合。错误极性可让
-                   意义完全相反（如「ている」↔「ていない」），词汇项优先
-                   使用同助词+同谓语的语料实证搭配。候选整句全部重新经过
-                   语法门禁；这是规则引擎可安全实现的“细微差别”，不冒充
-                   Python 库能够自动理解任意句子的深层语义。
+  1. contrast      译文最小对立：四个选项是**同一条译文**的语法改写，实词
+                   一个不变，只在施受、极性、时态、方位等关系上对立。
+  2. meaning       听后选义：从 4 个同语言的**真实**译文中选义；高级模式
+                   只接受共享高信息词的同主题硬负例。
+  3. cloze         日文双空最小对立：分句接续/词汇/格成分 × 时态・极性，
+                   四项是 2×2 组合，整句逐项过语法门禁。
+  4. discriminate  听音辨句：从 4 条真实完整日文原句中辨认原句。天然偏易，
+                   默认占比为 0，只有用户主动提高比例才启用。
+  5. word_dictation 听写纯汉字词：音频只朗读一个语料中实际出现的、表面形为
+                   纯汉字的词；答案禁止假名、罗马字和注音。
+  6. kanji_choice 听音选汉字：音频只朗读一个词，从其它真实词条中选字形；
+                   候选优先使用同音、同长度、共享字形的硬混淆，不机械改造词。
+  7. sentence_dictation 听写完整句：不计标点，用户可输入汉字、假名或混合
+                   写法。高级无提示；中级完整词后从全语料库给下一小块搭配；
+                   初级连词的一部分也给完整词候选，并在词完成后继续给搭配。
+
+句子听写的读音判定不是简单字符串比较：日文表记和整句读音都进入候选
+有限状态匹配；furigana 引擎给出的推荐读音、非推荐但确有证据的可能读音
+都可识别。后一种会标成“读音可通，但建议改写”，未知词不猜读音。
 
 难度轴（与组句练习保持同样的两条独立轴哲学）：
   - level：句子选材难度（复用 sentence_builder._sentence_level 的语法
@@ -51,6 +52,7 @@ import json
 import random
 import re
 import traceback
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import date
 from difflib import SequenceMatcher
@@ -72,12 +74,19 @@ DEFAULT_CFG = {
     'level': 'any',              # any | N5..N1 —— 句子选材难度
     'scope': 'corpus',           # corpus | book | mixed | lyric | passage（与组句练习同义）
     'count': 6,
-    # 译文最小对立占最高比重：四个选项共享全部实词，只有语法关系不同，
-    # 「只听见一个词就能排除三项」的应试策略在这种题面前完全失效。
-    # 听音辨句（四条不同日文原句）最容易被局部词汇匹配攻破，默认占比最低。
-    'types': {'contrast': 40, 'meaning': 20, 'discriminate': 10, 'cloze': 30},
-    # advanced 要求译文共享高信息词/短语且句式相近；凑不齐三项就不出该题。
+    # 旧有选择题保留，但把「听音辨句」默认关掉：它只需抓到一个独有词，
+    # 很容易绕过整句听辨。新增三种听写/辨字题默认占主要比重。
+    # 这些是权重而不是必须相加到 100 的百分比，服务端会统一归一化；这样
+    # 老配置只提交四种题型时也能平滑升级，不会丢失新增题型的默认值。
+    'types': {
+        'contrast': 20, 'meaning': 10, 'discriminate': 0, 'cloze': 10,
+        'word_dictation': 15, 'kanji_choice': 15, 'sentence_dictation': 30,
+    },
+    # 译文最小对立要求译文共享高信息词/短语且句式相近；凑不齐三项就不出题。
     'meaning_difficulty': 'advanced',   # standard | advanced
+    # sentence_dictation：advanced=无提示，intermediate=完整词后联想，
+    # beginner=部分词也联想，mixed=三种模式按高级优先随机。
+    'sentence_mode': 'mixed',
     'rate': 'normal',            # slow | slower | normal | fast —— 听力特有难度轴
                                   # （与 /api/tts 的 RATES 命名完全一致，前端直接透传）
     'max_plays': 3,              # 每题最多重播次数，0=不限
@@ -133,18 +142,26 @@ def _sanitize_cfg(cfg):
         cfg['rate'] = 'normal'
     if cfg.get('meaning_difficulty') not in ('standard', 'advanced'):
         cfg['meaning_difficulty'] = 'advanced'
+    if cfg.get('sentence_mode') not in ('advanced', 'intermediate', 'beginner', 'mixed'):
+        cfg['sentence_mode'] = 'mixed'
     cfg['count'] = _to_int(cfg.get('count'), 6, min_val=1, max_val=20)
     cfg['max_plays'] = _to_int(cfg.get('max_plays'), 3, min_val=0, max_val=10)
     cfg['min_len'] = _to_int(cfg.get('min_len'), 6, min_val=4, max_val=40)
     cfg['max_len'] = _to_int(cfg.get('max_len'), 60, min_val=cfg['min_len'], max_val=100)
     t = cfg.get('types') if isinstance(cfg.get('types'), dict) else {}
-    x = _to_int(t.get('contrast'), 40, min_val=0, max_val=1000)
-    m = _to_int(t.get('meaning'), 20, min_val=0, max_val=1000)
-    d = _to_int(t.get('discriminate'), 10, min_val=0, max_val=1000)
-    c = _to_int(t.get('cloze'), 30, min_val=0, max_val=1000)
-    if x + m + d + c == 0:
-        x, m, d, c = 40, 20, 10, 30
-    cfg['types'] = {'contrast': x, 'meaning': m, 'discriminate': d, 'cloze': c}
+    x = _to_int(t.get('contrast'), DEFAULT_CFG['types']['contrast'], min_val=0, max_val=1000)
+    m = _to_int(t.get('meaning'), DEFAULT_CFG['types']['meaning'], min_val=0, max_val=1000)
+    d = _to_int(t.get('discriminate'), DEFAULT_CFG['types']['discriminate'], min_val=0, max_val=1000)
+    c = _to_int(t.get('cloze'), DEFAULT_CFG['types']['cloze'], min_val=0, max_val=1000)
+    w = _to_int(t.get('word_dictation'), DEFAULT_CFG['types']['word_dictation'], min_val=0, max_val=1000)
+    k = _to_int(t.get('kanji_choice'), DEFAULT_CFG['types']['kanji_choice'], min_val=0, max_val=1000)
+    s = _to_int(t.get('sentence_dictation'), DEFAULT_CFG['types']['sentence_dictation'], min_val=0, max_val=1000)
+    if x + m + d + c + w + k + s == 0:
+        x, m, d, c, w, k, s = (DEFAULT_CFG['types'][name]
+                                for name in ('contrast', 'meaning', 'discriminate', 'cloze',
+                                              'word_dictation', 'kanji_choice', 'sentence_dictation'))
+    cfg['types'] = {'contrast': x, 'meaning': m, 'discriminate': d, 'cloze': c,
+                    'word_dictation': w, 'kanji_choice': k, 'sentence_dictation': s}
     cfg['enabled'] = bool(cfg.get('enabled', True))
     return cfg
 
@@ -791,6 +808,425 @@ def _build_cloze_q(row):
     }
 
 
+
+# ================================================================
+# 新增题型：纯汉字词、听音选汉字、整句听写
+# ================================================================
+_KANJI_RE = re.compile(r'^[\u3400-\u9fff々〆ヶ]+$')
+_GLOBAL_WORD_BANK = None
+_GLOBAL_WORD_BANK_SIGN = None
+_GLOBAL_SUGGESTION_ROWS = None
+_GLOBAL_SUGGESTION_SIGN = None
+
+
+def _is_pure_kanji(value):
+    """纯汉字表记：不接受假名、罗马字、数字或注音符号。"""
+    return bool(_KANJI_RE.fullmatch((value or '').strip()))
+
+
+@lru_cache(maxsize=8192)
+def _kanji_word_units(text):
+    """从一句话抽取语料实际出现的纯汉字词和推荐读音。
+
+    furigana.annotate() 可能把一个复合词拆成多个带 ruby 的片段，因此按 w/wr
+    合并并去重；绝不凭空把假名词转换成汉字，保证听写题的答案确实是原文表记。
+    """
+    text = (text or '').strip()
+    if not text:
+        return ()
+    try:
+        tokens = furigana.annotate(text)
+    except Exception:
+        tokens = []
+    out, seen = [], set()
+    for tok in tokens:
+        surface = (tok.get('w') or tok.get('s') or '').strip()
+        if not _is_pure_kanji(surface):
+            continue
+        reading = (tok.get('wr') or tok.get('r') or '').strip()
+        if not reading:
+            continue
+        key = (surface, reading)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({'word': surface, 'reading': reading})
+    # 某些未收录词的词典仲裁不会带 w；用形态素表记作安全的保守兜底。
+    if not out:
+        try:
+            for tok in sb._tag(text):
+                surface = tok.get('s', '')
+                if not _is_pure_kanji(surface) or len(surface) > 8:
+                    continue
+                one = furigana.annotate(surface)
+                reading = ''.join(x.get('r') or furigana.kata_to_hira(x.get('s') or '')
+                                  for x in one).strip()
+                if reading and (surface, reading) not in seen:
+                    seen.add((surface, reading))
+                    out.append({'word': surface, 'reading': reading})
+        except Exception:
+            pass
+    return tuple(out)
+
+
+def _word_bank_from_rows(rows):
+    out, seen = [], set()
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        text = (row.get('text') or '').strip()
+        for unit in _kanji_word_units(text):
+            key = (unit['word'], unit['reading'])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({**unit, 'text': text, 'sid': row.get('sid'),
+                        'source': row.get('source'), 'origin': _origin(row)})
+    return out
+
+
+def _get_global_word_bank():
+    """全语料库纯汉字词索引；按 count/max(id) 换代，避免每道题重复分词。"""
+    global _GLOBAL_WORD_BANK, _GLOBAL_WORD_BANK_SIGN
+    try:
+        with db.get_conn() as c:
+            sign = (str(db.DB_PATH), *tuple(c.execute(
+                'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
+        if _GLOBAL_WORD_BANK is not None and _GLOBAL_WORD_BANK_SIGN == sign:
+            return _GLOBAL_WORD_BANK
+        # kanji_index 已在录入语料时建立，直接取它比逐句重新跑 ruby 快一个数量级；
+        # 只把纯汉字且有读音的真实词放入候选，旧库缺索引时再退回逐句提取。
+        with db.get_conn() as c:
+            indexed = [dict(r) for r in c.execute(
+                'SELECT DISTINCT ki.word word, ki.word_reading reading, '
+                's.text text, s.id sid, s.source source '
+                'FROM kanji_index ki JOIN sentences s ON s.id=ki.sentence_id '
+                "WHERE ki.word_reading IS NOT NULL AND trim(ki.word_reading)<>'' "
+                'LIMIT 60000').fetchall()]
+        _GLOBAL_WORD_BANK = [r for r in indexed if _is_pure_kanji(r.get('word'))
+                             and 1 <= len(r.get('word') or '') <= 8
+                             and r.get('reading')]
+        if not _GLOBAL_WORD_BANK:
+            with db.get_conn() as c:
+                rows = [dict(r) for r in c.execute(
+                    'SELECT id sid, text, source FROM sentences '
+                    'WHERE length(text) BETWEEN 4 AND 120 LIMIT 30000').fetchall()]
+            _GLOBAL_WORD_BANK = _word_bank_from_rows(rows)
+        _GLOBAL_WORD_BANK_SIGN = sign
+        return _GLOBAL_WORD_BANK
+    except Exception:
+        return []
+
+
+def _row_word_candidates(row):
+    units = list(_kanji_word_units((row or {}).get('text') or ''))
+    # 复合词更适合听辨；只有一句里没有复合纯汉字词时才放开单字。
+    long_units = [x for x in units if len(x['word']) >= 2]
+    return long_units or units
+
+
+def _build_word_dictation_q(row, word_bank=None):
+    candidates = _row_word_candidates(row)
+    if not candidates:
+        return None
+    unit = random.choice(candidates)
+    return {
+        'qtype': 'word_dictation', 'text': (row.get('text') or '').strip(),
+        'audio_text': unit['word'], 'answer': unit['word'],
+        'target_word': unit['word'], 'reading': unit['reading'],
+        'sid': row.get('sid'), 'source': row.get('source'), 'origin': _origin(row),
+        'distractor_source': 'attested_pure_kanji_word',
+        'input_rule': 'pure_kanji_only',
+    }
+
+
+def _build_kanji_choice_q(row, word_bank=None):
+    candidates = _row_word_candidates(row)
+    if not candidates:
+        return None
+    unit = random.choice(candidates)
+    bank = word_bank or _get_global_word_bank()
+    target = unit['word']
+    target_reading = furigana.kata_to_hira(unit['reading'])
+    ranked, seen = [], {target}
+    for cand in bank:
+        word = cand.get('word', '')
+        if word in seen or not _is_pure_kanji(word) or not cand.get('reading'):
+            continue
+        if abs(len(word) - len(target)) > 2 or len(word) > 8:
+            continue
+        reading = furigana.kata_to_hira(cand['reading'])
+        surface_sim = SequenceMatcher(None, target, word, autojunk=False).ratio()
+        reading_sim = SequenceMatcher(None, target_reading, reading, autojunk=False).ratio()
+        shared = len(set(target) & set(word)) / max(len(set(target)), 1)
+        same_len = 1.0 if len(word) == len(target) else 0.0
+        # 同音词是最强混淆，其次是同长/共享字形；所有候选必须来自真实语料。
+        score = (0.52 * reading_sim + 0.22 * surface_sim +
+                 0.16 * same_len + 0.10 * shared +
+                 (0.24 if reading == target_reading else 0.0))
+        if score < 0.30:
+            continue
+        seen.add(word)
+        ranked.append((score, word, cand, reading_sim, surface_sim, shared))
+    if len(ranked) < 3:
+        return None
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    # 在高分前 8 个中抽 3 个，既保持高混淆又避免每次永远同一组。
+    pool = ranked[:min(8, len(ranked))]
+    chosen = random.sample(pool, 3) if len(pool) >= 3 else pool[:3]
+    opts = [target] + [x[1] for x in chosen]
+    random.shuffle(opts)
+    audits = []
+    for word in opts:
+        if word == target:
+            audits.append({'option': word, 'is_answer': True,
+                           'reading_similarity': 1.0, 'surface_similarity': 1.0,
+                           'same_length': True, 'shared_kanji': len(set(target))})
+            continue
+        hit = next(x for x in chosen if x[1] == word)
+        audits.append({'option': word, 'is_answer': False,
+                       'reading_similarity': round(hit[3], 3),
+                       'surface_similarity': round(hit[4], 3),
+                       'same_length': len(word) == len(target),
+                       'shared_kanji': len(set(target) & set(word))})
+    return {
+        'qtype': 'kanji_choice', 'text': (row.get('text') or '').strip(),
+        'audio_text': target, 'answer': target, 'target_word': target,
+        'options': opts, 'sid': row.get('sid'), 'source': row.get('source'),
+        'origin': _origin(row), 'reading': unit['reading'],
+        'distractor_source': 'attested_high_confusion_kanji_words',
+        'kanji_option_audit': audits,
+    }
+
+
+@lru_cache(maxsize=8192)
+def _sentence_answer_profile(text):
+    """整句表记/读音的有限状态匹配材料。"""
+    text = (text or '').strip()
+    try:
+        tokens = furigana.annotate(text)
+    except Exception:
+        tokens = []
+    parts = []
+    for tok in tokens:
+        surface = tok.get('s') or ''
+        if not surface or all(unicodedata.category(ch).startswith(('P', 'S'))
+                              or ch.isspace() for ch in surface):
+            continue
+        reading = tok.get('r') or ''
+        if not reading:
+            reading = furigana.kata_to_hira(surface)
+        alternatives = [reading]
+        alternatives.extend(tok.get('alt') or [])
+        # furigana 已把「わたし/わたくし」「にほん/にっぽん」等语体变体
+        # 归为等价读音，但为了判卷仍需把它们列为“可识别、需修正”的候选。
+        for pair in getattr(furigana, '_EQUIV_PAIRS', ()):
+            if reading in pair:
+                alternatives.extend(x for x in pair if x != reading)
+        # token.alt/等价表是其它实证读法；过滤脏表面形，避免“猜读音”。
+        alternatives = [furigana.kata_to_hira(x) for x in alternatives
+                        if x and re.fullmatch(r'[\u3040-\u309fー]+', x)]
+        parts.append({'surface': _normalize_jp(surface),
+                      'recommended': _normalize_jp(reading),
+                      'alternatives': sorted(set(alternatives))})
+    surface = _normalize_jp(text)
+    reading = ''.join(p['recommended'] for p in parts)
+    return {'surface': surface, 'reading': reading, 'parts': parts}
+
+
+def _normalize_jp(value):
+    """NFKC、片假名转平假名，并忽略标点/空格；不删除汉字或长音符。"""
+    value = unicodedata.normalize('NFKC', str(value or ''))
+    out = []
+    for ch in value:
+        if ch.isspace() or unicodedata.category(ch).startswith(('P', 'S')):
+            continue
+        code = ord(ch)
+        if 0x30A1 <= code <= 0x30F6:
+            ch = chr(code - 0x60)
+        out.append(ch)
+    return ''.join(out)
+
+
+def _match_sentence_input(profile, response):
+    """返回 (匹配, 是否使用非推荐可能读音)，按 token 做有限状态匹配。"""
+    value = _normalize_jp(response)
+    if not value:
+        return False, False
+    states = {(0, False)}
+    for part in profile.get('parts') or ():
+        alternatives = [(part['surface'], False),
+                        (part['recommended'], False)]
+        alternatives += [(x, x != part['recommended'])
+                         for x in part.get('alternatives') or ()]
+        next_states = set()
+        for pos, alt_used in states:
+            for option, this_alt in alternatives:
+                option = _normalize_jp(option)
+                if option and value.startswith(option, pos):
+                    next_states.add((pos + len(option), alt_used or this_alt))
+        states = next_states
+        if not states:
+            return False, False
+        if len(states) > 512:
+            states = set(sorted(states)[:512])
+    finals = [(pos, alt) for pos, alt in states if pos == len(value)]
+    if not finals:
+        return False, False
+    return True, any(alt for _, alt in finals)
+
+
+def grade_sentence_dictation(expected, response):
+    expected = (expected or '').strip()
+    profile = _sentence_answer_profile(expected)
+    ok, alternate = _match_sentence_input(profile, response)
+    return {
+        'ok': ok, 'alternate_reading': bool(ok and alternate),
+        'needs_correction': bool(ok and alternate),
+        'correction': expected if ok and alternate else '',
+        'answer': expected,
+        'answer_reading': profile.get('reading', ''),
+        'normalized_input': _normalize_jp(response),
+    }
+
+
+def grade_response(question, response):
+    """统一服务端判卷；前端可以即时渲染，服务端仍是唯一规则来源。"""
+    q = question if isinstance(question, dict) else {}
+    response = str(response or '')
+    qtype = q.get('qtype')
+    if qtype == 'word_dictation':
+        answer = str(q.get('answer') or q.get('target_word') or '')
+        value = response.strip()
+        ok = _is_pure_kanji(value) and value == answer
+        return {'ok': ok, 'answer': answer, 'response': value,
+                'needs_correction': bool(ok is False and value),
+                'correction': answer if not ok else ''}
+    if qtype == 'kanji_choice':
+        answer = str(q.get('answer') or '')
+        return {'ok': response == answer, 'answer': answer, 'response': response}
+    if qtype == 'sentence_dictation':
+        return grade_sentence_dictation(q.get('answer') or q.get('text') or '', response)
+    answer = q.get('answer')
+    return {'ok': response == answer, 'answer': answer, 'response': response}
+
+
+@lru_cache(maxsize=8192)
+def _sentence_reading(text):
+    profile = _sentence_answer_profile(text)
+    return profile.get('reading', '')
+
+
+@lru_cache(maxsize=8192)
+def _sentence_boundaries(text):
+    """以形态素/ruby token 为边界，供联想提示只返回一小块。"""
+    try:
+        tokens = furigana.annotate(text)
+    except Exception:
+        tokens = []
+    ends, n = [], 0
+    for tok in tokens:
+        s = _normalize_jp(tok.get('s') or '')
+        if not s:
+            continue
+        n += len(s)
+        if not ends or ends[-1] != n:
+            ends.append(n)
+    return tuple(ends)
+
+
+def _get_global_suggestion_rows():
+    global _GLOBAL_SUGGESTION_ROWS, _GLOBAL_SUGGESTION_SIGN
+    try:
+        with db.get_conn() as c:
+            sign = (str(db.DB_PATH), *tuple(c.execute(
+                'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
+        if _GLOBAL_SUGGESTION_ROWS is not None and _GLOBAL_SUGGESTION_SIGN == sign:
+            return _GLOBAL_SUGGESTION_ROWS
+        with db.get_conn() as c:
+            raw = [r[0] for r in c.execute(
+                'SELECT text FROM sentences WHERE length(text) BETWEEN 4 AND 120 '
+                'ORDER BY id DESC LIMIT 30000').fetchall()]
+        _GLOBAL_SUGGESTION_ROWS = tuple(dict(text=x, surface=_normalize_jp(x)) for x in raw if x)
+        _GLOBAL_SUGGESTION_SIGN = sign
+        return _GLOBAL_SUGGESTION_ROWS
+    except Exception:
+        return ()
+
+
+def sentence_suggestions(prefix, mode='beginner', limit=6):
+    """从全语料库给整句听写联想；返回短小可直接填入的 value，不返回长句答案。"""
+    if mode == 'advanced':
+        return []
+    clean = _normalize_jp(prefix)
+    if not clean:
+        return []
+    limit = max(1, min(int(limit or 6), 8))
+    got, seen = [], set()
+    for row in _get_global_suggestion_rows():
+        forms = [('surface', row['surface'])]
+        # 假名前缀也可查读音；只对匹配到的候选懒算 reading，避免渲染阻塞。
+        if re.fullmatch(r'[\u3040-\u309fー]+', clean):
+            forms.append(('reading', _sentence_reading(row['text'])))
+        for kind, form in forms:
+            if not form or not form.startswith(clean):
+                continue
+            ends = _sentence_boundaries(row['text'])
+            # reading 与 surface 的 token 长度可能不同，按 reading 的字符长度重算边界。
+            if kind == 'reading':
+                parts = (_sentence_answer_profile(row['text']).get('parts') or [])
+                ends, n = [], 0
+                for part in parts:
+                    n += len(part['recommended'])
+                    ends.append(n)
+            boundary = next((x for x in ends if x > len(clean)), None)
+            if boundary is None and len(clean) in ends:
+                idx = ends.index(len(clean))
+                boundary = ends[idx + 1] if idx + 1 < len(ends) else None
+            if boundary is None:
+                continue
+            if mode == 'intermediate' and len(clean) not in ends:
+                continue
+            # 初级：补全当前词；中级：补一个后续词/短语。上限保持“小块联想”。
+            end = min(boundary, len(clean) + 8)
+            value = form[:end]
+            if value == clean or value in seen:
+                continue
+            append = value[len(clean):]
+            if not append:
+                continue
+            partial_word = len(clean) not in ends
+            word_start = max((x for x in ends if x <= len(clean)), default=0)
+            label = form[word_start:end] if partial_word else append
+            key = (value, kind)
+            seen.add(value)
+            got.append({'value': value, 'append': append,
+                        'label': label, 'kind': 'word' if partial_word else 'collocation',
+                        'source': 'full_corpus'})
+            if len(got) >= limit:
+                return got
+    return got
+
+
+def _build_sentence_dictation_q(row, mode='mixed'):
+    text = (row.get('text') or '').strip()
+    if not _sound_sentence(text) or len(_normalize_jp(text)) < 6:
+        return None
+    if mode == 'mixed':
+        mode = random.choices(('advanced', 'intermediate', 'beginner'), weights=(45, 35, 20), k=1)[0]
+    profile = _sentence_answer_profile(text)
+    if not profile.get('parts') or not profile.get('reading'):
+        return None
+    return {
+        'qtype': 'sentence_dictation', 'text': text, 'audio_text': text,
+        'answer': text, 'dictation_mode': mode,
+        'reading': profile['reading'], 'reading_tokens': profile['parts'],
+        'sid': row.get('sid'), 'source': row.get('source'), 'origin': _origin(row),
+        'distractor_source': 'attested_sentence_with_pronunciation_fsm',
+        'ignore_punctuation': True,
+    }
+
+
 def _origin(row):
     if row.get('source') == 'lyric':
         return f"🎵 《{row.get('song_title') or '歌词'}》"
@@ -871,11 +1307,18 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
         rows = valid_rows
 
     t = cfg['types']
-    kinds = ('contrast', 'meaning', 'discriminate', 'cloze')
-    total_weight = sum(t[k] for k in kinds)
-    raw_targets = {k: count * t[k] / total_weight for k in kinds}
+    kinds = ('contrast', 'meaning', 'discriminate', 'cloze',
+             'word_dictation', 'kanji_choice', 'sentence_dictation')
+    # 0% 是明确关闭，不把禁用题型当作“凑不满时的兜底”；否则用户把听音辨句
+    # 调成 0 后，严格配额失败时它仍会悄悄回来，违背比例设置。
+    active_kinds = tuple(k for k in kinds if t.get(k, 0) > 0)
+    total_weight = sum(t[k] for k in active_kinds)
+    if not active_kinds or total_weight <= 0:
+        active_kinds = ('sentence_dictation',)
+        total_weight = 1
+    raw_targets = {k: count * t.get(k, 0) / total_weight for k in kinds}
     targets = {k: int(raw_targets[k]) for k in kinds}
-    for k in sorted(kinds, key=lambda x: raw_targets[x] - targets[x], reverse=True):
+    for k in sorted(active_kinds, key=lambda x: raw_targets[x] - targets[x], reverse=True):
         if sum(targets.values()) >= count:
             break
         targets[k] += 1
@@ -886,6 +1329,13 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
         translation_pool = _expanded_translation_pool(scope, ids, translation_pool)
     meaning_ctx = _meaning_search_context(translation_pool) if translation_pool else _get_global_translation_index()
     sentence_pool = rows
+    word_bank = _word_bank_from_rows(rows)
+    # 选项混淆需要跨句检索。题干仍严格来自 scope，只有干扰词从全语料索引补足。
+    global_words = _get_global_word_bank()
+    seen_word_keys = {(x['word'], x['reading']) for x in word_bank}
+    word_bank.extend(x for x in global_words
+                     if (x['word'], x['reading']) not in seen_word_keys)
+    sentence_mode = cfg.get('sentence_mode', 'mixed')
 
     contrast_floor = ['hard']          # 先只收「必须听句子中段」的对立题
 
@@ -895,6 +1345,9 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
             row, translation_pool, meaning_difficulty, meaning_ctx),
         'discriminate': lambda row: _build_discriminate_q(row, sentence_pool),
         'cloze': _build_cloze_q,
+        'word_dictation': lambda row: _build_word_dictation_q(row, word_bank),
+        'kanji_choice': lambda row: _build_kanji_choice_q(row, word_bank),
+        'sentence_dictation': lambda row: _build_sentence_dictation_q(row, sentence_mode),
     }
 
     questions, used = [], set()
@@ -921,7 +1374,8 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
             lv, _ = sb._sentence_level(text)
             if want and want != 'any' and lv != want:
                 continue
-            order = sorted(kinds, key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
+            order = sorted(active_kinds,
+                           key=lambda k: (targets[k] - made[k], t[k]), reverse=True)
             if strict_mix:
                 order = [k for k in order if targets[k] - made[k] > 0]
             got = None
@@ -965,10 +1419,12 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
         q['qid'] = f'l{i}'
         q['rate'] = rate
         q['max_plays'] = cfg['max_plays']
+        q.setdefault('audio_text', q.get('text', ''))
     return {'ok': True, 'level': level, 'scope': scope, 'book_ids': ids,
             'scope_auto_all': scope_auto_all, 'scope_note': scope_note,
             'rate': rate, 'max_plays': cfg['max_plays'],
-            'meaning_difficulty': meaning_difficulty,
+            'meaning_difficulty': meaning_difficulty, 'sentence_mode': sentence_mode,
+            'type_weights': dict(t),
             'count': len(questions), 'questions': questions,
             'level_relaxed': relax_note, 'short': len(questions) < count}
 
