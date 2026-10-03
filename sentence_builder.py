@@ -334,6 +334,25 @@ def _is_adverbial(c):
         return all(t['p1'] in ('副詞', '助詞') for t in toks)
     if h['p1'] == '名詞' and h['p3'] == '副詞可能' and len(toks) == 1:
         return True
+    # 时间/数量状语短语（多 token），整块仅含名词/助词：
+    #  a) 末尾为副词可能名词，且满足：含数量强调(も) 或 全部由副词可能名词构成
+    #     （「明日の朝」「昨日の夜」「来週の月曜日」等纯时间短语）；
+    #  b) 含数詞（「何時間もの間」「三時間」「二日」「五回」等数量短语，
+    #     时间单位名词 p3 未必副詞可能）。
+    # 属格名词短语（私の本 / 学校の前）因含非副词可能普通名词，不命中（保守不误判）。
+    if (len(toks) >= 2
+            and all(t['p1'] in ('名詞', '助詞') for t in toks)
+            and ((toks[-1]['p1'] == '名詞' and toks[-1]['p3'] == '副詞可能'
+                  and (any(t['p1'] == '助詞' and t['s'] == 'も' for t in toks)
+                       or all(t['p3'] == '副詞可能' for t in toks if t['p1'] == '名詞')))
+                 or any(t['p1'] == '名詞' and t['p2'] == '数詞' for t in toks))):
+        return True
+    # 連体修飾 + 副詞可能時間/数量名詞：「長い間」「古い時」等时间状语
+    if (len(toks) >= 2
+            and toks[-1]['p1'] == '名詞' and toks[-1]['p3'] == '副詞可能'
+            and all(t['p1'] in ('名詞', '助詞', '形容詞') for t in toks[:-1])
+            and any(t['p1'] == '形容詞' for t in toks[:-1])):
+        return True
     if h['p1'] == '形容詞' and h['cf'].startswith('連用形') and len(toks) == 1:
         return True
     # 形状词的副词形：静かに／このように。UniDic 将「に」分析成
