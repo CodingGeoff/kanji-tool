@@ -4,4 +4,9 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
+    # v26 性能说明（见 PERFORMANCE.md）：
+    # - 单 worker + 8 线程是对的：全部检索/出题索引都在进程内，多 worker 会成倍复制内存；
+    # - 启动预热由代码内 perf.warmup_allowed() 闸门控制（512MB 实例自动按预算建紧凑索引），
+    #   如需彻底关闭可在 Render 控制台加环境变量 KANJI_WARMUP=off；
+    # - 语料很大时可用 KANJI_INDEX_BUDGET_MB / KANJI_RAG_MAX_DOCS 等变量收紧索引内存。
     startCommand: gunicorn -w 1 --threads 8 --timeout 120 -b 0.0.0.0:$PORT app:app

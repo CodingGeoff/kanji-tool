@@ -136,16 +136,29 @@ def _seed_passages():
 
 
 threading.Thread(target=_seed_passages, daemon=True).start()
-# 句子结构索引后台预热（首次约10秒，之后增量）
-structsim.INDEX.warmup_async()
-# 多源 RAG 联邦索引后台预热：建索引要把两万级语料逐句分词，冷启约 3~4 秒。
-# 过去「按需构建」＝首个用户检索干等这几秒（这就是检索偶发变慢的主因）。
-# 现在延迟 5 秒（让内置篇章补种先落库、避免建好又重建）在后台预热；数据签名校验
-# 仍是唯一真源，预热后数据一变即自动重建，检索结果始终对应最新数据。
-rag.warmup_async(delay=5.0)
-# 整句听写联想索引后台预热：同样要把两万级语料逐句分词建前缀索引（冷启约十几秒），
-# 否则首个联想请求会线性全扫 + 逐句注音，这就是「全库联想太慢」的根因。
-listening.warmup_suggestions_async(delay=5.0)
+
+# ---------- v26 启动预热策略：串行、限内存、可关闭 ----------
+# 旧版三路预热线程（RAG 联邦索引 / 结构相似索引 / 听写联想键）启动即全速
+# 并发开跑：单核云实例上等于三个 CPU 密集任务抢一个核，页面打开的每个请求
+# 都在排队（「打开页面所有功能卡半天」）；每路还各建一套巨型 Python 对象
+# 索引，2.4 万句语料合计 ~1.4GB RSS，Render 512MB 直接 OOM 重启成死循环。
+# v26 之后：
+#   - RAG 联邦索引与 RagIndex 紧凑重写（~60MB）并延后预热；
+#   - 结构相似索引改为首个整句检索时惰性构建（紧凑版，万句 ~11MB）；
+#   - 听写联想索引随「输入联想」功能默认关闭，绝不自动预热；
+#   - 全部预热走 perf.warmup_allowed() 内存闸门，单线程串行、一步一歇。
+def _prewarm_listening():
+    """听力出题的两份全局索引（紧凑词库 + 译文倒排）提前建好，
+    首次「听力练习」不用再等冷构建；听力功能整体关闭时跳过。"""
+    if not listening.listening_cfg().get('enabled', True):
+        return
+    listening._get_global_word_bank()
+    listening._get_global_translation_index()
+
+
+rag.warmup_async(delay=8.0, extra_steps=(
+    ('listening_indexes', _prewarm_listening),
+))
 
 
 
@@ -1323,11 +1336,28 @@ def api_listening_arrange_check():
 
 @app.route('/api/listening/suggestions', methods=['POST'])
 def api_listening_suggestions():
-    """整句听写的短联想；索引来自全语料库，前端负责 debounce。"""
+    """整句听写的短联想；索引来自全语料库，前端负责 debounce。
+
+    v26：输入联想默认关闭（listening.DEFAULT_CFG.suggest_enabled=False）。
+    关闭时本接口恒返回空 + disabled 标记；开启需经 /api/listening/suggest-secret
+    （口令保护）。索引只在开启后才会在后台构建。"""
     d = request.json or {}
+    if not listening.listening_cfg().get('suggest_enabled', False):
+        return jsonify({'ok': True, 'suggestions': [], 'disabled': True})
     mode = d.get('mode') if d.get('mode') in ('advanced', 'intermediate', 'beginner') else 'beginner'
     return jsonify({'ok': True, 'suggestions': listening.sentence_suggestions(
         d.get('prefix') or '', mode, d.get('limit', 6))})
+
+
+@app.route('/api/listening/suggest-secret', methods=['POST'])
+def api_listening_suggest_secret():
+    """听写输入联想的隐藏开关（口令保护；普通 /api/listening/cfg 改不了它）。"""
+    d = request.json or {}
+    enabled = bool(d.get('enabled', True))
+    r = listening.set_suggest_enabled(d.get('secret') or '', enabled)
+    if not r.get('ok'):
+        return jsonify(r), 403
+    return jsonify(r)
 
 
 @app.route('/api/listening/stats')

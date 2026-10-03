@@ -23,6 +23,10 @@
 - **中级**：输入前缀与一个完整词边界重合后，查询全语料库，给后续一小块真实搭配。
 - **初级**：当前词只输入一部分就给完整词候选；补完后继续给一小块搭配。
 - 联想接口使用服务端缓存的语料快照、形态素/ruby 边界和请求 debounce；每次最多返回 6 个短片段，不把整句答案直接塞进提示。
+- **v26：输入联想默认关闭**（对全库建前缀索引是 CPU/内存大户，且对「听写」训练目标有争议）。
+  配置键 `suggest_enabled` 默认 False（存量用户同样生效）；唯一开关是口令保护的
+  `POST /api/listening/suggest-secret`，普通 `/api/listening/cfg` 改不动它；
+  关闭时索引内存立即释放。开启后索引复用入库 tokens 秒级构建，构建期间联想返回空。
 - 可接受答案不是简单的 `string == string`：`/api/listening/grade` 会忽略 Unicode 标点和空格，使用表记、推荐读音、furigana 引擎有证据的可能读音做有限状态匹配。使用非推荐但有效读音时答题算对，同时提示推荐修正；未知读音不猜测。
 
 ## 听后组句
@@ -39,5 +43,6 @@
 - `POST /api/listening/quiz`：生成题目；新增题包含 `audio_text`、`dictation_mode`、`distractor_source` 等审计信息。
 - `POST /api/listening/grade`：服务端判定纯汉字词、汉字选项、整句表记/读音。
 - `POST /api/listening/arrange-check`：服务端判定听后组句，要求完整使用全部词块。
-- `POST /api/listening/suggestions`：整句听写的全语料库短联想。
+- `POST /api/listening/suggestions`：整句听写的全语料库短联想（默认关闭时恒返回空 + `disabled: true`）。
+- `POST /api/listening/suggest-secret`：输入联想的口令开关（v26，唯一启用入口）。
 - `POST /api/listening/answer`：记录题型、级别和模式统计。

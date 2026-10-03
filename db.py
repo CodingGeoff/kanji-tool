@@ -197,6 +197,14 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        -- v26 热路径索引：
+        --  sentences(source)：听力/组卷按题源（如 source='passage'）随机抽样、
+        --    统计 GROUP BY source 都要按来源过滤，以前是无索引全表扫；
+        --  history(type, ts)：/api/stats 的 srs.overview 每次统计「今天复习
+        --    多少个」，以前是对全历史表全表扫描（每次打开首页都跑一遍）。
+        -- 都是幂等的 CREATE INDEX IF NOT EXISTS，对多设备同步的旧库安全。
+        CREATE INDEX IF NOT EXISTS idx_sentences_source ON sentences(source);
+        CREATE INDEX IF NOT EXISTS idx_history_type_ts ON history(type, ts);
         ''')
         c.executescript(BOOK_DDL)
 

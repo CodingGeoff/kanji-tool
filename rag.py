@@ -16,13 +16,16 @@ RAG 多源语义检索引擎 v2（本地、零外部服务依赖）
   5) 精排 rerank：0.40×BM25 + 0.20×Dice + 0.20×词元覆盖 + 0.20×短语包含
   6) 用户指定来源优先级：序位加权（每提前一位 +10%）+ 歌词/课本小额先验
   7) 全局去重（同文同 key 只留一条）→ 每首歌/每本书配额 → 截断输出
-索引全内存；数据签名（句子/歌词/课本变更）不一致时自动同步重建。
+索引全内存（v26 紧凑重写：机器码倒排 + 查询侧累计，内存降一个数量级；
+语料超过内存预算时按最新 N 篇降级，见 perf.doc_cap）；数据签名（句子/歌词/
+课本变更）不一致时自动同步重建。
 RagIndex 保留全库 BM25 检索，供 /api/rag/similar（找相似例句）兼容使用。
 """
 import math
 import re
 import threading
 import time
+from array import array
 
 import db
 import furigana
@@ -175,45 +178,81 @@ def _as_int_list(value):
 
 # ---------------- 紧凑 BM25 倒排索引 ----------------
 class _BM25:
-    """内存 BM25（Okapi，k1/b 可调）；add() 增量写入，search() 返回归一化得分。"""
+    """内存 BM25（Okapi，k1/b 可调）——v26 紧凑重写。
+
+    旧版每个 (token, doc) 挂一条 Python tuple：23k 句 × ~15 词元 =
+    35 万个 tuple ≈ 25MB，加上 doclen dict、payload dict，配合上层
+    MultiIndex 的 wset/dset/nset 三份冗余，2.4 万句就吃掉 ~400MB RSS。
+
+    现在的存储布局（同样的语义，小一个数量级）：
+    - post:  token -> (array('l') 文档号, array('h') 词频)，机器码数组；
+    - doclen: array('l')，文档号即下标；
+    - docs:   列表，文档号即下标（payload 仍是 dict，供出结果用）。
+
+    search() 在同一遍倒排扫描里顺带累计「查询词元命中数」，供上层
+    免二次扫描地算覆盖度（coverage），这是 recall 阶段的免费副产品。
+    """
 
     def __init__(self, k1=1.4, b=0.72):
         self.k1, self.b = k1, b
-        self.post = {}      # token -> [(doc_id, tf)]
-        self.doclen = {}    # doc_id -> token 数
-        self.docs = {}      # doc_id -> payload dict
+        self.post = {}      # token -> (array doc_ids, array tfs)
+        self.doclen = array('l')
+        self.docs = []      # doc_id -> payload dict
         self.N = 0
         self.sumdl = 0
 
-    def add(self, doc_id, tokens, payload):
-        self.docs[doc_id] = payload
+    def add(self, tokens, payload):
+        """写入一篇文档，返回分配的文档号（int）。"""
+        d = len(self.docs)
+        self.docs.append(payload)
         L = max(len(tokens), 1)
-        self.doclen[doc_id] = L
+        self.doclen.append(L)
         self.N += 1
         self.sumdl += L
         tf = {}
         for t in tokens:
             tf[t] = tf.get(t, 0) + 1
         for t, n in tf.items():
-            self.post.setdefault(t, []).append((doc_id, n))
+            slot = self.post.get(t)
+            if slot is None:
+                slot = (array('l'), array('h'))
+                self.post[t] = slot
+            slot[0].append(d)
+            slot[1].append(n)
+        return d
 
-    def search(self, qtokens, topk=50):
-        """返回 [(归一化得分 0..1, doc_id)]，按得分降序。"""
+    def ids_for(self, token):
+        """包含该词元的文档号数组（覆盖度/存在性判断用），无命中返回 None。"""
+        slot = self.post.get(token)
+        return slot[0] if slot else None
+
+    def search(self, qtokens, topk=50, cov=None):
+        """返回 [(归一化得分 0..1, doc_id)]，按得分降序。
+
+        cov 传入 dict 时，同一遍扫描会把「文档命中了几个**不同**查询词元」
+        累计进去（等价于旧版 len(qset & doc_tokens)），调用方免二次扫描。
+        """
         if not qtokens or not self.N:
             return []
         avgdl = self.sumdl / self.N
+        k1, b = self.k1, self.b
+        doclen = self.doclen
         scores = {}
         for t in set(qtokens):
-            plist = self.post.get(t)
-            if not plist:
+            slot = self.post.get(t)
+            if not slot:
                 continue
-            idf = math.log(1 + (self.N - len(plist) + 0.5) / (len(plist) + 0.5))
+            ids, tfs = slot
+            idf = math.log(1 + (self.N - len(ids) + 0.5) / (len(ids) + 0.5))
             if idf <= 0:
                 continue
-            for doc_id, tf in plist:
-                L = self.doclen[doc_id]
-                scores[doc_id] = scores.get(doc_id, 0.0) + \
-                    idf * tf * (self.k1 + 1) / (tf + self.k1 * (1 - self.b + self.b * L / avgdl))
+            if cov is not None:
+                for d in ids:
+                    cov[d] = cov.get(d, 0) + 1
+            for d, tf in zip(ids, tfs):
+                L = doclen[d]
+                scores[d] = scores.get(d, 0.0) + \
+                    idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * L / avgdl))
         if not scores:
             return []
         mx = max(scores.values()) or 1.0
@@ -224,17 +263,27 @@ class _BM25:
 
 # ---------------- 多源联邦检索索引 ----------------
 class MultiIndex:
-    """歌词 / 课本 / 网络语料 三通道 BM25 联邦索引 + 歌名书名辅助索引。"""
+    """歌词 / 课本 / 网络语料 三通道 BM25 联邦索引 + 歌名书名辅助索引。
+
+    v26 紧凑重写：旧版为每篇文档同时持有 token 列表、token 集合(wset)、
+    字符 bigram 集合(dset)、bigram 倒排(dpost)、归一化文本(nset) 五份
+    数据——2.4 万句 ~400MB RSS，Render 免费实例必然 OOM。
+    现在只保留两份机器码倒排（词元 / bigram），覆盖度与 Dice 全部改为
+    「查询侧倒排累计」：对每个查询词元/bigram 扫一遍倒排表，命中数
+    加在文档上，数学上与旧的逐文档集合交完全等价，但不再为每篇文档
+    常驻任何集合对象。归一化文本只在精排阶段对 ~百个候选即时计算。
+    语料超过内存预算时按最新 N 篇降级（meta.index.capped 如实标注），
+    绝不因为语料涨大而吃爆内存。
+    """
 
     def __init__(self):
         self._lock = threading.RLock()
         self._bm = {c: _BM25() for c in CHANNELS}
         self._tbm = _BM25()                       # 歌名/书名/课名
-        self._wset = {c: {} for c in CHANNELS}    # doc_id -> 词元集合（覆盖度）
-        self._dset = {c: {} for c in CHANNELS}    # doc_id -> 字符 bigram 集合（Dice）
-        self._dpost = {c: {} for c in CHANNELS}   # bigram -> doc_id 集合（v18 倒排，防全库 Dice 扫描）
-        self._nset = {c: {} for c in CHANNELS}    # v19: doc_id -> 归一化文本（精排免重算）
-        self._counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
+        self._gpost = {c: {} for c in CHANNELS}   # bigram -> array('l') 文档号
+        self._glen = {c: array('l') for c in CHANNELS}  # 每篇文档 bigram 集合大小
+        self._counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0,
+                        'capped': False}
         self._stamp = None
         self._built = False
         self._building = False
@@ -277,29 +326,40 @@ class MultiIndex:
         return True
 
     def _build(self):
-        rows, songs, books, lessons, bs = [], [], [], [], {}
+        """紧凑重建：流式游标 + 机器码倒排，语料超预算时按最新 N 篇降级。"""
+        import perf
+        cap = perf.doc_cap(default=200000, env='KANJI_RAG_MAX_DOCS')
+        bm = {c: _BM25() for c in CHANNELS}
+        tbm = _BM25()
+        gpost = {c: {} for c in CHANNELS}          # bigram -> array('l') 文档号
+        glen = {c: array('l') for c in CHANNELS}   # 每篇文档 bigram 集合大小
+        counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0,
+                  'capped': False}
         with db.get_conn() as c:
-            rows = c.execute('SELECT id,text,translation,source FROM sentences').fetchall()
+            n_sent = c.execute('SELECT COUNT(*) n FROM sentences').fetchone()['n']
+            capped = n_sent > cap
+            if capped:
+                counts['capped'] = True
+                # 只索引最新 cap 篇：按主键倒序走索引，无临时排序
+                cur = c.execute(
+                    'SELECT id,text,translation,source FROM sentences ORDER BY id DESC LIMIT ?',
+                    (cap,))
+            else:
+                cur = c.execute('SELECT id,text,translation,source FROM sentences')
+            # 课本链接关系小、一次性取全（句子→课本 归类用）
+            bs = {}
+            for r in c.execute('SELECT bs.sentence_id sid, bs.book_id bid, l.title lesson, b.title btitle '
+                               'FROM book_sentences bs JOIN books b ON b.id=bs.book_id '
+                               'LEFT JOIN book_lessons l ON l.id=bs.lesson_id'):
+                bs.setdefault(r['sid'], []).append(dict(r))
             songs = c.execute('SELECT id,title,artist,lyrics FROM songs').fetchall()
             books = c.execute('SELECT id,title,author,level,note FROM books').fetchall()
             lessons = c.execute('SELECT l.id,l.book_id,l.title,b.title btitle FROM book_lessons l '
                                 'JOIN books b ON b.id=l.book_id').fetchall()
-            for r in c.execute('''SELECT bs.sentence_id sid, bs.book_id bid, l.title lesson, b.title btitle
-                                  FROM book_sentences bs JOIN books b ON b.id=bs.book_id
-                                  LEFT JOIN book_lessons l ON l.id=bs.lesson_id'''):
-                bs.setdefault(r['sid'], []).append(dict(r))
-        bm = {c: _BM25() for c in CHANNELS}
-        tbm = _BM25()
-        wset = {c: {} for c in CHANNELS}
-        dset = {c: {} for c in CHANNELS}
-        dpost = {c: {} for c in CHANNELS}
-        nset = {c: {} for c in CHANNELS}          # v19: 预计算归一化文本（精排免重复 normalize）
-        counts = {'lyric': 0, 'textbook': 0, 'web': 0, 'songs': 0, 'books': 0}
-        # —— 句子（课本链接优先，其次网络/手动语料） ——
-        for r in rows:
+        # —— 句子（课本链接优先，其次网络/手动语料）；流式游标，不整库 fetchall ——
+        for r in cur:
             text = r['text'] or ''
             toks = _tokens(text)
-            d = ('s', r['id'])
             linked = bs.get(r['id'])
             if linked:
                 ch = 'textbook'
@@ -310,92 +370,103 @@ class MultiIndex:
                 meta = {'source': r['source'] or ''}
             meta.update({'kind': 'sentence', 'id': r['id'], '_text': text,
                          'translation': r['translation'] or ''})
-            bm[ch].add(d, toks, meta)
-            wset[ch][d] = set(toks)
+            d = bm[ch].add(toks, meta)
             _bg = _bigrams(text)
-            dset[ch][d] = _bg
-            nset[ch][d] = normalize(text)
+            glen[ch].append(len(_bg))
+            gp = gpost[ch]
             for _g in _bg:
-                dpost[ch].setdefault(_g, set()).add(d)
+                slot = gp.get(_g)
+                if slot is None:
+                    gp[_g] = array('l', [d])
+                else:
+                    slot.append(d)
             counts[ch] += 1
         # —— 歌词（逐行 + 歌名） ——
         for s in songs:
             title = s['title'] or ''
             if title:
-                tbm.add(('t', s['id']), _tokens(title),
+                tbm.add(_tokens(title),
                         {'kind': 'song', 'id': s['id'], 'title': title, 'artist': s['artist'] or ''})
                 counts['songs'] += 1
             for i, line in enumerate((s['lyrics'] or '').split('\n')):
                 line = line.strip()
                 if not line or ktv.is_latin_line(line):
                     continue
-                d = ('l', s['id'], i)
                 lt = _tokens(line)
-                bm['lyric'].add(d, lt,
-                                {'kind': 'line', 'id': s['id'], 'title': title,
-                                 'artist': s['artist'] or '', '_text': line, 'line_no': i})
-                wset['lyric'][d] = set(lt)
+                meta = {'kind': 'line', 'id': s['id'], 'title': title,
+                        'artist': s['artist'] or '', '_text': line, 'line_no': i}
+                d = bm['lyric'].add(lt, meta)
                 _bg = _bigrams(line)
-                dset['lyric'][d] = _bg
-                nset['lyric'][d] = normalize(line)
+                glen['lyric'].append(len(_bg))
+                gp = gpost['lyric']
                 for _g in _bg:
-                    dpost['lyric'].setdefault(_g, set()).add(d)
+                    slot = gp.get(_g)
+                    if slot is None:
+                        gp[_g] = array('l', [d])
+                    else:
+                        slot.append(d)
                 counts['lyric'] += 1
         # —— 课本（书名/备注/课名） ——
         for b in books:
-            tbm.add(('b', b['id']), _tokens((b['title'] or '') + ' ' + (b['note'] or '')),
+            tbm.add(_tokens((b['title'] or '') + ' ' + (b['note'] or '')),
                     {'kind': 'book', 'id': b['id'], 'title': b['title'] or '',
                      'author': b['author'] or '', 'level': b['level'] or ''})
             counts['books'] += 1
         for l in lessons:
             if not l['title']:
                 continue
-            tbm.add(('e', l['id']), _tokens(l['title']),
+            tbm.add(_tokens(l['title']),
                     {'kind': 'lesson', 'id': l['id'], 'book_id': l['book_id'],
                      'title': l['title'], 'book_title': l['btitle'] or ''})
+        del songs, books, lessons, bs
         with self._lock:
             self._bm = bm
             self._tbm = tbm
-            self._wset = wset
-            self._dset = dset
-            self._dpost = dpost
-            self._nset = nset
+            self._gpost = gpost
+            self._glen = glen
             self._counts = counts
             self._qcache = {}      # 索引重建 → 查询缓存整体失效（防脏读）
             self._qorder = []
-
+        try:
+            import perf
+            perf.trim_memory()     # 建库期间 array 扩容留下的 C 堆空洞归还系统
+        except Exception:
+            pass
 
     # ---------- 检索 ----------
     def _dice_scan(self, ch, qgrams, threshold, topk=40):
-        """字符 bigram Dice 召回（防分词漏召回）。
+        """字符 bigram Dice 召回（防分词漏召回）——v26 查询侧倒排累计版。
 
-        v18：先用 bigram 倒排取"至少共享 1 个 bigram"的候选子集再算 Dice，
-        与全库扫描数学等价（无共享 bigram 的文档交集必为 0、不可能达标），
-        万级语料下把 O(N) 降为 O(候选)。
+        对每个**查询** bigram 扫一遍倒排表，把「与该文档共享的不同 bigram 数」
+        累计到文档上，再按 Dice = 2·inter/(|q|+|d|) 打分。与旧的「每文档
+        常驻 bigram 集合再求交」数学完全等价（查询 bigram 是集合、倒排表
+        内文档号不重复，inter 即集合交大小），但不再为每篇文档存任何集合，
+        内存从 O(语料×平均bigram数) 降为 O(倒排表)。
         """
         if not qgrams:
             return []
-        post, dset = self._dpost[ch], self._dset[ch]
-        cand = set()
-        for g in qgrams:
-            s = post.get(g)
-            if s:
-                cand |= s
-        if not cand:  # 倒排未建（旧索引热升级中）→ 回退全库扫描，保证不断流
-            cand = dset.keys()
+        post = self._gpost.get(ch) or {}
+        glen = self._glen.get(ch) or array('l')
+        inter = {}
+        for g in qgrams:                      # set 去重后逐 bigram 累计
+            ids = post.get(g)
+            if not ids:
+                continue
+            for d in ids:
+                inter[d] = inter.get(d, 0) + 1
+        qn = len(qgrams)
         out = []
-        for d in cand:
-            grams = dset.get(d)
-            if not grams:
+        for d, k in inter.items():
+            dn = glen[d] if d < len(glen) else 0
+            if not dn:
                 continue
-            inter = len(qgrams & grams)
-            if not inter:
-                continue
-            dc = 2.0 * inter / (len(qgrams) + len(grams))
+            dc = 2.0 * k / (qn + dn)
             if dc >= threshold:
                 out.append((d, dc))
         out.sort(key=lambda x: -x[1])
-        return out[:topk]
+        # 完整交集表一并返回：BM25 召回的候选也可能共享部分 bigram，
+        # 精排要的是真实交集数，不能因为没进 Dice topk 就当 0。
+        return out[:topk], inter
 
     def _qcache_get(self, ckey):
         with self._lock:
@@ -421,15 +492,18 @@ class MultiIndex:
                 old = self._qorder.pop(0)
                 self._qcache.pop(old, None)
 
-    def _rerank(self, qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n, words, grams):
+    def _rerank(self, qn, qn_len, qset_len, qgrams_len, bm_s, cov_hits, dice_hits,
+                doc_glen, text_n):
         """综合分 ∈ [0,1]：0.40×BM25 + 0.20×Dice + 0.20×词元覆盖 + 0.20×短语包含。
 
-        优化：所有参数已在外层预计算（归一化文本、查询长度、bigram 数量），
-        本函数只做纯数值运算，无字符串分配或集合构建。"""
+        v26：不再传每文档的词元集合/bigram 集合（那是旧版吃内存的元凶），
+        改传 recall 阶段顺带累计出的 cov_hits（命中了几个查询词元）与
+        dice_hits（共享了几个查询 bigram），纯数值运算。
+        """
         phrase = 1.0 if qn and qn_len <= len(text_n) and qn in text_n else 0.0
-        cov = (len(qset & words) / len(qset)) if qset and words else 0.0
-        inter = len(qgrams & grams)
-        dice = (2.0 * inter / (qgrams_len + len(grams))) if qgrams_len and grams and inter else 0.0
+        cov = (cov_hits / qset_len) if qset_len and cov_hits else 0.0
+        inter = dice_hits or 0
+        dice = (2.0 * inter / (qgrams_len + doc_glen)) if qgrams_len and doc_glen and inter else 0.0
         s = 0.40 * bm_s + 0.20 * dice + 0.20 * cov + 0.20 * phrase
         if s > 0:
             tl = len(text_n)
@@ -504,42 +578,49 @@ class MultiIndex:
             return _hit
         with self._lock:
             bm = self._bm
-            wset = self._wset
-            dset = self._dset
-            nset = self._nset
+            gpost = self._gpost
+            glen = self._glen
             counts = dict(self._counts)
+        capped = bool(counts.pop('capped', False))
         # v19: 预计算查询侧常量（避免精排循环内重复计算）
         qn_len = len(qn)
         qgrams_len = len(qgrams)
+        qset_len = len(qset)
         t_recall = time.time()
         # 1) 双路召回（BM25 + Dice）→ 2) 精排
+        # v26：覆盖度与 Dice 交集数在召回阶段由倒排扫描顺带累计（见 _BM25.search
+        # 的 cov 参数与 _dice_scan 的 inter 表），精排不再需要每文档集合。
         scored = {c: [] for c in CHANNELS}
         for ch in CHANNELS:
             if ch not in enabled_set:
                 continue
+            cov = {}                                  # doc -> 命中的查询词元数
             cand = {}
-            for s, d in bm[ch].search(qtoks, topk=max(limit * 4, 40)):
+            for s, d in bm[ch].search(qtoks, topk=max(limit * 4, 40), cov=cov):
                 cand[d] = s
             th = min(0.14, max(0.10, min_affinity or 0.14))
-            for d, dc in self._dice_scan(ch, qgrams, th):
+            dice_top, dice_inter = self._dice_scan(ch, qgrams, th)
+            for d, _dc in dice_top:
                 if d not in cand:
                     cand[d] = 0.0
-            # v19: 使用预计算的归一化文本，避免精排循环内重复 normalize
-            _nset_ch = nset.get(ch, {})
-            _wset_ch = wset.get(ch, {})
-            _dset_ch = dset.get(ch, {})
             _bm_docs = bm[ch].docs
+            _glen_ch = glen.get(ch) or array('l')
+            _norm_cache = {}
             for d, bm_s in cand.items():
-                m = _bm_docs.get(d)
+                m = _bm_docs[d] if d < len(_bm_docs) else None
                 if not m:
                     continue
                 if ch == 'textbook' and selected_books:
                     bid = m.get('book_id') or m.get('id')
                     if bid not in selected_books:
                         continue
-                text_n = _nset_ch.get(d) or normalize(m.get('_text') or m.get('title') or '')
-                s = self._rerank(qn, qn_len, qset, qgrams, qgrams_len, bm_s, text_n,
-                                 _wset_ch.get(d) or set(), _dset_ch.get(d) or set())
+                text_n = _norm_cache.get(d)
+                if text_n is None:
+                    text_n = normalize(m.get('_text') or m.get('title') or '')
+                    _norm_cache[d] = text_n
+                s = self._rerank(qn, qn_len, qset_len, qgrams_len, bm_s,
+                                 cov.get(d, 0), dice_inter.get(d, 0),
+                                 _glen_ch[d] if d < len(_glen_ch) else 0, text_n)
                 if ch == 'textbook' and selected_books and (m.get('book_id') in selected_books):
                     s = min(1.0, s + 0.08)
                 if s >= 0.10:
@@ -650,6 +731,7 @@ class MultiIndex:
         results = ordered
         t_done = time.time()
         meta = {'counts': counts, 'terms': key_terms(q), 'qvars': qv,
+                'index': {'capped': capped},
                 'prior': pri, 'qnorm': qn, 'sort': sort, 'ms': round((t_done - t0) * 1000),
                 'book_ids': sorted(selected_books),
                 'hits': {'lyric': len(groups['lyric']), 'textbook': len(groups['textbook']),
@@ -706,33 +788,68 @@ class MultiIndex:
 
 # ---------------- 全库兼容索引（/api/rag/similar 用） ----------------
 class RagIndex:
-    """全库语料 BM25 检索；query() 接口与旧版（TF-IDF）一致：[(sid, score)]。"""
+    """全库语料 BM25 检索；query() 接口与旧版（TF-IDF）一致：[(sid, score)]。
+
+    v26：_BM25 改为自增文档号，payload 里带 sid；同样受内存预算约束，
+    语料超预算时只索引最新 N 篇（对「找相似」场景，最新语料优先完全够用）。
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._bm = _BM25()
-        self._n_built = -1
+        self._stamp = None
 
     def _build(self):
+        """重建（必须在已持有 self._lock 时调用；新索引建好才原子换上）。"""
+        import perf
+        cap = perf.doc_cap(default=200000, env='KANJI_RAG_MAX_DOCS')
         bm = _BM25()
         with db.get_conn() as c:
-            rows_ = c.execute('SELECT id, text FROM sentences').fetchall()
-        for r in rows_:
-            bm.add(r['id'], _tokens(r['text']), {'_text': r['text']})
+            cnt = c.execute('SELECT COUNT(*) n FROM sentences').fetchone()['n']
+            if cnt > cap:
+                cur = c.execute('SELECT id, text FROM sentences ORDER BY id DESC LIMIT ?',
+                                (cap,))
+            else:
+                cur = c.execute('SELECT id, text FROM sentences')
+            for r in cur:                       # 流式游标，不 fetchall
+                bm.add(_tokens(r['text']), {'sid': r['id'], '_text': r['text']})
         self._bm = bm
-        self._n_built = len(rows_)
+        self._stamp = self._sig()
+        try:
+            import perf
+            perf.trim_memory()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _sig():
+        with db.get_conn() as c:
+            r = c.execute('SELECT COUNT(*) n, COALESCE(MAX(id),0) m FROM sentences').fetchone()
+        return (r['n'], r['m'])
 
     def ensure(self):
         with self._lock:
-            with db.get_conn() as c:
-                cnt = c.execute('SELECT COUNT(*) n FROM sentences').fetchone()['n']
-            if cnt != self._n_built:
+            try:
+                sig = self._sig()
+            except Exception:
+                return
+            if sig != self._stamp:
                 self._build()
 
     def query(self, text, limit=10, exclude_sid=None):
         self.ensure()
+        docs = self._bm.docs
         hits = self._bm.search(_tokens(text), topk=limit + 2)
-        return [(d, round(s, 4)) for s, d in hits if d != exclude_sid][:limit]
+        out = []
+        for s, d in hits:
+            m = docs[d] if d < len(docs) else None
+            sid = m.get('sid') if m else None
+            if sid is None or sid == exclude_sid:
+                continue
+            out.append((sid, round(s, 4)))
+            if len(out) >= limit:
+                break
+        return out
 
 
 INDEX = RagIndex()
@@ -740,32 +857,54 @@ MULTI = MultiIndex()
 
 
 def warmup():
-    """启动预热（后台线程调用）：预构建多源索引，避免首个请求等待。"""
+    """同步预热（保留旧入口）：预构建多源索引，避免首个请求等待。"""
     try:
         MULTI.ensure()
     except Exception:
         pass
 
 
-def warmup_async(delay=0.0):
-    """后台预热：把首次建索引的 3~4 秒成本在启动后台付掉，首个用户检索不再干等。
+def warmup_async(delay=0.0, extra_steps=()):
+    """后台预热 v26：单线程串行 + 内存闸门，绝不再三路并发抢 CPU/内存。
 
-    - delay：先睡一会儿，让启动期的数据补种（内置篇章等）把写入落库，避免刚建好
-      索引又因数据签名变化立刻重建。
-    - 就绪后仍以 ensure() 的数据签名校验为唯一真源：数据一变即自动重建，
-      故「预热」与「检索结果始终对应最新数据」不冲突（预热只是提前把成本付掉）。
-    - 顺带预热 RagIndex（/api/rag/similar 用），同样只在后台付一次。
-    - v25：额外持续在后台补建分片 bigram 倒排索引（见 corpus_shards.ensure_shard_index /
-      federated_search.warm_shard_indices），避免第一个用户的检索撞上「索引不存在→
-      回退全表扫描」的慢路径——这正是「精排阶段耗时 20+ 秒、偶发 JSON 解析失败」的根因。
-      分批小预算构建，不占满 CPU；构建完仍持续低频轮询，新增分片（对象存储同步/下载）
-      随时会被发现，不需要重启进程。
+    旧行为的问题（用户可感知的「打开页面什么都卡」）：
+      1. RAG、结构相似、听写联想三路预热线程启动即全速开跑，在单核
+         云实例上等于三个 CPU 密集任务抢一个核，所有页面请求都在排队；
+      2. 每路都在建巨型 Python 对象索引，2 万句语料 ~1.4GB RSS，
+         Render 512MB 直接 OOM 杀进程 → 重启 → 再预热 → 再 OOM 死循环。
+    新行为：
+      - 只有 RAG 联邦索引与 RagIndex 预热（紧凑重写后两者共几十 MB、
+        几秒内建完）；结构相似索引改为首个查询惰性构建；听写联想索引
+        默认随「输入联想」功能一起关闭（见 listening.suggest_enabled）；
+      - KANJI_WARMUP=off 或可用内存 < 220MB（perf.warmup_allowed）时
+        完全跳过，全部惰性构建，宁可第一个用户多等几秒也不 OOM；
+      - 分片倒排低频轮询保留（无分片时零开销），不再与建索引抢跑。
     """
     def _run():
         try:
             if delay:
                 time.sleep(delay)
+        except Exception:
+            pass
+        for name, fn in extra_steps:
+            if not _warmup_gate():
+                return
+            try:
+                fn()
+            except Exception as e:
+                try:
+                    print('[rag] 预热步骤 %s 失败（不影响启动）：%s' % (name, e))
+                except Exception:
+                    pass
+        if not _warmup_gate():
+            return
+        try:
             MULTI.ensure()
+        except Exception:
+            pass
+        if not _warmup_gate():
+            return
+        try:
             INDEX.ensure()
         except Exception:
             pass
@@ -775,4 +914,12 @@ def warmup_async(delay=0.0):
             except Exception:
                 built = 0
             time.sleep(0.5 if built else 30.0)
-    threading.Thread(target=_run, daemon=True).start()
+
+    def _warmup_gate():
+        try:
+            import perf
+            return perf.warmup_allowed()
+        except Exception:
+            return True
+
+    threading.Thread(target=_run, daemon=True, name='rag-warmup').start()

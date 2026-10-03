@@ -420,3 +420,28 @@ API：`GET/POST /api/songs`、`POST /api/songs/import`（支持 `dry_run` 预览
   证据完整性、病句扫描、具体规则回归、新增规则回归、难度分级）+ `test_listening.py` 第 2.5 节；
   `test_listening / test_textbook / test_scope_resolve / test_builder_scope / test_cloze`
   等全部转为稳定通过。
+
+## v26 更新（⚡ 全站性能重构：云端不再 OOM、听力秒出、语料再大也不卡）
+
+**这是对「语料库一大就什么都卡 / Render 超内存 / 听力加载不出来」的根治性重构**，
+算法与数据结构详见 **[PERFORMANCE.md](PERFORMANCE.md)**，要点：
+
+- **内存降一个数量级**：RAG 联邦索引从「每篇文档存 5 份数据」改为机器码倒排
+  （`array('l')`）+ 查询侧累计，2.4 万句 ~400MB → **~52MB**；结构相似索引 ~255MB →
+  **~11MB**；听写联想键 ~124MB → **~20MB**。真正吃内存的匿名内存从 >700MB 降到
+  **~150MB**（进程 RSS 里另有几百 MB 是词典 mmap 文件页，压力下内核自动回收，不算 OOM 账）。
+- **语料超过内存预算自动降级**：各索引按最新 N 篇构建（`meta.index.capped` 如实标注），
+  绝不因为语料涨大而吃爆内存；`KANJI_INDEX_BUDGET_MB` / `KANJI_RAG_MAX_DOCS` 等可调。
+- **启动不再抢 CPU**：旧版三路预热线程全速并发开跑（单核容器 = 所有页面请求排队），
+  现在单线程串行预热 + 内存闸门（`KANJI_WARMUP=off` 可全关）；结构相似索引惰性构建。
+- **听力出题 ~4 秒 → ~0.1 秒**：译文倒排全局共享（不再每卷重建 2 万行索引）、
+  听音选汉字改三张倒排取混淆候选（不再全库 6 万词条逐条 difflib）、随机抽样改
+  密集 id 直抽（不再 `ORDER BY RANDOM()` 全表扫描）。
+- **结构相似检索 ~3.4 秒 → ~40 毫秒**：两阶段算法（cheap 下界 + 入选线早停），
+  与旧算法对拍逐分一致。
+- **整句听写「输入自动联想」默认关闭**：该功能要对全库建前缀索引（CPU/内存大户），
+  对听写训练也有争议；现在默认所有人关闭，开启入口隐藏且需口令（口令线下保管）。
+- 数据库热路径补索引（`sentences(source)`、`history(type,ts)`），幂等安全。
+
+回归：`test_listening / test_listening_dictation / test_search / test_rag_multi /
+test_lyric_search / test_api / test_builder / test_cloze / test_ktv` 全部通过。

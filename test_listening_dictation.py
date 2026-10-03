@@ -2,6 +2,7 @@
 """听力新增三题型的快速回归测试：不触碰仓库数据库。"""
 import os
 import shutil
+import time
 import sqlite3
 import sys
 import tempfile
@@ -38,8 +39,11 @@ try:
         ('毎朝新聞を読みます。', 'I read the newspaper every morning.'),
         ('学校で日本語を話します。', 'I speak Japanese at school.'),
     ]
+    import furigana
     for text, tr in rows:
-        db.add_sentence(text, tr, 'dictation_test', None, [], [])
+        toks = furigana.annotate(text)      # v26：联想索引复用入库 tokens
+        db.add_sentence(text, tr, 'dictation_test', None, toks,
+                         furigana.extract_kanji_words(toks))
 
     cfg = ls.listening_cfg()
     check(cfg['types']['discriminate'] == 0, '听音辨句默认必须为 0')
@@ -56,7 +60,7 @@ try:
     check(ls.grade_response(word, word['answer'])['ok'], '纯汉字正确表记应判对')
     check(not ls.grade_response(word, word['reading'])['ok'], '纯汉字题写假名不能代替表记')
 
-    bank = ls._word_bank_from_rows([{'text': x[0], 'source': 'dictation_test'} for x in rows])
+    bank = ls._get_global_word_bank()          # v26：紧凑词库（平行元组 + 倒排）
     kanji = ls._build_kanji_choice_q(row, bank)
     check(kanji and len(kanji['options']) == 4, '听音选汉字应有四个选项')
     check(all(ls._is_pure_kanji(x) for x in kanji['options']), '汉字选项不能带假名')
@@ -72,9 +76,23 @@ try:
                                       'とうきょうのだいがくでにっぽんごをべんきょうしています')
     check(alt['ok'] and alt['needs_correction'], '有证据的非推荐读音应判对并提示修正')
 
+    # v26：输入联想默认关闭；口令开启后才可用；关闭后立即回到无联想。
+    check(not ls.sentence_suggestions('私は', 'beginner'), '输入联想默认必须关闭')
+    check(not ls.set_suggest_enabled('000000', True)['ok'], '口令错误不能开启联想')
+    r = ls.set_suggest_enabled(ls.SUGGEST_SECRET, True)
+    check(r['ok'] and r['cfg']['suggest_enabled'], '口令正确应能开启联想')
+    check(ls.save_listening_cfg({'suggest_enabled': False})['suggest_enabled'],
+          '普通配置接口不能改动隐藏开关（口令设置的值应保持不变）')
+    for _ in range(1200):                       # 等后台索引建好（复用入库 tokens，秒级）
+        if ls._GLOBAL_SUGGEST is not None:
+            break
+        time.sleep(0.1)
     check(ls.sentence_suggestions('私は', 'beginner'), '初级应能从部分词给全语料库联想')
     check(ls.sentence_suggestions('私は学生', 'intermediate'), '中级完整词后应给后续短搭配')
     check(not ls.sentence_suggestions('私は', 'advanced'), '最高难度不应调用联想')
+    r = ls.set_suggest_enabled(ls.SUGGEST_SECRET, False)
+    check(r['ok'] and not r['cfg']['suggest_enabled'] and ls._GLOBAL_SUGGEST is None,
+          '关闭联想应立即释放索引内存')
 
     arrange = ls._build_sentence_arrange_q(row)
     check(arrange and arrange['qtype'] == 'sentence_arrange' and arrange['must_use_all_tiles'],

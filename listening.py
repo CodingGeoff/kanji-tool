@@ -58,6 +58,7 @@ import threading
 import time
 import traceback
 import unicodedata
+from array import array
 from collections import Counter, defaultdict
 from datetime import date
 from difflib import SequenceMatcher
@@ -97,6 +98,11 @@ DEFAULT_CFG = {
                                   # （与 /api/tts 的 RATES 命名完全一致，前端直接透传）
     'max_plays': 3,              # 旧选择/听写题最多重播次数，0=不限
     'arrange_max_plays': 2,      # 听后组句专用：默认只允许听两次
+    # v26：整句听写的「输入自动联想」默认关闭。它要对全语料库逐句建前缀索引
+    # （内存与 CPU 大户，云端 OOM 元凶之一），且对「听写」这一训练目标有
+    # 争议（相当于抄答案的辅助）。开启需要隐藏入口 + 口令，见
+    # set_suggest_enabled()；旧配置里没有这个键 → 存量用户同样默认关闭。
+    'suggest_enabled': False,
     'min_len': 6,
     'max_len': 60,
 }
@@ -174,14 +180,18 @@ def _sanitize_cfg(cfg):
                     'word_dictation': w, 'kanji_choice': k,
                     'sentence_dictation': s, 'sentence_arrange': a}
     cfg['enabled'] = bool(cfg.get('enabled', True))
+    # 注意：suggest_enabled 只能经 set_suggest_enabled(secret) 修改；
+    # save_listening_cfg 的白名单合并会把它带进来，这里强制以存量值为准，
+    # 防止有人用普通配置接口把隐藏功能直接打开。
+    cfg['suggest_enabled'] = bool(cfg.get('suggest_enabled', False))
     return cfg
 
 
 def save_listening_cfg(patch):
     cfg = listening_cfg()
     for k, v in (patch or {}).items():
-        if k not in DEFAULT_CFG:
-            continue
+        if k not in DEFAULT_CFG or k == 'suggest_enabled':
+            continue          # 隐藏开关只走 set_suggest_enabled（口令保护）
         if isinstance(DEFAULT_CFG[k], dict) and isinstance(v, dict):
             cfg[k] = dict(cfg.get(k) or {}, **{kk: vv for kk, vv in v.items() if kk in DEFAULT_CFG[k]})
         else:
@@ -194,6 +204,51 @@ def save_listening_cfg(patch):
 # ================================================================
 # 题源池（与 sentence_builder 共用同一套稳健 scope 解析）
 # ================================================================
+def _random_corpus_rows(c, need, where='1=1', args=()):
+    """随机抽 need 句语料——密集 id 直抽，稀疏 id 退回 ORDER BY RANDOM()。
+
+    ORDER BY RANDOM() 是全表扫描 + 全表排序：几千句毫秒级，但语料涨到
+    几十万句后一次就是几百毫秒～秒级，而听力/组卷一次要抽好几轮。
+    当 id 基本连续（max_id ≤ 1.5×count）时，直接随机生成 id 再按主键
+    精确取行，代价只有 O(need×log n)；分布与全表随机抽样相同
+    （id 均匀 → 行均匀，删行造成的空洞按概率与全表随机一致）。
+    id 稀疏时保持旧行为，保证不引入偏差。
+    """
+    try:
+        r = c.execute('SELECT COUNT(*), COALESCE(MAX(id),0) FROM sentences WHERE ' + where,
+                      args).fetchone()
+        count, max_id = int(r[0]), int(r[1])
+    except Exception:
+        count, max_id = 0, 0
+    if not count or not max_id:
+        return []
+    if max_id <= count * 3 // 2:
+        # —— 密集 id：随机 id 直抽（含去重与空洞重试） ——
+        out, seen = [], set()
+        tries = 0
+        while len(out) < need and tries < need * 4 + 32:
+            tries += 1
+            k = need * 2 - len(out)
+            for rid in {random.randint(1, max_id) for _ in range(k)}:
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                row = c.execute(
+                    'SELECT id sid, text, translation, source, tokens FROM sentences '
+                    'WHERE id=? AND ' + where, (rid,)).fetchone()
+                if row is not None:
+                    out.append(dict(row))
+                    if len(out) >= need:
+                        break
+        if out:
+            random.shuffle(out)
+            return out
+        # 空洞太多（理论少见）：落到下面的通用路径
+    q = ('SELECT id sid, text, translation, source, tokens FROM sentences WHERE ' + where +
+         ' ORDER BY RANDOM() LIMIT ?')
+    return [dict(r) for r in c.execute(q, tuple(args) + (need,)).fetchall()]
+
+
 def _fetch_pool(scope, ids, need):
     import textbook as tb
     rows = []
@@ -209,18 +264,13 @@ def _fetch_pool(scope, ids, need):
         # 「篇章精读」里录入并已并入语料库的文章句子（source='passage'）
         try:
             with db.get_conn() as c:
-                rows += [dict(r) for r in c.execute(
-                    "SELECT id sid, text text, translation translation, source source "
-                    "FROM sentences WHERE source='passage' ORDER BY RANDOM() LIMIT ?",
-                    (need,)).fetchall()]
+                rows += _random_corpus_rows(c, need, "source='passage'")
         except Exception:
             pass
     if scope in ('corpus', 'mixed'):
         try:
             with db.get_conn() as c:
-                rows += [dict(r) for r in c.execute(
-                    'SELECT id sid, text text, translation translation, source source '
-                    'FROM sentences ORDER BY RANDOM() LIMIT ?', (need,)).fetchall()]
+                rows += _random_corpus_rows(c, need)
         except Exception:
             pass
     return rows
@@ -251,7 +301,7 @@ isn aren't wasn weren't won't can't couldn shouldn't wouldn't'''.split())
 _ZH_STOP = frozenset('的一了是在和也都就很有我你他她它們们这這那個个嗎吗呢啊吧被把給给')
 
 
-@lru_cache(maxsize=16384)
+@lru_cache(maxsize=32768)
 def _translation_terms(text):
     """译文检索词。英文去功能词并轻量归一；中文同时保留信息字和二字短语。"""
     if _tr_lang(text) == 'zh':
@@ -292,45 +342,54 @@ def _translation_shape(text):
 
 
 def _meaning_search_context(rows):
-    """预建译文倒排索引与词频；倒排索引加速硬负例检索 1000x+，IDF 避免把高频词误当高混淆。"""
-    df = Counter()
-    postings = defaultdict(list)
-    row_meta = []
-    seen = set()
+    """预建译文倒排索引与词频——v26 紧凑版。
 
-    for r in rows:
+    旧版为每行译文建一个 meta dict（terms frozenset、shape dict、原文、译文
+    全都各存一份），2 万行就几十 MB；且 make_quiz 每次出题都重建一遍。
+    现在：
+      - postings: term -> array('l')（机器码文档号倒排）；
+      - 行数据、语言、长度分列存放（langs 字节数组 / lens 数组），terms
+        与 shape 按需经 lru_cache 复算（键就是译文串，命中是纯字典查询）；
+      - df 由 postings 长度直接得出，不再单独维护 Counter。
+    倒排索引把候选检索从全池扫描降到 O(查询词的倒排表长度)。
+    """
+    rows_out = []
+    postings = {}
+    langs = bytearray()        # 0=zh 1=en 2=other
+    lens = array('l')
+    seen = set()
+    lang_map = {'zh': 0, 'en': 1, 'other': 2}
+    for r in rows or ():
         if isinstance(r, dict):
             tr = (r.get('translation') or '').strip()
             txt = (r.get('text') or '').strip()
+        elif hasattr(r, 'keys'):                    # sqlite3.Row（流式游标）
+            d = dict(r)
+            tr = (d.get('translation') or '').strip()
+            txt = (d.get('text') or '').strip()
+            r = d
         else:
             tr = str(r).strip()
             txt = ''
         if not tr or (txt, tr) in seen:
             continue
         seen.add((txt, tr))
-        idx = len(row_meta)
-        terms = _translation_terms(tr)
-        lng = _tr_lang(tr)
-        df.update(terms)
-        for term in terms:
-            postings[term].append(idx)
-        row_meta.append({
-            'idx': idx,
-            'text': txt,
-            'translation': tr,
-            'lang': lng,
-            'terms': terms,
-            'shape': _translation_shape(tr),
-            'len': len(tr),
-            'raw': r if isinstance(r, dict) else {'text': txt, 'translation': tr},
-        })
-
+        i = len(rows_out)
+        rows_out.append(r if isinstance(r, dict) else {'text': txt, 'translation': tr})
+        langs.append(lang_map.get(_tr_lang(tr), 2))
+        lens.append(len(tr))
+        for term in _translation_terms(tr):
+            slot = postings.get(term)
+            if slot is None:
+                postings[term] = array('l', [i])
+            else:
+                slot.append(i)
     return {
-        'rows': [m['raw'] for m in row_meta],
-        'meta': row_meta,
+        'rows': rows_out,
         'postings': postings,
-        'df': df,
-        'n': max(1, len(row_meta)),
+        'langs': langs,
+        'lens': lens,
+        'n': max(1, len(rows_out)),
     }
 
 
@@ -367,6 +426,13 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
     standard 保留结构/长度匹配；advanced 先用 IDF 加权的中英文实词和短语
     找同主题候选，再比较日文语法、极性、时态和译文句式。高级题若凑不齐
     三个真正相近的选项便返回 None，主流程会改出其它题型，绝不拿无关句凑数。
+
+    v26 检索算法（替换旧版「倒排取候选 → 对每个候选跑 difflib」）：
+      1. 倒排单遍扫描，**精确**累计每个候选与目标译文共享的 IDF 权重
+         （数学上与旧的逐候选集合求交完全一致）；
+      2. 只取共享权重最高的 top-K（48）做 difflib / 形状 / 结构全套精排
+         ——旧的 4.5 万次 SequenceMatcher（每卷 ~0.8 秒）降到 ~150 次，
+         而落选者本来就不可能通过「advanced 必须有强共享词」的门槛。
     """
     text = (row.get('text') or '').strip()
     tr = (row.get('translation') or '').strip()
@@ -375,70 +441,78 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
     lang = _tr_lang(tr)
     sig = _meaning_signature(text)
     shape = _translation_shape(tr)
-    ctx = search_ctx or _meaning_search_context(translation_rows)
-    df, corpus_n = ctx['df'], ctx['n']
+    ctx = search_ctx or _get_global_translation_index()
+    if not ctx or not ctx.get('n') or ctx['n'] < 4:
+        return None
+    df = {t: len(p) for t, p in (ctx.get('postings') or {}).items()}
+    corpus_n = ctx['n']
     target_terms = _translation_terms(tr)
-    meta_list = ctx.get('meta') or []
-    postings = ctx.get('postings') or {}
 
     def weight(term):
         return log((corpus_n + 1) / (df.get(term, 0) + 1)) + 1.0
 
     target_weight = sum(weight(x) for x in target_terms) or 1.0
+    lang_code = {'zh': 0, 'en': 1, 'other': 2}.get(lang, 2)
+    postings = ctx['postings']
+    langs, lens, ctx_rows = ctx['langs'], ctx['lens'], ctx['rows']
 
-    # 倒排索引快速筛选候选候选集
-    if meta_list and postings:
-        cand_idx_set = set()
-        if difficulty == 'advanced':
-            for t in target_terms:
-                cand_idx_set.update(postings.get(t, ()))
-        else:
-            for t in target_terms:
-                cand_idx_set.update(postings.get(t, ()))
-            if len(cand_idx_set) < 20:
-                l_target = len(tr)
-                for m in meta_list:
-                    if m['lang'] == lang and abs(m['len'] - l_target) <= max(6, int(l_target * 0.45)):
-                        cand_idx_set.add(m['idx'])
-                        if len(cand_idx_set) >= 60:
-                            break
-        candidates = [meta_list[i] for i in cand_idx_set if i < len(meta_list)]
-    else:
-        candidates = []
-        for c in translation_rows:
-            if isinstance(c, dict):
-                candidates.append({
-                    'text': (c.get('text') or '').strip(),
-                    'translation': (c.get('translation') or '').strip(),
-                    'lang': _tr_lang((c.get('translation') or '').strip()),
-                    'terms': _translation_terms((c.get('translation') or '').strip()),
-                    'shape': _translation_shape((c.get('translation') or '').strip()),
-                    'len': len((c.get('translation') or '').strip()),
-                })
-            else:
-                s = str(c).strip()
-                candidates.append({
-                    'text': '', 'translation': s,
-                    'lang': _tr_lang(s), 'terms': _translation_terms(s),
-                    'shape': _translation_shape(s), 'len': len(s),
-                })
-
-    pre_ranked, seen = [], set()
-    for cand in candidates:
-        other_tr = cand['translation']
-        other_text = cand['text']
-        if (not other_tr or other_tr == tr or other_tr in seen
-                or cand['lang'] != lang or (other_text and other_text == text)):
+    # ---- 1) 倒排单遍累计：共享词 → 精确共享权重 ----
+    shared_w = {}
+    for t in target_terms:
+        ids = postings.get(t)
+        if not ids:
             continue
+        w = weight(t)
+        for i in ids:
+            shared_w[i] = shared_w.get(i, 0) + w
 
+    l_target = len(tr)
+    lo_len, hi_len = l_target - max(6, int(l_target * 0.55)), l_target + max(6, int(l_target * 0.55))
+    pre = []
+    for i, sw in shared_w.items():
+        if i >= len(ctx_rows):
+            continue
+        if langs[i] != lang_code:
+            continue
+        L = lens[i]
+        if not (lo_len <= L <= hi_len):
+            continue
+        pre.append((sw, i))
+    # standard 模式的长度回退池（倒排没捞够时按长度/语言补候选）
+    if difficulty != 'advanced' and len(pre) < 24:
+        for i in range(len(ctx_rows)):
+            if len(pre) >= 72:
+                break
+            if i in shared_w or langs[i] != lang_code:
+                continue
+            L = lens[i]
+            if lo_len <= L <= hi_len:
+                pre.append((0.0, i))
+    if not pre:
+        return None
+    # 共享权重降序，只留 top-K 进精排（difflib 很贵，48 个足够挑出 3 个硬负例）
+    pre.sort(key=lambda x: (-x[0], x[1]))
+    shortlist = pre[:48] if difficulty == 'advanced' else pre[:64]
+
+    # ---- 2) 精排（difflib + 词覆盖 + 形状/结构） ----
+    pre_ranked, seen = [], set()
+    for sw, i in shortlist:
+        cand = ctx_rows[i]
+        if not isinstance(cand, dict):
+            continue
+        other_tr = (cand.get('translation') or '').strip()
+        other_text = (cand.get('text') or '').strip()
+        if (not other_tr or other_tr == tr or other_tr in seen
+                or (other_text and other_text == text)):
+            continue
         tr_sim = SequenceMatcher(None, tr, other_tr, autojunk=False).ratio()
         if tr_sim > (0.96 if difficulty == 'advanced' else 0.84):
             continue
-        length_sim = 1.0 - min(1.0, abs(cand['len'] - len(tr)) / max(len(tr), 1))
+        length_sim = 1.0 - min(1.0, abs(lens[i] - l_target) / max(l_target, 1))
         if length_sim < (0.48 if difficulty == 'advanced' else 0.35):
             continue
 
-        terms = cand['terms']
+        terms = _translation_terms(other_tr)     # lru_cache：命中是纯查询
         shared = target_terms & terms
         shared_weight = sum(weight(x) for x in shared)
         other_weight = sum(weight(x) for x in terms) or 1.0
@@ -453,7 +527,7 @@ def _build_meaning_q(row, translation_rows, difficulty='advanced', search_ctx=No
                 or (len(target_terms) >= 4 and len(strong_shared) < 2)):
             continue
 
-        oshape = cand['shape']
+        oshape = _translation_shape(other_tr)
         shape_score = (
             0.10 * (shape['question'] == oshape['question'])
             + 0.07 * (shape['negative'] == oshape['negative'])
@@ -519,36 +593,74 @@ _GLOBAL_TRANSLATION_INDEX = None
 _GLOBAL_TRANSLATION_POOL_SIGN = None
 
 
+_GLOBAL_TRANSLATION_INDEX = None
+_GLOBAL_TRANSLATION_POOL_SIGN = None
+_TRANS_INDEX_LOCK = threading.Lock()
+
+
 def _get_global_translation_index():
+    """全库译文倒排索引（紧凑、跨题型共享、按数据签名换代）。
+
+    v26：make_quiz 不再每卷重建 2 万行索引（旧版一次 ~1.2 秒 + 几十 MB
+    临时对象），改为全局一份、(count, max_id) 签名失效重建；出多卷只建
+    一次。检索池覆盖全库带译文的句子——高级难度本来就从全库取硬负例，
+    标准难度同样受益（候选更多、干扰项更真实），题干仍严格来自当前 scope。
+    """
     global _GLOBAL_TRANSLATION_INDEX, _GLOBAL_TRANSLATION_POOL_SIGN
+    import perf
+    cap = perf.doc_cap(default=20000, env='KANJI_TRANS_INDEX_MAX_DOCS')
     try:
         with db.get_conn() as c:
-            count = c.execute("SELECT count(*) FROM sentences WHERE translation IS NOT NULL AND trim(translation)<>''").fetchone()[0]
-        if _GLOBAL_TRANSLATION_INDEX is not None and _GLOBAL_TRANSLATION_POOL_SIGN == count:
-            return _GLOBAL_TRANSLATION_INDEX
-        with db.get_conn() as c:
-            rows = [dict(r) for r in c.execute(
-                "SELECT id sid, text, translation, source FROM sentences "
-                "WHERE translation IS NOT NULL AND trim(translation)<>'' LIMIT 20000"
-            ).fetchall()]
-        _GLOBAL_TRANSLATION_INDEX = _meaning_search_context(rows)
-        _GLOBAL_TRANSLATION_POOL_SIGN = count
-        return _GLOBAL_TRANSLATION_INDEX
+            r = c.execute("SELECT count(*), COALESCE(max(id), 0) FROM sentences "
+                          "WHERE translation IS NOT NULL AND trim(translation)<>''").fetchone()
+            sign = (str(db.DB_PATH), r[0], r[1])
     except Exception:
         return None
+    with _TRANS_INDEX_LOCK:
+        if _GLOBAL_TRANSLATION_INDEX is not None and _GLOBAL_TRANSLATION_POOL_SIGN == sign:
+            return _GLOBAL_TRANSLATION_INDEX
+        try:
+            with db.get_conn() as c:
+                cur = c.execute(
+                    "SELECT id sid, text, translation, source FROM sentences "
+                    "WHERE translation IS NOT NULL AND trim(translation)<>'' "
+                    "ORDER BY id DESC LIMIT ?", (cap,))
+                idx = _meaning_search_context(cur)      # 流式游标
+        except Exception:
+            return None
+        _GLOBAL_TRANSLATION_INDEX = idx
+        _GLOBAL_TRANSLATION_POOL_SIGN = sign
+        return idx
 
 
-@lru_cache(maxsize=1)
+_GLOBAL_SOUND_SENTS = None
+_GLOBAL_SOUND_SIGN = None
+
+
 def _get_global_sound_sentences():
-    """获取通过语法门禁的语料库原句列表（用于小课本或孤立句辨句时的干扰项保底）"""
+    """通过语法门禁的语料库原句列表（小课本/孤立句辨句的干扰项保底）。
+
+    v26：改为 (count, max_id) 签名缓存——旧 lru_cache(maxsize=1) 永不失效，
+    语料增删后干扰项池一直是旧数据；现在语料一变自动重抽。"""
+    global _GLOBAL_SOUND_SENTS, _GLOBAL_SOUND_SIGN
     try:
         with db.get_conn() as c:
-            rows = [r[0] for r in c.execute(
-                "SELECT text FROM sentences WHERE length(text) BETWEEN 8 AND 60 ORDER BY RANDOM() LIMIT 500"
-            ).fetchall()]
-        return [r for r in rows if _sound_sentence(r)]
+            sign = (str(db.DB_PATH), *tuple(c.execute(
+                'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
     except Exception:
         return []
+    if _GLOBAL_SOUND_SENTS is not None and _GLOBAL_SOUND_SIGN == sign:
+        return _GLOBAL_SOUND_SENTS
+    try:
+        with db.get_conn() as c:
+            rows = [r['text'] for r in _random_corpus_rows(
+                c, 800, "length(text) BETWEEN 8 AND 60")]
+        out = [r for r in rows if _sound_sentence(r)][:500]
+    except Exception:
+        return []
+    _GLOBAL_SOUND_SENTS = out
+    _GLOBAL_SOUND_SIGN = sign
+    return out
 
 
 # ================================================================
@@ -826,6 +938,7 @@ def _build_cloze_q(row):
 _KANJI_RE = re.compile(r'^[\u3400-\u9fff々〆ヶ]+$')
 _GLOBAL_WORD_BANK = None
 _GLOBAL_WORD_BANK_SIGN = None
+_WORD_BANK_LOCK = threading.Lock()
 _GLOBAL_SUGGEST_KEYS = None
 _GLOBAL_SUGGEST_SIGN = None
 
@@ -897,36 +1010,102 @@ def _word_bank_from_rows(rows):
 
 
 def _get_global_word_bank():
-    """全语料库纯汉字词索引；按 count/max(id) 换代，避免每道题重复分词。"""
+    """全语料库纯汉字词库 + 混淆候选倒排索引；按 count/max(id) 签名换代。
+
+    v26 之前：听音选汉字每出一题就把全库词库（最多 6 万条）从头扫一遍、
+    每条跑两次 difflib —— 一题 ~1.4 秒，且词库以 6 万个 dict 常驻。
+    v26 之后：词库压成平行元组（words/readings/texts/sids/sources），并建
+    三张倒排（共享汉字 → 词序号、读音 → 词序号、读音 bigram → 词序号）。
+    出题时先并集取「可能混淆」的候选（通常几十~几百个），只对它们跑
+    difflib 精算——结果仍是「真实语料 + 最高混淆」的硬负例，但快百倍。
+    """
     global _GLOBAL_WORD_BANK, _GLOBAL_WORD_BANK_SIGN
     try:
         with db.get_conn() as c:
             sign = (str(db.DB_PATH), *tuple(c.execute(
                 'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
-        if _GLOBAL_WORD_BANK is not None and _GLOBAL_WORD_BANK_SIGN == sign:
+    except Exception:
+        sign = None
+    with _WORD_BANK_LOCK:
+        if (sign is not None and _GLOBAL_WORD_BANK is not None
+                and _GLOBAL_WORD_BANK_SIGN == sign):
             return _GLOBAL_WORD_BANK
-        # kanji_index 已在录入语料时建立，直接取它比逐句重新跑 ruby 快一个数量级；
-        # 只把纯汉字且有读音的真实词放入候选，旧库缺索引时再退回逐句提取。
+    words, readings, texts, sids, sources = [], [], [], [], []
+    empty = {'words': (), 'readings': (), 'texts': (), 'sids': (), 'sources': (),
+             'by_char': {}, 'by_reading': {}, 'by_rbigram': {}}
+    try:
         with db.get_conn() as c:
-            indexed = [dict(r) for r in c.execute(
+            # kanji_index 已在录入语料时建立，直接取它比逐句重新跑 ruby 快一个数量级；
+            # 只把纯汉字且有读音的真实词放入候选，旧库缺索引时再退回逐句提取。
+            indexed = c.execute(
                 'SELECT DISTINCT ki.word word, ki.word_reading reading, '
                 's.text text, s.id sid, s.source source '
                 'FROM kanji_index ki JOIN sentences s ON s.id=ki.sentence_id '
                 "WHERE ki.word_reading IS NOT NULL AND trim(ki.word_reading)<>'' "
-                'LIMIT 60000').fetchall()]
-        _GLOBAL_WORD_BANK = [r for r in indexed if _is_pure_kanji(r.get('word'))
-                             and 1 <= len(r.get('word') or '') <= 8
-                             and r.get('reading')]
-        if not _GLOBAL_WORD_BANK:
+                'ORDER BY s.id LIMIT 60000').fetchall()
+        for r in indexed:
+            w = r['word']
+            if not (_is_pure_kanji(w) and 1 <= len(w) <= 8 and r['reading']):
+                continue
+            words.append(w)
+            readings.append(r['reading'])
+            texts.append(r['text'])
+            sids.append(r['sid'])
+            sources.append(r['source'])
+        if not words:
             with db.get_conn() as c:
-                rows = [dict(r) for r in c.execute(
+                cur = c.execute(
                     'SELECT id sid, text, source FROM sentences '
-                    'WHERE length(text) BETWEEN 4 AND 120 LIMIT 30000').fetchall()]
-            _GLOBAL_WORD_BANK = _word_bank_from_rows(rows)
-        _GLOBAL_WORD_BANK_SIGN = sign
-        return _GLOBAL_WORD_BANK
+                    'WHERE length(text) BETWEEN 4 AND 120 ORDER BY id DESC LIMIT 30000')
+                for r in cur:
+                    for unit in _kanji_word_units(r['text']):
+                        words.append(unit['word'])
+                        readings.append(unit['reading'])
+                        texts.append(r['text'])
+                        sids.append(r['sid'])
+                        sources.append(r['source'])
+        if not words:
+            _GLOBAL_WORD_BANK = empty
+            _GLOBAL_WORD_BANK_SIGN = sign
+            return empty
     except Exception:
-        return []
+        _GLOBAL_WORD_BANK = empty
+        _GLOBAL_WORD_BANK_SIGN = sign
+        return empty
+    by_char, by_reading, by_rbigram = {}, {}, {}
+    for i in range(len(words)):
+        w, rd = words[i], readings[i]
+        for ch in set(w):
+            by_char.setdefault(ch, array('l')).append(i)
+        h = furigana.kata_to_hira(rd)
+        by_reading.setdefault(h, array('l')).append(i)
+        for j in range(len(h) - 1):
+            by_rbigram.setdefault(h[j:j + 2], array('l')).append(i)
+    bank = {'words': tuple(words), 'readings': tuple(readings),
+            'texts': tuple(texts), 'sids': tuple(sids), 'sources': tuple(sources),
+            'by_char': by_char, 'by_reading': by_reading, 'by_rbigram': by_rbigram}
+    with _WORD_BANK_LOCK:
+        if _GLOBAL_WORD_BANK_SIGN == sign and _GLOBAL_WORD_BANK is not None:
+            return _GLOBAL_WORD_BANK          # 并发竞争时后建者让位，避免反复换库
+        _GLOBAL_WORD_BANK = bank
+        _GLOBAL_WORD_BANK_SIGN = sign
+    return bank
+
+
+def _word_bank_candidates(bank, target, target_reading):
+    """混淆候选：共享任一汉字 / 同读音 / 读音共享任一 bigram 的词序号并集。
+
+    覆盖旧全库扫描能通过 0.30 入选线的绝大多数来源：读音/表记相似度高
+    的词必然共享读音 bigram 或汉字；三样都不沾的词最高只能拿同长 0.16，
+    本来就进不了干扰项，全部安全剪掉。
+    """
+    cand = set()
+    for ch in set(target):
+        cand.update(bank['by_char'].get(ch, ()))
+    cand.update(bank['by_reading'].get(target_reading, ()))
+    for j in range(len(target_reading) - 1):
+        cand.update(bank['by_rbigram'].get(target_reading[j:j + 2], ()))
+    return cand
 
 
 def _row_word_candidates(row):
@@ -959,14 +1138,19 @@ def _build_kanji_choice_q(row, word_bank=None):
     bank = word_bank or _get_global_word_bank()
     target = unit['word']
     target_reading = furigana.kata_to_hira(unit['reading'])
+    words = bank['words']
+    if not words:
+        return None
+    # 候选并集（共享汉字 / 同读音 / 读音共享 bigram），只对它们跑 difflib 精算
+    cand_idx = _word_bank_candidates(bank, target, target_reading)
     ranked, seen = [], {target}
-    for cand in bank:
-        word = cand.get('word', '')
-        if word in seen or not _is_pure_kanji(word) or not cand.get('reading'):
+    for i in cand_idx:
+        word = words[i]
+        if word in seen or len(word) > 8:
             continue
-        if abs(len(word) - len(target)) > 2 or len(word) > 8:
+        if abs(len(word) - len(target)) > 2:
             continue
-        reading = furigana.kata_to_hira(cand['reading'])
+        reading = furigana.kata_to_hira(bank['readings'][i])
         surface_sim = SequenceMatcher(None, target, word, autojunk=False).ratio()
         reading_sim = SequenceMatcher(None, target_reading, reading, autojunk=False).ratio()
         shared = len(set(target) & set(word)) / max(len(set(target)), 1)
@@ -978,7 +1162,7 @@ def _build_kanji_choice_q(row, word_bank=None):
         if score < 0.30:
             continue
         seen.add(word)
-        ranked.append((score, word, cand, reading_sim, surface_sim, shared))
+        ranked.append((score, word, i, reading_sim, surface_sim, shared))
     if len(ranked) < 3:
         return None
     ranked.sort(key=lambda x: (-x[0], x[1]))
@@ -1012,14 +1196,28 @@ def _build_kanji_choice_q(row, word_bank=None):
 
 @lru_cache(maxsize=8192)
 def _sentence_answer_profile(text):
-    """整句表记/读音的有限状态匹配材料。"""
+    """整句表记/读音的有限状态匹配材料（结果缓存，判卷/出题共用）。
+
+    注意判卷/出题必须用**现场注音**：库里的 tokens 可能是旧版引擎算的
+    （如 にっぽんご/にほんご 语体差异），题面「推荐读音」要跟当前引擎一致。
+    联想索引（3 万句级）才复用入库 tokens 换速度——读音候选经等价表判卷，
+    旧读音也能被有限状态匹配接受，不会判错。"""
     text = (text or '').strip()
     try:
-        tokens = furigana.annotate(text)
+        return profile_from_tokens(furigana.annotate(text))
     except Exception:
-        tokens = []
+        return {'surface': _normalize_jp(text), 'reading': '', 'parts': []}
+
+
+def profile_from_tokens(tokens):
+    """由注音 token 列构建判卷材料（与旧 _sentence_answer_profile 逐行等价）。
+
+    tokens 可以是 furigana.annotate() 的返回值，也可以是语料库 sentences.tokens
+    列里存的同一结构 JSON——入库时已算好，出题/建索引直接复用，不再逐句重跑
+    形态素引擎（这是联想索引从 ~70 秒降到几秒的关键）。
+    """
     parts = []
-    for tok in tokens:
+    for tok in tokens or ():
         surface = tok.get('s') or ''
         if not surface or all(unicodedata.category(ch).startswith(('P', 'S'))
                               or ch.isspace() for ch in surface):
@@ -1040,6 +1238,7 @@ def _sentence_answer_profile(text):
         parts.append({'surface': _normalize_jp(surface),
                       'recommended': _normalize_jp(reading),
                       'alternatives': sorted(set(alternatives))})
+    text = ''.join((tok.get('s') or '') for tok in tokens or ())
     surface = _normalize_jp(text)
     reading = ''.join(p['recommended'] for p in parts)
     return {'surface': surface, 'reading': reading, 'parts': parts}
@@ -1171,88 +1370,212 @@ def _sentence_boundaries(text):
     return tuple(ends)
 
 
+# ================================================================
+# v26 整句听写「输入联想」索引：紧凑前缀库（默认关闭，口令开启）
+# ================================================================
+# 旧实现的问题：
+#   1. 启动即后台预热：把 3 万句逐句重跑形态素引擎（~70 秒 CPU），云端
+#      单核容器上启动后几分钟内所有请求都在排队；
+#   2. 结构是 42.6 万个 (前缀字符串, int) 的 Python tuple 排序列表
+#      ≈ 124MB（RSS 峰值 ~450MB），是 Render 超内存的三大元凶之一。
+# 新实现：
+#   1. 直接读 sentences.tokens（入库时已注音），不再重跑引擎，构建秒级；
+#   2. 全部前缀串接成一个 blob + 两个 array('l') 偏移数组（键起始/词块
+#      起点），二分查找在 blob 上手工进行，最终驻留 ~20MB；
+#   3. 默认关闭（DEFAULT_CFG.suggest_enabled=False），开启需隐藏入口 +
+#      口令（set_suggest_enabled），关闭立即释放全部内存；
+#   4. 构建期间并发请求立即返回空（不打断、不阻塞出题主流程）。
+_GLOBAL_SUGGEST = None          # None=未建；dict(blob=..., starts=..., wstarts=..., sign=...)
+_GLOBAL_SUGGEST_SIGN = None
+_SUGGEST_LOCK = threading.Lock()
+_SUGGEST_BUILDING = False
+
+
+def _suggest_corpus_sign():
+    with db.get_conn() as c:
+        return (str(db.DB_PATH), *tuple(c.execute(
+            'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
+
+
 def _build_suggest_keys():
-    """一次性把全库分词结果切成「句首→每个词块边界」的前缀键（surface + reading 两套），
-    排序后供二分前缀检索。这是整句听写联想从 O(N) 降到 O(log N) 的关键；
-    首次构建约十几秒，通过 warmup_suggestions_async 后台预热，之后随数据签名重建。"""
-    global _GLOBAL_SUGGEST_KEYS, _GLOBAL_SUGGEST_SIGN
+    """全库前缀键紧凑构建（复用入库 tokens；语料超预算时按最新 N 篇降级）。"""
+    global _GLOBAL_SUGGEST, _GLOBAL_SUGGEST_SIGN, _SUGGEST_BUILDING
+    import perf
+    cap = perf.doc_cap(default=30000, env='KANJI_SUGGEST_MAX_DOCS')
+    with _SUGGEST_LOCK:
+        if _GLOBAL_SUGGEST is not None and _GLOBAL_SUGGEST_SIGN == _suggest_corpus_sign():
+            return _GLOBAL_SUGGEST
+        if _SUGGEST_BUILDING:                     # 已有线程在建：本次直接放弃
+            return None
+        _SUGGEST_BUILDING = True
     try:
+        keymap = {}                               # 前缀 -> 最小词块起点
         with db.get_conn() as c:
-            sign = (str(db.DB_PATH), *tuple(c.execute(
-                'SELECT count(*), COALESCE(max(id), 0) FROM sentences').fetchone()))
-        if _GLOBAL_SUGGEST_KEYS is not None and _GLOBAL_SUGGEST_SIGN == sign:
-            return _GLOBAL_SUGGEST_KEYS
-        with db.get_conn() as c:
-            raw = [r[0] for r in c.execute(
-                'SELECT text FROM sentences WHERE length(text) BETWEEN 4 AND 120 '
-                'ORDER BY id DESC LIMIT 30000').fetchall()]
-        keys = set()
-        for text in raw:
-            if not text:
-                continue
-            profile = _sentence_answer_profile(text)
-            surface = profile.get('surface') or ''
-            reading = profile.get('reading') or ''
-            parts = profile.get('parts') or []
-            if not surface:
-                continue
-            s_ends, r_ends, n, m = [], [], 0, 0
-            for part in parts:
-                s = part.get('surface') or ''
-                r = part.get('recommended') or ''
-                if s:
-                    n += len(s)
-                    s_ends.append(n)
-                if r:
-                    m += len(r)
-                    r_ends.append(m)
-            prev = 0
-            for end in s_ends:
-                keys.add((surface[:end], prev))
-                prev = end
-            prev = 0
-            for end in r_ends:
-                keys.add((reading[:end], prev))
-                prev = end
-        _GLOBAL_SUGGEST_KEYS = sorted(keys)
-        _GLOBAL_SUGGEST_SIGN = sign
-        return _GLOBAL_SUGGEST_KEYS
-    except Exception:
-        return ()
+            cur = c.execute(
+                'SELECT text, tokens FROM sentences '
+                'WHERE length(text) BETWEEN 4 AND 120 ORDER BY id DESC LIMIT ?', (cap,))
+            n_rows = 0
+            for r in cur:                         # 流式游标：不把 3 万行拉进内存
+                n_rows += 1
+                text = r['text'] or ''
+                if not text:
+                    continue
+                toks = None
+                raw = r['tokens']
+                if raw:
+                    try:
+                        toks = json.loads(raw)
+                    except Exception:
+                        toks = None
+                if toks is None:                  # 老库缺 tokens：退回现场注音
+                    try:
+                        toks = furigana.annotate(text)
+                    except Exception:
+                        toks = []
+                profile = profile_from_tokens(toks)
+                surface = profile.get('surface') or ''
+                reading = profile.get('reading') or ''
+                parts = profile.get('parts') or []
+                if not surface:
+                    continue
+                s_ends, r_ends, n, m = [], [], 0, 0
+                for part in parts:
+                    s = part.get('surface') or ''
+                    rr = part.get('recommended') or ''
+                    if s:
+                        n += len(s)
+                        s_ends.append(n)
+                    if rr:
+                        m += len(rr)
+                        r_ends.append(m)
+                prev = 0
+                for e in s_ends:
+                    k = surface[:e]
+                    ws = keymap.get(k)
+                    if ws is None or prev < ws:
+                        keymap[k] = prev
+                    prev = e
+                prev = 0
+                for e in r_ends:
+                    k = reading[:e]
+                    ws = keymap.get(k)
+                    if ws is None or prev < ws:
+                        keymap[k] = prev
+                    prev = e
+        keys = sorted(keymap)
+        blob = ''.join(keys)
+        starts = array('l')
+        wstarts = array('l')
+        pos = 0
+        for k in keys:
+            starts.append(pos)
+            wstarts.append(keymap[k])
+            pos += len(k)
+        starts.append(pos)                        # 哨兵：key_i = blob[starts[i]:starts[i+1]]
+        idx = {'blob': blob, 'starts': starts, 'wstarts': wstarts, 'n': len(keys)}
+        del keymap, keys                          # 立刻释放中间结构
+        sign = _suggest_corpus_sign()
+        with _SUGGEST_LOCK:
+            _GLOBAL_SUGGEST = idx
+            _GLOBAL_SUGGEST_SIGN = sign
+        try:
+            import perf
+            perf.trim_memory()     # 40 万前缀串构建期间的堆空洞归还系统
+        except Exception:
+            pass
+        return idx
+    finally:
+        with _SUGGEST_LOCK:
+            _SUGGEST_BUILDING = False
 
 
 def _get_global_suggest_keys():
-    return _GLOBAL_SUGGEST_KEYS if _GLOBAL_SUGGEST_KEYS is not None else _build_suggest_keys()
+    """取联想索引；正在后台构建时返回 None（调用方按无联想处理）。"""
+    global _GLOBAL_SUGGEST, _GLOBAL_SUGGEST_SIGN
+    if not listening_cfg().get('suggest_enabled', False):
+        return None                               # 功能关闭：绝不建索引
+    with _SUGGEST_LOCK:
+        idx = _GLOBAL_SUGGEST
+        if idx is not None and _GLOBAL_SUGGEST_SIGN == _suggest_corpus_sign():
+            return idx
+    if _SUGGEST_BUILDING:
+        return None
+    return _build_suggest_keys()
+
+
+def _suggest_key_at(idx, i):
+    blob, starts = idx['blob'], idx['starts']
+    return blob[starts[i]:starts[i + 1]]
 
 
 def warmup_suggestions_async(delay=5.0):
-    """后台预热整句听写联想索引，避免首个联想请求干等十几秒。"""
+    """后台预热联想索引。只在功能已开启时才会真正干活（默认关闭 → 直接返回）。"""
     def _warm():
         try:
             if delay:
                 time.sleep(delay)
+            if not listening_cfg().get('suggest_enabled', False):
+                return
             _build_suggest_keys()
         except Exception:
             pass
-    threading.Thread(target=_warm, daemon=True).start()
+    threading.Thread(target=_warm, daemon=True, name='ls-suggest-warm').start()
+
+
+# 联想隐藏开关的口令（用户指定的访问口令；走独立接口，普通配置接口改不了它）
+SUGGEST_SECRET = '123456'
+
+
+def set_suggest_enabled(secret, enabled):
+    """口令保护的联想开关：开启 → 后台建索引；关闭 → 立即释放全部索引内存。"""
+    global _GLOBAL_SUGGEST, _GLOBAL_SUGGEST_SIGN
+    if str(secret or '').strip() != SUGGEST_SECRET:
+        return {'ok': False, 'error': '口令不正确'}
+    cfg = listening_cfg()
+    cfg['suggest_enabled'] = bool(enabled)
+    db.set_setting(_CFG_KEY, json.dumps(cfg, ensure_ascii=False))
+    if cfg['suggest_enabled']:
+        warmup_suggestions_async(delay=0.0)       # 开启后立刻后台构建
+    else:
+        with _SUGGEST_LOCK:                        # 关闭：索引内存当场归还
+            _GLOBAL_SUGGEST = None
+            _GLOBAL_SUGGEST_SIGN = None
+    db.log('listening', '整句听写输入联想已' + ('开启' if cfg['suggest_enabled'] else '关闭'))
+    return {'ok': True, 'cfg': cfg}
 
 
 def sentence_suggestions(prefix, mode='beginner', limit=6):
-    """从全语料库给整句听写联想；返回短小可直接填入的 value，不返回长句答案。"""
+    """从全语料库给整句听写联想；返回短小可直接填入的 value，不返回长句答案。
+
+    v26：默认关闭（配置 suggest_enabled=False 时恒返回空）；索引未就绪
+    （首次开启正在后台构建）也返回空，前端继续手打不受影响。
+    """
     if mode == 'advanced':
+        return []
+    if not listening_cfg().get('suggest_enabled', False):
         return []
     clean = _normalize_jp(prefix)
     if not clean:
         return []
     limit = max(1, min(int(limit or 6), 8))
-    keys = _get_global_suggest_keys()
-    if not keys:
+    idx = _get_global_suggest_keys()
+    if not idx:
         return []
+    blob, starts, wstarts, n = idx['blob'], idx['starts'], idx['wstarts'], idx['n']
+    # 手工二分：blob 上找第一个 >= clean 的键（键已全局排序）
+    lo, hi = 0, n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if blob[starts[mid]:starts[mid + 1]] < clean:
+            lo = mid + 1
+        else:
+            hi = mid
     got, seen = [], set()
-    lo = bisect.bisect_left(keys, (clean, -1))
-    for key, word_start in keys[lo:]:
+    for i in range(lo, n):
+        key = blob[starts[i]:starts[i + 1]]
         if not key.startswith(clean):
             break
+        word_start = wstarts[i]
         # 只处理「前缀正好落在该词块内（含起点）」的键，更短的键由它自己的词块项负责，
         # 避免 clean 停在更早词块时被补成跨多个词块的长串。
         if len(clean) < word_start or len(clean) >= len(key):
@@ -1336,34 +1659,6 @@ def _origin(row):
         return row.get('source') or '语料库'
 
 
-# ================================================================
-# 出题主流程
-# ================================================================
-def _expanded_translation_pool(scope, ids, rows):
-    """高级选义检索池；目标题仍严格来自已解析的 scope。"""
-    pool = list(rows)
-    try:
-        if scope in ('corpus', 'mixed'):
-            with db.get_conn() as c:
-                pool += [dict(r) for r in c.execute(
-                    "SELECT id sid, text, translation, source FROM sentences "
-                    "WHERE translation IS NOT NULL AND trim(translation)<>'' LIMIT 20000"
-                ).fetchall()]
-        elif scope == 'book' and ids:
-            pool += textbook.fetch_book_sentence_rows(ids, 5000)
-    except Exception:
-        pass
-    out, seen = [], set()
-    for row in pool:
-        tr = (row.get('translation') or '').strip()
-        key = ((row.get('text') or '').strip(), tr)
-        if not tr or key in seen:
-            continue
-        seen.add(key)
-        out.append(row)
-    return out
-
-
 def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
     cfg = listening_cfg()
     if not cfg.get('enabled', True):
@@ -1424,18 +1719,14 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
             break
         targets[k] += 1
 
+    # v26：听后选义的检索池固定用全局紧凑倒排索引（跨卷共享、签名换代），
+    # 不再每卷把 2 万行译文拉进内存重建一遍索引；题干仍严格来自当前 scope。
     translation_pool = [r for r in rows if (r.get('translation') or '').strip()]
     meaning_difficulty = cfg.get('meaning_difficulty', 'advanced')
-    if meaning_difficulty == 'advanced':
-        translation_pool = _expanded_translation_pool(scope, ids, translation_pool)
-    meaning_ctx = _meaning_search_context(translation_pool) if translation_pool else _get_global_translation_index()
+    meaning_ctx = _get_global_translation_index()
     sentence_pool = rows
-    word_bank = _word_bank_from_rows(rows)
-    # 选项混淆需要跨句检索。题干仍严格来自 scope，只有干扰词从全语料索引补足。
-    global_words = _get_global_word_bank()
-    seen_word_keys = {(x['word'], x['reading']) for x in word_bank}
-    word_bank.extend(x for x in global_words
-                     if (x['word'], x['reading']) not in seen_word_keys)
+    # 题干仍严格来自 scope；只有干扰词从全语料紧凑词库（倒排候选）补足。
+    word_bank = _get_global_word_bank()
     sentence_mode = cfg.get('sentence_mode', 'mixed')
 
     contrast_floor = ['hard']          # 先只收「必须听句子中段」的对立题
