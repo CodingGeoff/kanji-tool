@@ -1767,7 +1767,11 @@ def api_voices():
 
 @app.route('/api/tts', methods=['POST'])
 def api_tts():
-    import edge_tts
+    try:
+        import edge_tts
+    except Exception:
+        # 依赖未安装时返回干净的错误码（前端会自动回退到浏览器本地朗读），避免 500 堆栈
+        return jsonify({'error': '服务端 TTS (edge_tts) 未安装，已回退浏览器朗读'}), 503
     d = request.json or {}
     text = (d.get('text') or '').strip()
     voice = d.get('voice') or VOICES[0]['id']
