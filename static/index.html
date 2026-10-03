@@ -148,6 +148,14 @@ details.rag-fold .rag-grid{margin-top:10px}
 .sent-item .tr{color:var(--sub);font-size:14px;margin-top:2px}
 .sent-item .meta{font-size:12px;color:#b9b3a4;margin-top:4px;display:flex;gap:10px;align-items:center}
 .sent-item .meta button{border:none;background:none;color:#b9b3a4;cursor:pointer;font-size:12px;padding:0}
+/* 课文通读：整篇连排，区别于逐句练习卡片 */
+.bk-text-lesson{margin:14px 0 4px}
+.bk-text-sent{cursor:pointer;border-radius:10px;padding:4px 8px;margin:0 -8px;transition:background .15s}
+.bk-text-sent:hover{background:#f6f1e6}
+.bk-text-sent.bk-text-cur{background:#fff3d6;box-shadow:inset 0 0 0 2px var(--gold)}
+.bk-menu-item{display:block;width:100%;text-align:left;border:none;background:none;padding:9px 12px;border-radius:7px;font-size:14px;cursor:pointer;color:#3a342a}
+.bk-menu-item:hover{background:#f2efe7}
+.bk-sel{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:14px}
 .sent-item .meta button:hover{color:var(--accent)}
 .tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--sub)}
 .hidden{display:none!important}
@@ -2974,6 +2982,7 @@ function bkRenderDetail(){
      <div class="row" style="margin-top:10px;gap:6px">
        <button class="btn mini green" id="bkTabKanji" onclick="bkUnitsTab('kanji')">汉字 ${b.kanji_total}</button>
        <button class="btn mini" id="bkTabWords" onclick="bkUnitsTab('words')">词汇 ${b.words_total}</button>
+       <button class="btn mini" id="bkTabText" onclick="bkUnitsTab('text')">📖 课文 ${b.sentences}</button>
        <span class="muted" style="font-size:12px;margin-left:8px">💡 顶部【显示读音】可一键切换课文注音显隐，状态自动记忆</span>
      </div>
      <div id="bkUnits" style="margin-top:10px"></div>
@@ -3104,9 +3113,10 @@ async function bkEditMeta(){
 }
 async function bkUnitsTab(mode){
   bkUnitsMode=mode;
-  const k=document.getElementById('bkTabKanji'),w=document.getElementById('bkTabWords');
-  if(k&&w){k.classList.toggle('green',mode==='kanji');w.classList.toggle('green',mode==='words')}
+  const k=document.getElementById('bkTabKanji'),w=document.getElementById('bkTabWords'),t=document.getElementById('bkTabText');
+  if(k&&w&&t){k.classList.toggle('green',mode==='kanji');w.classList.toggle('green',mode==='words');t.classList.toggle('green',mode==='text')}
   const box=$('#bkUnits');if(!box)return;
+  if(mode==='text'){ bkTextTab(); return; }
   box.innerHTML='<span class="muted">加载中…</span>';
   const d=await api(`/api/books/units?type=${mode}&ids=${bkCur.id}&per=500`);
   if(mode==='kanji'){
@@ -3129,6 +3139,153 @@ async function bkUnitsTab(mode){
     }).join('')||'<span class="muted">本书还没有词汇</span>';
   }
 }
+
+/* ---------- 课文通读（整篇阅读，区别于逐句练习卡片） ---------- */
+let bkFull=null, bkTextRows=[], bkTextPlaying=false, bkTextQueue=[], bkTextIdx=0;
+
+async function bkTextTab(){
+  const box=$('#bkUnits'); if(!box)return;
+  const rubyOn=localStorage.getItem('bkRubyAll')==='1';
+  box.innerHTML=`
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <b style="font-size:15px">📖 课文通读</b>
+      <select id="bkTextLesson" onchange="bkTextLoad()" class="bk-sel"></select>
+      <button class="btn mini primary" id="bkTextPlayBtn" onclick="bkTextPlayAll()">🔊 整篇朗读</button>
+      <button class="btn mini ${rubyOn?'green':''}" id="bkTextRubyBtn" onclick="bkTextToggleRuby()">🔤 ${rubyOn?'隐藏读音':'显示读音'}</button>
+      <span class="muted" style="font-size:12px">点任意句子可练句 / 朗读 / 收藏 / 复制</span>
+    </div>
+    <div id="bkTextBody"><span class="muted">加载中…</span></div>`;
+  const sel=$('#bkTextLesson');
+  const ls=(bkCur.lessons_list||[]);
+  sel.innerHTML=`<option value="0">📚 整本通读（${bkCur.sentences||0} 句）</option>`+
+    ls.map(l=>`<option value="${l.id}">${esc(l.title||('第'+(l.idx||0)+'課'))}</option>`).join('');
+  await bkTextLoad();
+}
+
+async function bkTextLoad(){
+  const body=$('#bkTextBody'); if(!body)return;
+  body.innerHTML='<span class="muted">加载全篇课文…</span>';
+  let d;
+  try{ d=await api(`/api/books/${bkCur.id}/fulltext`); }
+  catch(e){ body.innerHTML='<span class="muted">加载失败</span>'; return; }
+  if(d.error){ body.innerHTML='<span class="muted">未找到课本</span>'; return; }
+  bkFull=d;
+  const sel=$('#bkTextLesson'); const lid=sel?parseInt(sel.value)||0:0;
+  const lessons = lid ? d.lessons.filter(x=>x.id===lid) : d.lessons;
+  bkTextRender(lessons, body);
+}
+
+function bkTextRender(lessons, body){
+  const rubyOn=localStorage.getItem('bkRubyAll')==='1';
+  let idx=0;
+  const parts=[];
+  for(const les of lessons){
+    if(lessons.length>1){
+      parts.push(`<div class="bk-text-lesson"><b class="bk-text-lesson-title" style="font-size:16px;color:var(--gold)">${esc(les.title||'')}</b></div>`);
+    }
+    for(const s of (les.sentences||[])){
+      const toks = (s.tokens&&s.tokens.length)?rubyHTML(s.tokens):esc(s.text);
+      const rubyCls = rubyOn?'':'noruby';
+      parts.push(`<div class="bk-text-sent" data-idx="${idx}" data-sid="${s.id}" data-text="${esc(s.text)}" onclick="bkTextSentenceClick(event,${s.id},${jsArg(s.text)})">
+        <div class="jp ${rubyCls}" style="font-size:21px;line-height:2">${toks} ${spkBtn(s.text)}</div>
+        ${s.translation?`<div class="tr" style="font-size:14.5px;margin:2px 0 10px;color:#6b5d45">${esc(s.translation)}</div>`:`<div class="tr muted" style="font-size:13px;margin:0 0 10px;color:#a98">（暂无译文）</div>`}
+      </div>`);
+      idx++;
+    }
+  }
+  body.innerHTML = parts.join('') || '<span class="muted">本书还没有课文</span>';
+  bkTextRows = Array.from(body.querySelectorAll('.bk-text-sent')).map(el=>({sid:el.dataset.sid,text:el.dataset.text,el}));
+}
+
+function bkTextToggleRuby(){
+  const cur=localStorage.getItem('bkRubyAll')==='1';
+  const nxt=!cur; localStorage.setItem('bkRubyAll',nxt?'1':'0');
+  const btn=document.getElementById('bkTextRubyBtn');
+  if(btn){btn.classList.toggle('green',nxt);btn.innerHTML=`🔤 ${nxt?'隐藏读音':'显示读音'}`;}
+  document.querySelectorAll('#bkTextBody .jp').forEach(el=>{ if(nxt)el.classList.remove('noruby'); else el.classList.add('noruby'); });
+  const top=document.getElementById('bkRubyBtn'); if(top){top.classList.toggle('green',nxt);top.innerHTML=`🔤 ${nxt?'隐藏读音':'显示读音'}`;}
+}
+
+function bkTextPlayAll(){
+  const btn=document.getElementById('bkTextPlayBtn');
+  if(bkTextPlaying){ bkTextStop(); return; }
+  const texts=bkTextRows.map(r=>r.text);
+  if(!texts.length)return;
+  bkTextQueue=texts; bkTextIdx=0; bkTextPlaying=true;
+  if(btn)btn.textContent='⏹ 停止朗读';
+  bkTextPlayNext();
+}
+function bkTextStop(){
+  bkTextPlaying=false; bkTextQueue=[]; bkTextIdx=0;
+  if(_audio){try{_audio.pause()}catch(_){};if(_audio._url)URL.revokeObjectURL(_audio._url);_audio=null;}
+  try{speechSynthesis.cancel()}catch(_){}
+  const btn=document.getElementById('bkTextPlayBtn'); if(btn)btn.textContent='🔊 整篇朗读';
+  bkTextRows.forEach(r=>r.el&&r.el.classList.remove('bk-text-cur'));
+}
+function bkTextPlayNext(){
+  if(!bkTextPlaying||bkTextIdx>=bkTextQueue.length){ bkTextStop(); return; }
+  const r=bkTextRows[bkTextIdx];
+  bkTextRows.forEach(x=>x.el&&x.el.classList.remove('bk-text-cur'));
+  if(r&&r.el)r.el.classList.add('bk-text-cur');
+  const text=r?r.text:bkTextQueue[bkTextIdx];
+  const advance=()=>{bkTextIdx++;bkTextPlayNext();};
+  fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,voice:localStorage.voice||'',rate:localStorage.rate||'normal'})})
+    .then(resp=>{ if(!resp.ok)throw new Error('tts'); return resp.blob(); })
+    .then(blob=>{
+      const url=URL.createObjectURL(blob);const a=new Audio(url);a._url=url;
+      a.onended=()=>{try{URL.revokeObjectURL(url)}catch(_){};advance();};
+      a.onerror=()=>{try{URL.revokeObjectURL(url)}catch(_){};advance();};
+      a.play().catch(advance);
+    })
+    .catch(()=>{
+      try{
+        const u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';
+        const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ja'));if(v)u.voice=v;
+        u.onend=advance;u.onerror=advance;speechSynthesis.speak(u);
+      }catch(e2){advance();}
+    });
+}
+function bkTextSpkOne(text){
+  fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,voice:localStorage.voice||'',rate:localStorage.rate||'normal'})})
+    .then(r=>{ if(!r.ok)throw new Error('tts'); return r.blob(); })
+    .then(blob=>{const url=URL.createObjectURL(blob);const a=new Audio(url);a._url=url;a.onended=()=>{try{URL.revokeObjectURL(url)}catch(_){}};a.play().catch(()=>{});})
+    .catch(()=>{const u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ja'));if(v)u.voice=v;speechSynthesis.speak(u);});
+}
+function bkTextSentenceClick(e, sid, text){
+  if(e.target.closest('.spkbtn'))return;
+  e.stopPropagation();
+  bkTextMenu(e, sid, text);
+}
+function bkTextMenu(e, sid, text){
+  const old=document.getElementById('bkTextMenu'); if(old)old.remove();
+  const m=document.createElement('div');m.id='bkTextMenu';
+  const x=Math.min(e.clientX||200, window.innerWidth-200), y=Math.min(e.clientY||200, window.innerHeight-250);
+  m.style.cssText=`position:fixed;left:${x}px;top:${y}px;z-index:90;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:6px;min-width:180px`;
+  m.innerHTML=`
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();bkStartClozeSids(${sid})">📝 挖空练习（本句）</button>
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();sbOpen({sids:[${sid}]})">🧩 组句练习（本句）</button>
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();lsOpen({sids:[${sid}]})">🎧 听力（本句）</button>
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();bkTextSpkOne(${jsArg(text)})">🔊 朗读本句</button>
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();bkTextCopy(${jsArg(text)})">📋 复制原文</button>
+    <button class="bk-menu-item" onclick="document.getElementById('bkTextMenu').remove();favToggle(${sid})">☆ 收藏此句</button>`;
+  document.body.appendChild(m);
+  setTimeout(()=>{const close=ev=>{ if(!m.contains(ev.target)){m.remove();document.removeEventListener('click',close);} };document.addEventListener('click',close);},0);
+}
+function bkTextCopy(text){
+  try{ navigator.clipboard.writeText(text); toast('已复制原文'); }catch(e){ toast('复制失败'); }
+}
+async function bkStartClozeSids(sid){
+  let d;
+  try{ d=await api('/api/books/cloze',{method:'POST',body:JSON.stringify({sids:[sid]})}); }
+  catch(e){ d={ok:false}; }
+  if(!d.ok||!d.questions||!d.questions.length){
+    toast(d&&d.reason?d.reason:'本句暂无可挖空的考点（可换句或整课练习）');return;
+  }
+  bkQuizShow();
+  bkQuiz={qs:d.questions,i:0,ok:0,ans:[],scope:d.scope,min:d.min_level,short:!!d.short,picked:null};
+  bkQuizRender();
+}
+
 function bkWordMenu(w,reading){
   reading=reading||'';
   const old=document.getElementById('bkMenu');if(old)old.remove();
@@ -3492,6 +3649,7 @@ async function sbOpen(opts){
   const bIds=(window.bkCur&&bkCur.id)?[bkCur.id]:(window.bkSel&&bkSel.size?[...bkSel]:[]);
   const body=bIds.length?{book_ids:bIds}:{};
   if(opts&&opts.scope) body.scope=opts.scope;   // KTV 歌词组句等定向题源
+  if(opts&&opts.sids) body.sids=opts.sids;       // 点句练句：针对单句出题
   window._sbLastOpts=opts||null;
   let d;
   try{ d=await api('/api/builder/quiz',{method:'POST',body:JSON.stringify(body)}); }
@@ -3815,6 +3973,7 @@ async function lsOpen(opts){
   const body=bIds.length?{book_ids:bIds}:{};
   if(opts&&opts.scope) body.scope=opts.scope;
   if(opts&&opts.level) body.level=opts.level;
+  if(opts&&opts.sids) body.sids=opts.sids;       // 点句练句：针对单句出题
   window._lsLastOpts=opts||null;
   let d;
   try{ d=await api('/api/listening/quiz',{method:'POST',body:JSON.stringify(body)}); }

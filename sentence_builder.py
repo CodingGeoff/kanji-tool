@@ -1364,8 +1364,8 @@ def _build_pairs(n_pairs=5):
     return {'qtype': 'pairs', 'pairs': pairs, 'n': len(pairs)}
 
 
-def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
-    """生成一组题。mode / level 可临时覆盖配置（两轴独立）。"""
+def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None, sids=None):
+    """生成一组题。mode / level 可临时覆盖配置（两轴独立）。sids 给定时针对指定句子出题。"""
     cfg = builder_cfg()
     if not cfg.get('enabled', True):
         return {'ok': False, 'reason': '组句练习已在配置中关闭',
@@ -1384,9 +1384,16 @@ def make_quiz(book_ids=None, count=None, mode=None, level=None, scope=None):
     n_arr = count - n_pairs
 
     import textbook
-    resolved = textbook.resolve_book_scope(scope, book_ids)
-    scope, resolved_ids = resolved['scope'], resolved['ids']
-    rows = _fetch_pool(scope, resolved_ids, need=min(max(n_arr * 40, 160), 600))
+    if sids:
+        # 点句练句：直接针对指定句子组句（跳过量级采样，仅出组句、不出配对）
+        rows = textbook.rows_for_sids(sids)
+        resolved = {'scope': 'book', 'ids': [], 'auto_all': False, 'note': None}
+        scope, resolved_ids = 'book', []
+        n_pairs = 0
+    else:
+        resolved = textbook.resolve_book_scope(scope, book_ids)
+        scope, resolved_ids = resolved['scope'], resolved['ids']
+        rows = _fetch_pool(scope, resolved_ids, need=min(max(n_arr * 40, 160), 600))
     questions, used_sid = [], set()
     relax_note = False
     mix_relaxed = False

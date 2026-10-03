@@ -890,6 +890,29 @@ def api_book_sentences(bid):
     return jsonify({'total': total, 'rows': rows})
 
 
+@app.route('/api/books/<int:bid>/fulltext')
+def api_book_fulltext(bid):
+    """整本课本按课分组的全文：每课含全部句子（text/translation/orig_text/tokens），
+    供「课文通读」视图一次性拉取整本，按原文顺序连成篇章。"""
+    book = db.get_book(bid)
+    if not book:
+        return jsonify({'error': 'not found'}), 404
+    lessons = db.list_lessons(bid)
+    out = []
+    for l in lessons:
+        _t, rows = db.list_book_sentences(bid, lesson_id=l['id'], per=100000)
+        out.append({
+            'id': l['id'], 'idx': l['idx'], 'title': l['title'],
+            'sentences': [{
+                'id': r['id'], 'text': r['text'],
+                'translation': r.get('translation'),
+                'orig_text': r.get('orig_text'),
+                'tokens': json.loads(r['tokens']) if r.get('tokens') else [],
+            } for r in rows],
+        })
+    return jsonify({'book': {'id': bid, 'title': book['title']}, 'lessons': out})
+
+
 @app.route('/api/books/<int:bid>/sentences/<int:sid>', methods=['DELETE'])
 def api_book_sentence_del(bid, sid):
     db.delete_book_sentence(bid, sid)
@@ -1150,7 +1173,8 @@ def api_book_cloze():
     ids = [int(x) for x in (d.get('book_ids') or []) if str(x).strip().isdigit()]
     return jsonify(textbook.make_cloze(ids or None, scope=d.get('scope'),
                                        min_level=d.get('min_level'),
-                                       count=_num(d.get('count'), None, 1, 20)))
+                                       count=_num(d.get('count'), None, 1, 20),
+                                       sids=d.get('sids')))
 
 
 @app.route('/api/books/quiz-recommend', methods=['GET', 'POST'])
@@ -1224,7 +1248,8 @@ def api_builder_quiz():
     d = request.json or {}
     return jsonify(sentence_builder.make_quiz(
         book_ids=d.get('book_ids'), count=d.get('count'),
-        mode=d.get('mode'), level=d.get('level'), scope=d.get('scope')))
+        mode=d.get('mode'), level=d.get('level'), scope=d.get('scope'),
+        sids=d.get('sids')))
 
 
 @app.route('/api/builder/check', methods=['POST'])
@@ -1270,7 +1295,7 @@ def api_listening_quiz():
     d = request.json or {}
     return jsonify(listening.make_quiz(
         book_ids=d.get('book_ids'), count=d.get('count'),
-        level=d.get('level'), scope=d.get('scope')))
+        level=d.get('level'), scope=d.get('scope'), sids=d.get('sids')))
 
 
 @app.route('/api/listening/answer', methods=['POST'])

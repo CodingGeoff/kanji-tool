@@ -1298,6 +1298,30 @@ def fetch_book_sentence_rows(ids, need):
     return rows
 
 
+def rows_for_sids(sids):
+    """按指定句子 id 列表取句（与 fetch_book_sentence_rows 同 shape：
+    sid/text/translation/source/book_id/book_title/lesson_title/grammar_cache…）。
+    供「点句练句」等需要针对单句出题的场景复用统一的取句→建题管线。"""
+    sids = [int(x) for x in (sids or []) if str(x).strip().isdigit()]
+    if not sids:
+        return []
+    ph = ','.join('?' * len(sids))
+    try:
+        with db.get_conn() as c:
+            return [dict(r) for r in c.execute(
+                'SELECT s.id sid, s.text text, s.translation translation, s.source source, '
+                's.grammar_cache grammar_cache, s.grammar_cache_version grammar_cache_version, '
+                'bs.book_id book_id, b.title book_title, l.title lesson_title '
+                'FROM sentences s '
+                'LEFT JOIN book_sentences bs ON bs.sentence_id=s.id '
+                'LEFT JOIN books b ON b.id=bs.book_id '
+                'LEFT JOIN book_lessons l ON l.id=bs.lesson_id '
+                f'WHERE s.id IN ({ph}) GROUP BY s.id', sids).fetchall()]
+    except Exception:
+        traceback.print_exc()
+        return []
+
+
 def study_cfg():
     """学习配置（settings 表 JSON，所有环节的用户自定义项）"""
     cfg = dict(DEFAULT_CFG)
@@ -3917,7 +3941,7 @@ def _cloze_candidates(text, min_o, meta=None):
     return out
 
 
-def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
+def make_cloze(book_ids=None, scope=None, min_level=None, count=None, sids=None):
     """挖空测验生成（v13 重写：完整题干 + 严格质检 + 同类混淆干扰项）。
 
     流程：随机取句 → 题干质检（单句完整日语）→ 语法分析 → 只保留 min_level 及以上
@@ -3936,19 +3960,28 @@ def make_cloze(book_ids=None, scope=None, min_level=None, count=None):
     count = max(1, min(int(count or cfg.get('cloze_per_day', 5)), 20))
     min_o = _lv(min_level)
 
-    need = min(count * 25, 200)
-    resolved = resolve_book_scope(scope, book_ids)
-    scope, ids = resolved['scope'], resolved['ids']
-    if scope == 'book' and ids:
-        rows = fetch_book_sentence_rows(ids, need)
+    if sids:
+        # 点句练句：直接针对指定句子出题（跳过量级采样）
+        rows = rows_for_sids(sids)
+        if not rows:
+            return {'ok': False, 'reason': '指定句子不存在或已全部移除', 'scope': 'book',
+                    'count': 0, 'questions': []}
+        resolved = {'scope': 'book', 'ids': [], 'auto_all': False, 'note': None}
+        scope, ids = 'book', []
     else:
-        scope = 'corpus'
-        with db.get_conn() as c:
-            rows = [dict(r) for r in c.execute(
-                'SELECT id sid, text text, translation translation, source source, '
-                'grammar_cache grammar_cache, grammar_cache_version grammar_cache_version '
-                f'FROM sentences WHERE {_random_id_clause("id", "sentences")} '
-                'ORDER BY id LIMIT ?', (need,)).fetchall()]
+        need = min(count * 25, 200)
+        resolved = resolve_book_scope(scope, book_ids)
+        scope, ids = resolved['scope'], resolved['ids']
+        if scope == 'book' and ids:
+            rows = fetch_book_sentence_rows(ids, need)
+        else:
+            scope = 'corpus'
+            with db.get_conn() as c:
+                rows = [dict(r) for r in c.execute(
+                    'SELECT id sid, text text, translation translation, source source, '
+                    'grammar_cache grammar_cache, grammar_cache_version grammar_cache_version '
+                    f'FROM sentences WHERE {_random_id_clause("id", "sentences")} '
+                    'ORDER BY id LIMIT ?', (need,)).fetchall()]
 
     pool = []
     for r in rows:

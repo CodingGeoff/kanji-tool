@@ -828,7 +828,7 @@ def _expanded_translation_pool(scope, ids, rows):
     return out
 
 
-def make_quiz(book_ids=None, count=None, level=None, scope=None):
+def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
     cfg = listening_cfg()
     if not cfg.get('enabled', True):
         return {'ok': False, 'reason': '听力练习已在配置中关闭', 'count': 0, 'questions': []}
@@ -836,13 +836,20 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None):
     scope = scope if scope in ('corpus', 'book', 'mixed', 'lyric', 'passage') else cfg['scope']
     count = _to_int(count, cfg['count'], min_val=1, max_val=20)
 
-    resolved = textbook.resolve_book_scope(scope, book_ids)
-    scope, ids = resolved['scope'], resolved['ids']
-    scope_note = resolved['note']
-    scope_auto_all = resolved['auto_all']
+    if sids:
+        # 点句练句：直接针对指定句子出听力题
+        rows = textbook.rows_for_sids(sids)
+        resolved = {'scope': 'book', 'ids': [], 'auto_all': False, 'note': None}
+        scope, ids = 'book', []
+        scope_note, scope_auto_all = None, False
+    else:
+        resolved = textbook.resolve_book_scope(scope, book_ids)
+        scope, ids = resolved['scope'], resolved['ids']
+        scope_note = resolved['note']
+        scope_auto_all = resolved['auto_all']
 
-    need = min(max(count * 20, 150), 500)
-    rows = _fetch_pool(scope, ids, need)
+        need = min(max(count * 20, 150), 500)
+        rows = _fetch_pool(scope, ids, need)
 
     # 若特定题源无可用句子（如空课本、歌词库为空），自动诚实退化为全库语料
     if not rows:
