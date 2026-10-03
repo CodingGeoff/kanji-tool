@@ -65,11 +65,13 @@ random.seed(20260926)
 print('== 1. 配置读写：白名单 + 边界修正 ==')
 cfg = ls.listening_cfg()
 check(cfg['enabled'] is True and cfg['scope'] == 'corpus' and cfg['rate'] == 'normal'
-      and cfg['types'].get('contrast') == 20 and cfg['types'].get('cloze') == 10
+      and cfg['types'].get('contrast') == 15 and cfg['types'].get('cloze') == 5
       and cfg['types'].get('discriminate') == 0
-      and cfg['types'].get('sentence_dictation') == 30
+      and cfg['types'].get('sentence_dictation') == 25
       and cfg['types'].get('word_dictation') == 15
       and cfg['types'].get('kanji_choice') == 15
+      and cfg['types'].get('sentence_arrange') == 20
+      and cfg.get('arrange_max_plays') == 2
       and cfg['sentence_mode'] == 'mixed' and cfg['meaning_difficulty'] == 'advanced',
       f'默认配置以听写/辨字为主力、听音辨句为0：{cfg}')
 cfg2 = ls.save_listening_cfg({'scope': 'book', 'rate': 'slow', 'count': 999,

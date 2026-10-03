@@ -1311,6 +1311,13 @@ def api_listening_grade():
     return jsonify(listening.grade_response(d.get('question') or {}, d.get('response') or ''))
 
 
+@app.route('/api/listening/arrange-check', methods=['POST'])
+def api_listening_arrange_check():
+    """听后组句判卷：必须使用全部词块并按完整合法语序排列。"""
+    d = request.json or {}
+    return jsonify(listening.grade_arrangement(d.get('question') or {}, d.get('order') or []))
+
+
 @app.route('/api/listening/suggestions', methods=['POST'])
 def api_listening_suggestions():
     """整句听写的短联想；索引来自全语料库，前端负责 debounce。"""

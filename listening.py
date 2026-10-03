@@ -11,7 +11,7 @@
 语义理解的听力理解题（篇章、推论、话者意图）见 ai_item_writer.py ——
 那条路径显式经过 LLM 起草 + 人工复核，绝不假装规则引擎能替代理解。
 
-本模块提供七种自动题型（另有 AI 人工复核题草稿箱）：
+本模块提供八种自动题型（另有 AI 人工复核题草稿箱）：
 
   1. contrast      译文最小对立：四个选项是**同一条译文**的语法改写，实词
                    一个不变，只在施受、极性、时态、方位等关系上对立。
@@ -28,6 +28,8 @@
   7. sentence_dictation 听写完整句：不计标点，用户可输入汉字、假名或混合
                    写法。高级无提示；中级完整词后从全语料库给下一小块搭配；
                    初级连词的一部分也给完整词候选，并在词完成后继续给搭配。
+  8. sentence_arrange 听后组句：音频只播放句子，随后将整句切成词块打乱；
+                   用户必须把全部词块按顺序放回，不能只拼出半句。默认最多听 2 次。
 
 句子听写的读音判定不是简单字符串比较：日文表记和整句读音都进入候选
 有限状态匹配；furigana 引擎给出的推荐读音、非推荐但确有证据的可能读音
@@ -79,8 +81,9 @@ DEFAULT_CFG = {
     # 这些是权重而不是必须相加到 100 的百分比，服务端会统一归一化；这样
     # 老配置只提交四种题型时也能平滑升级，不会丢失新增题型的默认值。
     'types': {
-        'contrast': 20, 'meaning': 10, 'discriminate': 0, 'cloze': 10,
-        'word_dictation': 15, 'kanji_choice': 15, 'sentence_dictation': 30,
+        'contrast': 15, 'meaning': 5, 'discriminate': 0, 'cloze': 5,
+        'word_dictation': 15, 'kanji_choice': 15, 'sentence_dictation': 25,
+        'sentence_arrange': 20,
     },
     # 译文最小对立要求译文共享高信息词/短语且句式相近；凑不齐三项就不出题。
     'meaning_difficulty': 'advanced',   # standard | advanced
@@ -89,7 +92,8 @@ DEFAULT_CFG = {
     'sentence_mode': 'mixed',
     'rate': 'normal',            # slow | slower | normal | fast —— 听力特有难度轴
                                   # （与 /api/tts 的 RATES 命名完全一致，前端直接透传）
-    'max_plays': 3,              # 每题最多重播次数，0=不限
+    'max_plays': 3,              # 旧选择/听写题最多重播次数，0=不限
+    'arrange_max_plays': 2,      # 听后组句专用：默认只允许听两次
     'min_len': 6,
     'max_len': 60,
 }
@@ -146,6 +150,7 @@ def _sanitize_cfg(cfg):
         cfg['sentence_mode'] = 'mixed'
     cfg['count'] = _to_int(cfg.get('count'), 6, min_val=1, max_val=20)
     cfg['max_plays'] = _to_int(cfg.get('max_plays'), 3, min_val=0, max_val=10)
+    cfg['arrange_max_plays'] = _to_int(cfg.get('arrange_max_plays'), 2, min_val=0, max_val=10)
     cfg['min_len'] = _to_int(cfg.get('min_len'), 6, min_val=4, max_val=40)
     cfg['max_len'] = _to_int(cfg.get('max_len'), 60, min_val=cfg['min_len'], max_val=100)
     t = cfg.get('types') if isinstance(cfg.get('types'), dict) else {}
@@ -156,12 +161,15 @@ def _sanitize_cfg(cfg):
     w = _to_int(t.get('word_dictation'), DEFAULT_CFG['types']['word_dictation'], min_val=0, max_val=1000)
     k = _to_int(t.get('kanji_choice'), DEFAULT_CFG['types']['kanji_choice'], min_val=0, max_val=1000)
     s = _to_int(t.get('sentence_dictation'), DEFAULT_CFG['types']['sentence_dictation'], min_val=0, max_val=1000)
-    if x + m + d + c + w + k + s == 0:
-        x, m, d, c, w, k, s = (DEFAULT_CFG['types'][name]
-                                for name in ('contrast', 'meaning', 'discriminate', 'cloze',
-                                              'word_dictation', 'kanji_choice', 'sentence_dictation'))
+    a = _to_int(t.get('sentence_arrange'), DEFAULT_CFG['types']['sentence_arrange'], min_val=0, max_val=1000)
+    if x + m + d + c + w + k + s + a == 0:
+        x, m, d, c, w, k, s, a = (DEFAULT_CFG['types'][name]
+                                   for name in ('contrast', 'meaning', 'discriminate', 'cloze',
+                                                 'word_dictation', 'kanji_choice',
+                                                 'sentence_dictation', 'sentence_arrange'))
     cfg['types'] = {'contrast': x, 'meaning': m, 'discriminate': d, 'cloze': c,
-                    'word_dictation': w, 'kanji_choice': k, 'sentence_dictation': s}
+                    'word_dictation': w, 'kanji_choice': k,
+                    'sentence_dictation': s, 'sentence_arrange': a}
     cfg['enabled'] = bool(cfg.get('enabled', True))
     return cfg
 
@@ -1090,6 +1098,31 @@ def grade_sentence_dictation(expected, response):
     }
 
 
+def grade_arrangement(question, order):
+    """听后组句复用 sentence_builder 的完整性 + 合法语序判卷。"""
+    q = question if isinstance(question, dict) else {}
+    if q.get('qtype') != 'sentence_arrange' or not q.get('spec'):
+        return {'ok': False, 'feedback': '不是有效的听后组句题', 'alt_count': 0,
+                'canonical': [], 'canonical_surfaces': [], 'your_text': ''}
+    try:
+        result = sb.check_arrangement(q['spec'], order or [])
+    except Exception:
+        return {'ok': False, 'feedback': '组句判卷失败，请重新播放后再试',
+                'alt_count': 0, 'canonical': [], 'canonical_surfaces': [], 'your_text': ''}
+    # 听力组句测的是“听到的原顺序”，而不是开放式日语换序；即便普通组句
+    # 引擎认为某种格成分换序语法上也成立，这里仍要求和音频中的原顺序一致。
+    if result.get('ok') and q.get('strict_audio_order', True):
+        tile_map = {str(k): int(v) for k, v in (q['spec'].get('tile_map') or {}).items()}
+        expected = [k for k, value in sorted(tile_map.items(), key=lambda item: item[1])
+                    if value >= 0]
+        submitted = [str(x) for x in (order or [])]
+        if submitted != expected:
+            result['ok'] = False
+            result['feedback'] = '词块已完整，但没有还原成录音中的原顺序'
+    result['must_use_all_tiles'] = True
+    return result
+
+
 def grade_response(question, response):
     """统一服务端判卷；前端可以即时渲染，服务端仍是唯一规则来源。"""
     q = question if isinstance(question, dict) else {}
@@ -1227,6 +1260,36 @@ def _build_sentence_dictation_q(row, mode='mixed'):
     }
 
 
+def _build_sentence_arrange_q(row):
+    """听后整句组句：复用 sentence_builder 的文节切分和稳健判卷。
+
+    组句题不能开启 builder 的换词/干扰块：音频说的是哪句话，题面就必须
+    还原哪句话；所有必要词块都必须使用，不能用“拼出半句”拿到正确。
+    """
+    text = (row.get('text') or '').strip()
+    if not _sound_sentence(text) or len(_normalize_jp(text)) < 6:
+        return None
+    cfg = dict(sb.builder_cfg())
+    cfg.update({'min_tiles': 2, 'max_tiles': 14, 'swap': False,
+                'swap_prob': 0.0, 'distractors': 0, 'alt_answers': False,
+                'strict_check': True, 'perm_limit': 160})
+    try:
+        built = sb._build_arrange(row, cfg, 'basic', None)
+    except Exception:
+        return None
+    if isinstance(built, tuple) or not built:
+        return None
+    built = dict(built)
+    built['qtype'] = 'sentence_arrange'
+    built['audio_text'] = built.get('text') or text
+    built['answer'] = built.get('text') or text
+    built['listening_arrange'] = True
+    built['distractor_source'] = 'sentence_builder_attested_chunks'
+    built['must_use_all_tiles'] = True
+    built['strict_audio_order'] = True
+    return built
+
+
 def _origin(row):
     if row.get('source') == 'lyric':
         return f"🎵 《{row.get('song_title') or '歌词'}》"
@@ -1308,7 +1371,8 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
 
     t = cfg['types']
     kinds = ('contrast', 'meaning', 'discriminate', 'cloze',
-             'word_dictation', 'kanji_choice', 'sentence_dictation')
+             'word_dictation', 'kanji_choice', 'sentence_dictation',
+             'sentence_arrange')
     # 0% 是明确关闭，不把禁用题型当作“凑不满时的兜底”；否则用户把听音辨句
     # 调成 0 后，严格配额失败时它仍会悄悄回来，违背比例设置。
     active_kinds = tuple(k for k in kinds if t.get(k, 0) > 0)
@@ -1348,6 +1412,7 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
         'word_dictation': lambda row: _build_word_dictation_q(row, word_bank),
         'kanji_choice': lambda row: _build_kanji_choice_q(row, word_bank),
         'sentence_dictation': lambda row: _build_sentence_dictation_q(row, sentence_mode),
+        'sentence_arrange': _build_sentence_arrange_q,
     }
 
     questions, used = [], set()
@@ -1418,11 +1483,14 @@ def make_quiz(book_ids=None, count=None, level=None, scope=None, sids=None):
     for i, q in enumerate(questions):
         q['qid'] = f'l{i}'
         q['rate'] = rate
-        q['max_plays'] = cfg['max_plays']
+        q['max_plays'] = (cfg['arrange_max_plays']
+                           if q.get('qtype') == 'sentence_arrange'
+                           else cfg['max_plays'])
         q.setdefault('audio_text', q.get('text', ''))
     return {'ok': True, 'level': level, 'scope': scope, 'book_ids': ids,
             'scope_auto_all': scope_auto_all, 'scope_note': scope_note,
             'rate': rate, 'max_plays': cfg['max_plays'],
+            'arrange_max_plays': cfg['arrange_max_plays'],
             'meaning_difficulty': meaning_difficulty, 'sentence_mode': sentence_mode,
             'type_weights': dict(t),
             'count': len(questions), 'questions': questions,

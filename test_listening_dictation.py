@@ -45,6 +45,8 @@ try:
     check(cfg['types']['discriminate'] == 0, '听音辨句默认必须为 0')
     check(cfg['types']['sentence_dictation'] > cfg['types']['contrast'],
           '整句听写默认权重应高于旧主力选择题')
+    check(cfg['types']['sentence_arrange'] == 20 and cfg['arrange_max_plays'] == 2,
+          '听后组句应有默认权重并且默认最多听两次')
 
     row = {'sid': 1, 'text': rows[0][0], 'source': 'dictation_test'}
     word = ls._build_word_dictation_q(row)
@@ -74,13 +76,31 @@ try:
     check(ls.sentence_suggestions('私は学生', 'intermediate'), '中级完整词后应给后续短搭配')
     check(not ls.sentence_suggestions('私は', 'advanced'), '最高难度不应调用联想')
 
+    arrange = ls._build_sentence_arrange_q(row)
+    check(arrange and arrange['qtype'] == 'sentence_arrange' and arrange['must_use_all_tiles'],
+          '听后组句必须生成完整词块题而不是半句题')
+    if arrange:
+        by_slot = {int(v): k for k, v in arrange['spec']['tile_map'].items() if int(v) >= 0}
+        canonical_order = [by_slot[i] for i in range(arrange['n_required'])]
+        good = ls.grade_arrangement(arrange, canonical_order)
+        bad = ls.grade_arrangement(arrange, canonical_order[:-1])
+        wrong_order = canonical_order[1:] + canonical_order[:1]
+        wrong = ls.grade_arrangement(arrange, wrong_order)
+        check(good['ok'], '完整正确词块顺序应判对')
+        check(not bad['ok'], '漏掉词块的半句不能判对')
+        check(not wrong['ok'], '完整但顺序与录音不同也不能判对')
+
     ls.save_listening_cfg({'types': {'contrast': 0, 'meaning': 0, 'discriminate': 0, 'cloze': 0,
-                                      'word_dictation': 30, 'kanji_choice': 30,
-                                      'sentence_dictation': 40}, 'sentence_mode': 'advanced'})
+                                      'word_dictation': 0, 'kanji_choice': 0,
+                                      'sentence_dictation': 0, 'sentence_arrange': 100},
+                           'sentence_mode': 'advanced', 'arrange_max_plays': 2})
     quiz = ls.make_quiz(count=5, scope='corpus')
     check(quiz['ok'] and quiz['questions'], '新增题型权重应能生成题目')
     check(not any(q['qtype'] == 'discriminate' for q in quiz['questions']),
           '0% 题型不能作为凑数兜底偷偷出现')
+    arrange_quiz = ls.make_quiz(count=1, scope='corpus')
+    check(any(q['qtype'] == 'sentence_arrange' and q['max_plays'] == 2
+              for q in arrange_quiz['questions']), '听后组句默认最多播放两次')
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

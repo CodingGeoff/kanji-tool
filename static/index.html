@@ -862,6 +862,17 @@ async function showAbout(){
 .ls-correction{border-radius:10px;padding:9px 12px;margin-top:10px;background:#fdf0e8;color:#9e4e2b;line-height:1.7}
 .ls-correction.ok{background:#e7f2ec;color:#276446}
 .ls-options-confusion{border-left:4px solid var(--gold);padding-left:10px}
+.ls-arrange-card{margin-top:14px;border:1px solid #d7c5e8;border-radius:18px;padding:16px;background:linear-gradient(145deg,#fbf8ff,#f0e9fa)}
+.ls-arrange-card .ls-arrange-answer,.ls-arrange-card .ls-arrange-bank{min-height:66px;border:2px dashed #cbb5e0;border-radius:14px;padding:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ls-arrange-card .ls-arrange-answer{background:#fff;border-color:var(--gold)}
+.ls-arrange-card .ls-arrange-bank{margin-top:10px;background:rgba(255,255,255,.45)}
+.ls-arrange-card .ph{font-size:13px;color:var(--sub)}
+.ls-arrange-tile{font-size:19px;padding:8px 12px;border:2px solid #d8c9e6;border-radius:11px;background:#fff;cursor:pointer;line-height:1.5;box-shadow:0 2px 0 rgba(0,0,0,.05);transition:.12s}
+.ls-arrange-tile:hover:not(:disabled){border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+.ls-arrange-tile.selected{border-color:var(--gold);background:#fdf6e8}
+.ls-arrange-tile.correct{border-color:var(--accent2);background:#e7f2ec}
+.ls-arrange-tile.wrong{border-color:var(--accent);background:#fbe9ea}
+.ls-arrange-tile:disabled{cursor:default;opacity:.7}
 .ls-type-badge{font-size:12px;font-weight:700;border-radius:999px;padding:4px 10px;background:#f2efe7;color:#6f675b}
 @media(max-width:600px){
   .ls-dict-card{padding:14px}.ls-dict-input{font-size:18px}.ls-word-input{font-size:23px}
@@ -4035,10 +4046,10 @@ async function lsOpen(opts){
 }
 function lsRender(){
   const v=$('#bkQuizView'),q=lsQuiz.qs[lsQuiz.i],n=lsQuiz.qs.length;
-  lsQuiz.picked=null;lsQuiz.checked=false;lsQuiz.pending=false;_lsPlays=0;
+  lsQuiz.picked=null;lsQuiz.checked=false;lsQuiz.pending=false;lsQuiz.arrangeSel=[];_lsPlays=0;
   const sl=LS_SCOPE_LABEL[lsQuiz.scope]||'';
   const labels={contrast:'译文最小对立',meaning:'听后选义',discriminate:'听音辨句',cloze:'双空最小对立',
-    word_dictation:'听写纯汉字词',kanji_choice:'听音选汉字',sentence_dictation:'听写完整句'};
+    word_dictation:'听写纯汉字词',kanji_choice:'听音选汉字',sentence_dictation:'听写完整句',sentence_arrange:'听后组句'};
   const qtypeLabel=labels[q.qtype]||q.qtype;
   const top=`<div class="quiz-top">
       <button class="btn" onclick="bkQuizQuit()" title="退出练习">‹ 退出</button>
@@ -4053,10 +4064,18 @@ function lsRender(){
     cloze:'同时听清两个空的接续/词汇与句尾极性，选出正确组合',
     word_dictation:'听一个日语词，把它完整写成纯汉字。不能写假名、罗马字或注音。',
     kanji_choice:'听一个词，从高混淆度的汉字词选项中选出正确表记。',
-    sentence_dictation:'听完整句并把整句打出来。判定时忽略标点，汉字、假名或混合写法均可。'}[q.qtype]||'听录音后作答';
+    sentence_dictation:'听完整句并把整句打出来。判定时忽略标点，汉字、假名或混合写法均可。',
+    sentence_arrange:'听完整句，再把下面打散的全部词块按原句顺序组回去；必须用完全部词块。'}[q.qtype]||'听录音后作答';
   const clozePrompt=q.qtype==='cloze'&&q.prompt_parts?`<div class="jp" style="font-size:21px;line-height:2;margin-top:12px">${esc(q.prompt_parts[0])}<span class="cloze-blank" style="min-width:76px">①</span>${esc(q.prompt_parts[1])}<span class="cloze-blank" style="min-width:76px">②</span>${esc(q.prompt_parts[2])}</div>`:'';
   let task='';
-  if(q.qtype==='word_dictation'){
+  if(q.qtype==='sentence_arrange'){
+    task=`<div class="ls-arrange-card"><span class="ls-type-badge">听后组句 · 必须用完全部词块</span>
+      <div id="lsArrangeAnswer" class="ls-arrange-answer jp"><span class="ph">播放后点击词块，按听到的顺序组成完整句子…</span></div>
+      <div id="lsArrangeBank" class="ls-arrange-bank jp">
+        ${q.tiles.map((t,k)=>`<button class="ls-arrange-tile" id="lsArrangeTile${k}" onclick="lsArrangeTileTap(${k})" disabled>${esc(t.s)}</button>`).join('')}
+      </div>
+      <div class="muted" style="margin-top:7px">只能使用每个词块一次；只拼出半句、漏词或顺序错误都不算完成。</div></div>`;
+  }else if(q.qtype==='word_dictation'){
     task=`<div class="ls-dict-card hard"><span class="ls-type-badge">纯汉字 · 无注音</span>
       <input id="lsDictInput" class="ls-dict-input ls-word-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="听后输入汉字" oninput="lsDictationInput()">
       <div class="muted" style="margin-top:7px">只接受原词的纯汉字表记；输入假名即使读音正确也不算本题答案。</div></div>`;
@@ -4089,7 +4108,25 @@ function lsRender(){
 function lsSetCheckState(){
   const b=$('#lsCheckBtn'),q=lsQuiz&&lsQuiz.qs[lsQuiz.i],input=$('#lsDictInput');
   if(!b||!q)return;
+  if(q.qtype==='sentence_arrange'){
+    b.disabled=!!lsQuiz.checked||!_lsPlays||lsQuiz.arrangeSel.length!==q.n_required;
+    return;
+  }
   b.disabled=!!lsQuiz.checked||!_lsPlays||((q.qtype==='sentence_dictation'||q.qtype==='word_dictation')&&!input?.value.trim());
+}
+function lsArrangeTileTap(k){
+  const q=lsQuiz&&lsQuiz.qs[lsQuiz.i];
+  if(!q||q.qtype!=='sentence_arrange'||lsQuiz.checked)return;
+  if(!_lsPlays){toast('请先播放录音再开始组句');return;}
+  const at=lsQuiz.arrangeSel.indexOf(k);
+  if(at>=0)lsQuiz.arrangeSel.splice(at,1);else lsQuiz.arrangeSel.push(k);
+  const answer=$('#lsArrangeAnswer');
+  if(!lsQuiz.arrangeSel.length)answer.innerHTML='<span class="ph">点击词块，按听到的顺序组成完整句子…</span>';
+  else answer.innerHTML=lsQuiz.arrangeSel.map((idx,pos)=>`<button class="ls-arrange-tile selected" onclick="lsArrangeTileTap(${idx})">${esc(q.tiles[idx].s)}</button>`).join('');
+  q.tiles.forEach((t,i)=>{
+    const btn=$('#lsArrangeTile'+i);if(btn){btn.disabled=lsQuiz.arrangeSel.includes(i);btn.classList.toggle('selected',lsQuiz.arrangeSel.includes(i));}
+  });
+  lsSetCheckState();
 }
 function lsDictationInput(){
   if(!lsQuiz||lsQuiz.checked)return;
@@ -4125,6 +4162,11 @@ function lsPlayTap(){
   if(q.max_plays&&_lsPlays>=q.max_plays){toast(`本题最多重播 ${q.max_plays} 次`);return;}
   _lsPlays++;
   document.querySelectorAll('.ls-opt').forEach((b,i)=>{b.disabled=false;b.textContent=q.options[i];});
+  if(q.qtype==='sentence_arrange'){
+    document.querySelectorAll('.ls-arrange-tile').forEach(b=>{b.disabled=false;});
+    const answer=$('#lsArrangeAnswer');
+    if(answer&&answer.querySelector('.ph'))answer.querySelector('.ph').textContent='点击词块，按听到的顺序组成完整句子…';
+  }
   const unlock=$('#lsUnlockHint');if(unlock)unlock.textContent='选项已解锁，请依据录音作答';
   lsPlay(q.audio_text||q.text,q.rate);
   lsSetCheckState();
@@ -4140,8 +4182,17 @@ async function lsCheck(){
   if(lsQuiz.checked)return;
   const q=lsQuiz.qs[lsQuiz.i];
   let pick='',grade=null,ok=false,inputValue='';
+  const arrange=q.qtype==='sentence_arrange';
   const dictation=q.qtype==='word_dictation'||q.qtype==='sentence_dictation';
-  if(dictation){
+  if(arrange){
+    if(!_lsPlays){toast('请先播放录音再组句');return;}
+    if(lsQuiz.arrangeSel.length!==q.n_required){toast('必须先把整句的全部词块按顺序放好');return;}
+    lsQuiz.pending=true;const btn=$('#lsCheckBtn');if(btn){btn.disabled=true;btn.textContent='判卷中…';}
+    const order=lsQuiz.arrangeSel.map(k=>q.tiles[k].id);
+    try{grade=await api('/api/listening/arrange-check',{method:'POST',body:JSON.stringify({question:q,order})});}
+    catch(e){grade={ok:false,feedback:'网络中断，组句暂未判定，请重试'};}
+    ok=!!(grade&&grade.ok);pick=order.join(' / ');
+  }else if(dictation){
     const input=$('#lsDictInput'); inputValue=input?input.value:'';
     if(!_lsPlays){toast('请先播放录音再作答');return;}
     if(!inputValue.trim()){toast('请先输入答案');return;}
@@ -4166,12 +4217,18 @@ async function lsCheck(){
     else if(!dictation&&i===lsQuiz.picked)b.classList.add('ng');
   });
   if($('#lsDictInput'))$('#lsDictInput').disabled=true;
+  if(arrange){
+    document.querySelectorAll('.ls-arrange-tile').forEach(b=>b.disabled=true);
+    const ans=$('#lsArrangeAnswer');if(ans)ans.querySelectorAll('.ls-arrange-tile').forEach(b=>b.classList.add(ok?'correct':'wrong'));
+  }
   const full=q.tokens&&q.tokens.length?rubyHTML(q.tokens):esc(q.text);
   const contrastNote=q.contrast?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🔬 日文最小对立：第一空考${esc(q.contrast.lexical_kind)}；第二空把句尾变为「${esc(q.contrast.form_to)}」${q.contrast.opposite?'，极性相反、句意可完全翻转':'，时态或极性发生变化'}。四项均先还原成完整句并通过语法门禁。</div>`:'';
   const meaningNote=q.distractor_source==='attested_translation_lexical_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 高级译文混淆：三项都与答案共享高信息关键词或短语，并尽量保持人称、肯否、疑问类型和长度相近；它们均来自其他真实日译句对，只有关键动作、对象、时间或数量不同。无法找到三项时系统不会用无关句凑数。</div>`:(q.distractor_source==='attested_translation_structural_hard_negative'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎯 标准译文混淆：三项均来自其他真实日译句对，并按日文侧结构和译文长度选取；过于接近、可能同义的译文已排除。</div>`:'');
   const discNote=q.distractor_source==='attested_sentences'?`<div class="muted" style="font-size:13px;margin-top:6px;line-height:1.7">🎧 日文整句混淆：三项均为语料库中真实存在且通过语法门禁的完整句，按长度、标点和字面相似度选取；系统没有机械替换词语造句。<br>注意这一题型天然偏易，默认比例是 0；想开启请在配置中主动提高。</div>`:'';
   let dictNote='';
-  if(q.qtype==='word_dictation'){
+  if(q.qtype==='sentence_arrange'){
+    dictNote=`<div class="ls-correction ${ok?'ok':''}">${ok?'✅ 已按完整顺序组回句子。':'❌ '+esc(grade&&grade.feedback||'顺序不正确。')}<br><span class="muted">规则：必须使用全部词块，不能只完成半句或省略词块。</span></div>`;
+  }else if(q.qtype==='word_dictation'){
     dictNote=`<div class="muted" style="margin-top:8px;line-height:1.7">🈶 目标词：<b class="jp">${esc(q.answer)}</b>　推荐读音：${esc(q.reading||'')}<br>判卷规则：答案必须是语料实际表记的纯汉字，假名读音不会代替汉字。</div>`;
   }else if(q.qtype==='kanji_choice'){
     dictNote=`<div class="muted" style="margin-top:8px;line-height:1.7">🈶 正确表记：<b class="jp">${esc(q.answer)}</b>　推荐读音：${esc(q.reading||'')}<br>四个词均来自真实语料，选项按同音/相近读音、长度和共享字形优先检索，不机械造假词。</div>`;
@@ -4252,7 +4309,7 @@ async function lsCfgOpen(){
   const stHTML=st.length?`<div class="muted" style="margin-top:10px;font-size:12.5px">最近练习：${st.map(s=>`${s.day.slice(5)} ${s.correct}/${s.asked}`).join(' · ')}</div>`:'';
   bkModal(`
     <div class="row" style="justify-content:space-between"><b>🎧 听力练习配置</b><button class="btn mini" onclick="bkModalClose()">✕</button></div>
-    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.8">可用题型完整清单：译文最小对立、听后选义、日文双空最小对立、听音辨句、听写纯汉字词、听音选汉字、听写完整句。默认把三种“听写/辨字”作为主要训练，<b>听音辨句默认 0%</b>，因为四条原句很容易靠一个独有词排除。比例是权重，输入 0 即关闭该题型；出题失败时不会偷偷启用 0% 的类型。整句听写模式还可选最高/中级/初级：中级完整词后给全语料库短搭配，初级连部分词也给完整词候选。高级译文干扰项凑不齐三个同主题硬负例时宁缺毋滥。</div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px;line-height:1.8">可用题型完整清单：译文最小对立、听后选义、日文双空最小对立、听音辨句、听写纯汉字词、听音选汉字、听写完整句、听后组句。默认把听写/辨字/组句作为主要训练，<b>听音辨句默认 0%</b>，因为四条原句很容易靠一个独有词排除。比例是权重，输入 0 即关闭该题型；出题失败时不会偷偷启用 0% 的类型。整句听写模式可选最高/中级/初级；听后组句默认最多播放 2 次，必须用完全部词块。高级译文干扰项凑不齐三个同主题硬负例时宁缺毋滥。</div>
     <div class="cfg-grid">
       <span class="muted">启用</span><label class="advtog" style="justify-self:start"><input type="checkbox" id="lscOn" ${c.enabled!==false?'checked':''}><span>开启听力练习</span></label>
       <span class="muted">难度（句子选材）</span><select id="lscLevel">
@@ -4275,20 +4332,22 @@ async function lsCfgOpen(){
         <option value="fast" ${c.rate==='fast'?'selected':''}>较快（挑战）</option></select>
       <span class="muted">每组题数</span><input id="lscN" type="number" min="1" max="20" value="${c.count||6}" style="width:90px">
       <span class="muted">题型占比</span><div><div class="row" style="gap:8px;flex-wrap:wrap">
-        译文最小对立 <input id="lscTX" type="number" min="0" max="100" value="${(c.types||{}).contrast??20}" style="width:58px">% ／
-        听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??10}" style="width:58px">% ／
+        译文最小对立 <input id="lscTX" type="number" min="0" max="100" value="${(c.types||{}).contrast??15}" style="width:58px">% ／
+        听后选义 <input id="lscTM" type="number" min="0" max="100" value="${(c.types||{}).meaning??5}" style="width:58px">% ／
         听音辨句 <input id="lscTD" type="number" min="0" max="100" value="${(c.types||{}).discriminate??0}" style="width:58px">% ／
-        双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??10}" style="width:58px">% ／<br>
+        双空最小对立 <input id="lscTC" type="number" min="0" max="100" value="${(c.types||{}).cloze??5}" style="width:58px">% ／<br>
         听写纯汉字词 <input id="lscTW" type="number" min="0" max="100" value="${(c.types||{}).word_dictation??15}" style="width:58px">% ／
         听音选汉字 <input id="lscTK" type="number" min="0" max="100" value="${(c.types||{}).kanji_choice??15}" style="width:58px">% ／
-        听写完整句 <input id="lscTS" type="number" min="0" max="100" value="${(c.types||{}).sentence_dictation??30}" style="width:58px">%
-      </div><div class="muted" style="font-size:12px;margin-top:5px">默认权重约为 20/10/0/10/15/15/30；总和会自动归一，不要求手工加到100。听音选汉字的选项只使用语料真实词，优先同音和同字形混淆。</div></div>
+        听写完整句 <input id="lscTS" type="number" min="0" max="100" value="${(c.types||{}).sentence_dictation??25}" style="width:58px">% ／
+        听后组句 <input id="lscTA" type="number" min="0" max="100" value="${(c.types||{}).sentence_arrange??20}" style="width:58px">%
+      </div><div class="muted" style="font-size:12px;margin-top:5px">默认权重约为 15/5/0/5/15/15/25/20；总和会自动归一，不要求手工加到100。听音选汉字的选项只使用语料真实词，优先同音和同字形混淆；听后组句必须完整使用所有词块。</div></div>
       <span class="muted">整句听写模式</span><div><select id="lscSentenceMode">
         <option value="mixed" ${(!c.sentence_mode||c.sentence_mode==='mixed')?'selected':''}>混合（高级优先）</option>
         <option value="advanced" ${c.sentence_mode==='advanced'?'selected':''}>最高难度：无提示</option>
         <option value="intermediate" ${c.sentence_mode==='intermediate'?'selected':''}>中级：完整词后给搭配</option>
         <option value="beginner" ${c.sentence_mode==='beginner'?'selected':''}>初级：部分词也给联想</option></select></div>
-      <span class="muted">每题最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
+      <span class="muted">普通听力最多重播</span><input id="lscMaxPlay" type="number" min="0" max="10" value="${c.max_plays??3}" style="width:64px">
+      <span class="muted">听后组句最多重播</span><input id="lscArrangeMaxPlay" type="number" min="0" max="10" value="${c.arrange_max_plays??2}" style="width:64px">
     </div>
     ${stHTML}
     <div class="row" style="margin-top:12px"><button class="btn primary" onclick="lsCfgSave()">保存配置</button><button class="btn" onclick="bkModalClose()">取消</button></div>`,640);
@@ -4299,8 +4358,10 @@ async function lsCfgSave(){
     sentence_mode:$('#lscSentenceMode').value,
     rate:$('#lscRate').value,count:parseInt($('#lscN').value)||6,
     types:{contrast:parseInt($('#lscTX').value)||0,meaning:parseInt($('#lscTM').value)||0,discriminate:parseInt($('#lscTD').value)||0,cloze:parseInt($('#lscTC').value)||0,
-      word_dictation:parseInt($('#lscTW').value)||0,kanji_choice:parseInt($('#lscTK').value)||0,sentence_dictation:parseInt($('#lscTS').value)||0},
-    max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value)};
+      word_dictation:parseInt($('#lscTW').value)||0,kanji_choice:parseInt($('#lscTK').value)||0,sentence_dictation:parseInt($('#lscTS').value)||0,
+      sentence_arrange:parseInt($('#lscTA').value)||0},
+    max_plays:isNaN(parseInt($('#lscMaxPlay').value))?3:parseInt($('#lscMaxPlay').value),
+    arrange_max_plays:isNaN(parseInt($('#lscArrangeMaxPlay').value))?2:parseInt($('#lscArrangeMaxPlay').value)};
   try{
     const r=await api('/api/listening/cfg',{method:'POST',body:JSON.stringify(body)});
     lsCfgCache=r.cfg;bkModalClose();toast('听力配置已保存');
